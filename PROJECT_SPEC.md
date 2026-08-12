@@ -982,3 +982,293 @@ The product's central claim — *"this makes small local models usable"* — is 
 
 A/B on the realistic-task suite: **model X (14B Q4, Profile B) naked single-shot vs model X under ClutchCode** (capability probe + edit-format fallback + verification repair + context budgeting). Report the VTCR delta with confidence intervals over repeated runs (local models are nondeterministic; average over K seeds). Publish the methodology so the claim is falsifiable. **[C:High]**
 
+
+## 17. Local-First Architecture
+
+```
+User Computer (everything below lives here; nothing above the model provider line leaves unless remote)
+├── Interface: CLI / TUI  AND  VS Code extension  (§18) ── both talk to →
+├── Agent API (local, in-process for CLI; JSON-RPC over stdio for editor clients)
+├── Agent Runtime (state machine, adaptation layer, budgets, memory)
+├── Local DB: SQLite (runs, memory, traces) + JSONL transcripts
+├── Git (worktree isolation)
+├── Sandbox (Seatbelt / bwrap+Landlock / WSL2 / optional Docker)
+├── Local model server (optional): Ollama / llama.cpp / vLLM / LM Studio / MLX
+└── User-selected model API (optional): Anthropic / OpenAI-compat / Gemini / …
+```
+
+**No mandatory cloud, backend, telemetry, account, or login.** **[C:High]**
+
+**Testable requirement (a real CI test, not a slogan):** *"Disconnect the network, point at Ollama, complete a task."* The eval harness (§16) runs a designated offline task with egress fully blocked at the OS level and a local model, and asserts a successful verified completion. If that test can't pass, the local-first claim is false. This test is a **release gate.** **[C:High]**
+
+Implications enforced by architecture: the credential store, run DB, memory, and traces are all local files/SQLite (§5, §10, §15); the only outbound connection is to the *user-configured* model endpoint, which is `localhost` in the local case. There is no code path that contacts a ClutchCode-operated host because no such host exists (§19).
+
+---
+
+## 18. CLI/TUI & VS Code — Interface Strategy & UX
+
+**Explicit product requirement (from the user): ship BOTH a terminal interface AND a VS Code extension.** This section reconciles that with a single runtime.
+
+### 18.1 Interface strategy: CLI/TUI-first core, VS Code as a first-class client of the same runtime
+
+The prompt's §23 asks to pick exactly one for v1. We choose **CLI/TUI-first as the v1 core**, and treat the **VS Code extension as a first-class client that speaks to the same Agent API**, delivered as an explicit companion (not deferred to "someday"). Justification:
+
+| Factor | CLI/TUI-first | Web-first | Why CLI/TUI wins for our user |
+|---|---|---|---|
+| Target user (individual dev, terminal-native) | ✓ | partial | devs live in terminals + editors |
+| Implementation cost | low | high (server+frontend) | small team, MVP in weeks (§21) |
+| Streaming/diff-review ergonomics | strong (TUI) / excellent (VS Code diff) | good | terminal for speed, editor for rich diff |
+| Remote/SSH usage (Profile D homelab) | **native** | needs port-forward | SSH into the homelab and run it |
+| Local-first fit | ✓ | tempts a server | no server (§17) |
+
+A **web dashboard is explicitly deprioritized** (§22). The **key architectural move**: the runtime exposes an **Agent API** with two bindings — (1) in-process for the CLI/TUI, (2) **JSON-RPC over stdio** (LSP/ACP-style) for editor clients. The VS Code extension is a thin TypeScript client of binding (2). Because the runtime is TypeScript (§19), the CLI, the TUI, and the extension **share 100% of runtime code**; only the presentation differs. This is the concrete reason the language choice (§19) is TypeScript. **[C:High]**
+
+### 18.2 Command surface (MVP / Phase 2 / Later)
+
+| Command | Purpose | Phase |
+|---|---|---|
+| `agent init` | scaffold config + AGENTS.md in a repo | **MVP** |
+| `agent doctor` | detect OS/GPU/VRAM, providers, local servers; recommend+pull a model; run capability probe; verify offline path (§4.10) | **MVP** |
+| `agent providers` | list/configure providers + keys (→ keychain §5) | **MVP** |
+| `agent models` | list models; `models pull`, `models probe` (§4.9) | **MVP** |
+| `agent run <task>` | run the default workflow on a task | **MVP** |
+| `agent status` | show active/last run state | **MVP** |
+| `agent diff` | show worktree-vs-base diff | **MVP** |
+| `agent approve` / `agent reject` | accept/discard a run's changes | **MVP** |
+| `agent commit` | finalize commit (message gen, hooks) | **MVP** |
+| `agent inspect <run_id>` | replay decision trail (§15.3) | **MVP** |
+| `agent resume <run_id>` | resume from RunState (§6.2) | **MVP** (thin) / hardened Phase 2 |
+| `agent rollback <ckpt>` | restore a checkpoint (§13.3) | Phase 2 |
+| `agent memory` | list/show/correct project memory (§10.3) | Phase 2 |
+| `agent config` | get/set config; policy; allow-read | **MVP** (core) |
+| `agent workflow` | list/select/validate workflows (§8) | Phase 2 |
+| `agent trust` | mark a repo trusted (§12.4) | **MVP** (as a config flag) |
+| `agent eval` | run the eval suite / scoreboard (§16) | Phase 2 (runtime-replay part earlier) |
+| `agent pr` | prepare a PR (§13.5) | Phase 2+ |
+
+### 18.3 Approval UX & avoiding approval fatigue
+
+Approval fatigue (users blanket-approving everything) is *the* HITL failure mode. Countermeasures:
+
+- **Batch by class, not per-call:** "The agent wants to run `npm test` (and 2 similar test commands). Allow all test commands this run? [y/N/always-for-this-repo]." Remembered per command-class per run (§12.2).
+- **Risk-tiered prompts:** READ/WRITE-to-worktree are silent-ALLOW; only EXECUTE-first-of-class, destructive, and NETWORK prompt. The user sees *few, meaningful* prompts, so they actually read them.
+- **The diff is the real approval.** The high-value human decision is the **final diff review** (§14.7), not each shell call. UX funnels attention there: rich diff, verification results inline ("tests: 42✓ 0✗; no cheat flags"), and a single approve/reject/edit.
+- **`--yes` / auto-approve** exists for trusted repos + CI but still enforces the deterministic gate + no-cheat contract (§14.7). Auto-approving does not disable verification.
+
+### 18.4 Interactive vs one-shot, streaming, Ctrl-C, exit codes
+
+- **Interactive** (`agent run` in a TTY): TUI with live streaming, steering (§6.5), approval prompts.
+- **One-shot / non-interactive** (`agent run --task ... --yes --json`): no prompts (policy defaults + contract), **machine-readable JSON** on stdout, suitable for scripts/CI.
+- **Streaming:** model tokens + tool activity stream live; long tool output is truncated live (§11.3).
+- **Ctrl-C:** once = graceful pause (persist RunState, `resume`-able); twice = cancel (worktree kept for inspect) (§6.5–6.6).
+- **Exit codes:** `0` success (contract met), `1` failed verification, `2` escalated/needs-human, `3` budget/cost limit hit, `4` config/env error, `130` interrupted. Documented and stable for scripting.
+
+### 18.5 VS Code extension (companion, same runtime)
+
+- **Boundary:** extension (TS) ⇄ Agent API over stdio JSON-RPC (§18.1). The extension spawns/attaches to the runtime; **no separate reimplementation** of agent logic in the extension.
+- **UX:** a task input; live streaming in a panel; **native VS Code diff view** for review (the best diff-review surface we have); approve/reject buttons wired to `agent approve/reject`; inline verification results; the same worktree isolation (§13) so the user's open editor buffers/uncommitted work are safe.
+- **Interface boundary specified now so it stays possible later** for Zed/Neovim: any editor that can speak the stdio JSON-RPC Agent API (LSP-adjacent) is a client. This is deliberately the **same shape as ACP** (Agent-Client Protocol, seen in the OpenHands agent-canvas clone, `research/00_METHOD.md`) so future editor clients are cheap. **[C:High]** on the boundary design; **[C:Med]** on VS Code extension polish timeline (Phase 10, brought forward as a named deliverable because the user requires it — see §25).
+
+### 18.6 Install story (decides adoption)
+
+| Path | Pros | Cons | Verdict |
+|---|---|---|---|
+| **npm (`npm i -g` / `npx clutchcode`)** | zero extra tooling for JS devs; matches runtime (§19) | needs Node | **primary for MVP** |
+| **Single binary (Bun compile / Node SEA)** + `curl \| sh` | no Node needed; Profile-D servers | build matrix; larger | **Phase 2** (broadens reach) |
+| **Homebrew / Scoop** | native feel | packaging upkeep | Phase 2 |
+| **VS Code Marketplace / OpenVSX** | discovery for editor users | review process | ships with the extension |
+
+**Metric to optimize: time-to-first-successful-task.** `agent init && agent doctor && agent run "..."` should reach a verified diff on a sample repo in minutes. `agent doctor` doing the local-model setup (§4.10) is the long pole for Profiles A/B/D and is why it's MVP. **[C:High]**
+
+---
+
+## 19. Technology Selection
+
+Each decision scored on: performance · implementation complexity · developer experience · **contributor availability (first-class OSS constraint)** · ecosystem maturity · security posture · maintenance · distribution · lock-in.
+
+### 19.1 Core runtime language
+
+| Option | Perf | Single-binary dist | Sandbox control | Editor integration | Contributor supply | AI/CLI ecosystem |
+|---|---|---|---|---|---|---|
+| **TypeScript/Node** | good (I/O-bound; model is the bottleneck) | via SEA/Bun (ok) | via subprocess to OS tools | **best (VS Code is TS)** | **very high** | strong CLI/TUI + MCP SDKs |
+| Bun (TS runtime) | better startup + `bun build --compile` | **good** | same as Node | same (VS Code still Node host) | high | growing |
+| Rust | best | **best** | **best (native Landlock/seccomp)** | needs TS extension shim | lower (steeper) | growing (Codex, goose) |
+| Go | great | **best** | good | needs TS extension shim | medium | good (crush) |
+| Python | fine | poor (packaging pain) | via subprocess | weaker | **highest (AI libs)** | **best AI libs** |
+
+**Decision: TypeScript on Node (targeting Bun-compatibility for single-binary builds).** **[C:High]**
+
+Reasoning tied to constraints:
+- **The dual-interface requirement decides it.** A first-class VS Code extension *must* be TypeScript (the extension host is Node). Choosing TS for the core means the CLI, TUI, and extension **share one runtime** (§18.1) — no reimplementation, no cross-language RPC to our own logic. Rust/Go would force a second language for the extension and a stable RPC to our own core; that doubles the surface and raises the contributor bar.
+- **Perf is not the bottleneck.** A coding agent is dominated by model latency (network or local inference), not harness CPU. TS's perf disadvantage vs Rust is largely irrelevant on the critical path; Codex chose Rust mainly for *sandbox control*, which we obtain by **shelling out to OS sandbox tools** (§12) instead.
+- **Contributor supply** (the first-class OSS constraint) is high for TS and highest for Python; TS beats Python on distribution and editor integration, and Python's packaging story is a real adoption tax for a CLI.
+- **Own the cost:** TS's weaknesses are (a) single-binary distribution — mitigated by Bun compile / Node SEA (§18.6, Phase 2) — and (b) native sandbox syscalls — mitigated by the **escape hatch below.**
+- **Escape hatch (specified):** performance- or sandbox-critical pieces are **process-boundary native helpers** (a small Rust/Go binary invoked over stdio) — e.g., a Linux Landlock/seccomp helper, or a fast indexer. The architecture already uses a process boundary for the sandbox and for editor clients, so adding a native helper is idiomatic, not a rewrite. Migration path if TS ever becomes limiting: move the runtime core to Rust behind the *same* Agent API, keeping the TS extension/CLI as clients (ADR-001).
+
+### 19.2 Other decisions
+
+| Decision | Choice | Confidence | Rationale / escape hatch |
+|---|---|---|---|
+| **Storage** | **SQLite** (runs/memory/traces) + **JSONL** (transcripts) + **`AGENTS.md`** (project memory, committed) | High | No server (contra Postgres). SQLite is embedded, offline, queryable; flat JSONL for append-only transcripts. |
+| **Sandbox** | tiered per §12.6 (Seatbelt / bwrap+Landlock / WSL2 / optional Docker) via subprocess + optional Rust helper | Med (Win weak) | OS primitives per their docs; Codex studied not copied (LICENSE §3). |
+| **Repo indexing** | ripgrep + on-demand tree-sitter (MVP); PageRank map (Phase 7); **no vector DB** | High | §9 — simplest thing that works; add tiers on measured need. |
+| **Internal API layer** | in-process for CLI; **stdio JSON-RPC** daemon boundary for editor clients (ACP-shaped) | High | No REST daemon by default (no open port, local-first §17). |
+| **Config format** | **TOML** for `agent.toml` (human) + **JSON-Schema** validation; workflows = typed TS DSL (built-ins) + JSON-Schema declarative (user) | Med | TOML is comment-friendly and unambiguous; schema gives validation + editor hints. |
+| **Packaging** | npm primary; Bun/SEA single-binary + Homebrew Phase 2; VS Code Marketplace/OpenVSX for extension | Med | §18.6; single-binary maturity is the risk. |
+| **Provider layer** | OpenAI-compatible-first + native Anthropic + native Ollama (MVP); Gemini + constrained-decode hooks (Phase 2) | High | §4.7 — one adapter covers the long tail incl. local servers. |
+
+**Explicit tension acknowledged (from the prompt):** Python maximizes AI-ecosystem libraries; Rust/Go maximize single-binary + sandbox; TypeScript maximizes CLI/TUI + editor integration. **We pick TypeScript, own the single-binary and native-syscall costs via Bun-compile + a process-boundary native helper, and gain the shared-runtime dual interface the product requires.** **[C:High]**
+
+---
+
+## 20. Repository Structure
+
+Monorepo (single repo, workspaces). Justification: the CLI, TUI, VS Code extension, and runtime **share the runtime package** and must version together; a monorepo keeps the Agent API contract and its clients in lockstep, and lets the model layer stay swappable behind a package boundary. Module boundaries below keep the model layer swappable and the tool layer testable (§2).
+
+```
+clutchcode/                      # monorepo (pnpm/bun workspaces), Apache-2.0, DCO
+├── packages/
+│   ├── runtime/                 # state machine, adaptation layer, budgets, loop detection (model-stubbable)
+│   ├── providers/               # Provider interface + adapters (OpenAI-compat, Anthropic, Ollama, Fake)
+│   ├── tools/                   # native tool set + tool interface + truncation
+│   ├── workflows/               # typed DSL + built-in workflows + JSON-Schema loader
+│   ├── sandbox/                 # tier engine + OS adapters (+ native helper bindings)
+│   ├── verification/            # pipeline, toolchain detect, cheat detection
+│   ├── memory/                  # session/project/long-term stores; AGENTS.md handling
+│   ├── git/                     # worktree isolation, checkpoints, diff, delivery
+│   ├── repo-intel/              # ripgrep+tree-sitter (MVP); pagerank map (later)
+│   ├── observability/           # event model, JSONL+SQLite, inspect/replay
+│   ├── agent-api/               # the Agent API: in-process + stdio JSON-RPC (ACP-shaped)
+│   └── capability/              # capability matrix, probe, profile persistence
+├── apps/
+│   ├── cli/                     # `agent` CLI + TUI (thin client of agent-api)
+│   └── vscode/                  # VS Code extension (thin TS client of agent-api over stdio)
+├── native/                      # optional Rust helper(s): landlock/seccomp, fast index (process-boundary)
+├── evals/                       # eval suite, scoreboard, recorded-transcript replay harness
+├── docs/                        # user docs, PRIOR_ART.md (attribution), adr/ (project's own ADRs)
+├── examples/                    # sample repos + AGENTS.md examples + workflow examples
+└── tests/                       # cross-package integration + the offline-completion release-gate test
+```
+
+Boundary rules: `runtime` depends on `providers`, `tools`, etc. **only through interfaces**; `providers/FakeProvider` enables model-stubbed tests everywhere (§2). `apps/*` depend only on `agent-api`, never reach into `runtime` internals — so the same API serves CLI and editor. **[C:High]**
+
+---
+
+## 21. MVP Boundary & Phasing Table
+
+**Aggressively small MVP.** It must do exactly this, well:
+
+```
+install → configure a provider (one API + one local) → open a repo → give a task →
+inspect files → edit files → run commands → run tests → repair failures →
+show diff → human approves → commit
+```
+
+Concretely, MVP = single agent, default workflow, one native tool set, **two provider adapters (OpenAI-compatible + Ollama)** so both an API user (Profile C) and a local user (Profile B/D) are covered day one, SEARCH/REPLACE edits with the fallback cascade, tiered sandbox Tier 0+1 (Seatbelt/bwrap; WSL2 doc for Windows), git worktree isolation, deterministic verification with cheat detection, terminal CLI/TUI, the capability probe, and the runtime-replay test harness. **The VS Code extension is a fast-follow** (the user requires it) — the Agent API boundary ships in MVP so the extension is a thin client, and the extension itself lands as the first post-MVP deliverable (§25 reorders it earlier than the prompt's Phase 10).
+
+**If a section of this spec has no MVP surface, it says so:** §7 Multi-Agent (none — Phase 9), §8 user-authored workflows (only built-ins in MVP), §9 PageRank map & vector DB (none — ripgrep+tree-sitter only), §16 full eval scoreboard (only the replay harness in MVP).
+
+### 21.1 Phase classification table
+
+| Capability | MVP | Phase 2 | Phase 3 | Future |
+|---|---|---|---|---|
+| CLI/TUI, `run/diff/approve/commit/inspect/doctor` | ✓ | | | |
+| OpenAI-compat + Ollama providers | ✓ | | | |
+| Capability probe + edit-format fallback | ✓ | | | |
+| SEARCH/REPLACE edits + whole-file fallback | ✓ | | | |
+| Shell + tests + toolchain autodetect | ✓ | | | |
+| Verification gate + **cheat detection** | ✓ | | | |
+| Git worktree isolation + diff review | ✓ | | | |
+| Sandbox Tier 0 + Tier 1 (mac/Linux) | ✓ | Windows/WSL2 hardening | Docker Tier 2 | microVM |
+| Runtime replay-test harness (§16.3c) | ✓ | | | |
+| **VS Code extension** (Agent API client) | API boundary only | **extension ships** | Zed/Neovim clients | |
+| Provider: Anthropic native, Gemini | Anthropic native | Gemini + constrained-decode | | |
+| Model routing (local↔API escalation) | | ✓ | | |
+| Memory: AGENTS.md read/write | basic read | correction UX (`agent memory`) | long-term history queries | |
+| Repo intel: ripgrep+tree-sitter | ✓ | | PageRank map | (vector DB only if proven) |
+| Workflow engine: built-ins | ✓ | user declarative workflows | | |
+| Eval scoreboard (SWE-bench subset) | | ✓ | full suite + published methodology | |
+| Multi-agent orchestration | | | | Phase 9 |
+| PR preparation, rollback, resume-hardening | | ✓ | | |
+| Single-binary + Homebrew install | | ✓ | | |
+
+**MVP feasibility check (self-review Q3, §29):** the MVP is one agent + one workflow + two providers + core tools + verification + worktree + TUI. That is buildable and dogfoodable by a very small team in a few weeks **because** the hardest, most novel piece (the capability-adaptation layer) has a small MVP surface: probe + edit-format select/fallback + context budget. The eval-replay harness is small and pays for itself immediately. **[C:Med]** (weeks is plausible but tight; sandbox Tier 1 per-OS and the probe are the schedule risks.)
+
+---
+
+## 22. Non-Goals (each with a one-line reason)
+
+- **Hosted SaaS** — contradicts local-first; no servers exist (§17).
+- **Accounts / billing / login** — nothing to authenticate to; users own keys (§5).
+- **Model training / fine-tuning** — we adapt *around* models; also constrained by provider ToS (LICENSE §5).
+- **A custom / proprietary model** — the model is replaceable, not ours (§2).
+- **RAG for its own sake / mandatory vector DB** — unjustified for our repos (§9).
+- **Plugin marketplace** — MCP is the extension boundary; a curated marketplace is scope creep and a security surface (§12).
+- **Enterprise / compliance features** (SSO, audit exports, RBAC) — wrong user (§3).
+- **Team collaboration / multiplayer** — individual-developer tool.
+- **Social features** — irrelevant.
+- **General-purpose autonomous agent platform** — we are a *coding* agent runtime, deliberately narrow.
+- **IDE fork** — we integrate with VS Code via extension, we do not fork an editor.
+- **Browser automation / computer-use** — out of scope; large security surface for little coding value.
+- **(added) Cloud-synced settings/memory** — memory is local + repo-committed (§10); no sync service.
+- **(added) Auto-push / auto-PR without explicit command** — delivery is always user-initiated (§13.5).
+- **(added) Being the best harness for a frontier model** — that is the vendor CLIs' game; we win on local/agnostic/verified (§1, §23).
+
+---
+
+## 23. Competitive Analysis — differentiators & failure modes
+
+Architecture only; marketing ignored. (Grok "Build"/xAI official CLI: **verified non-existent** at `xai-org/grok-cli`; the community `superagent-ai/grok-cli` exists — see `research/00_METHOD.md §4`. No official xAI coding CLI is claimed.)
+
+### 23.1 Feature/architecture matrix
+
+| Capability | Claude Code | Codex CLI | Aider | OpenHands | Cline | Goose | Continue | Archon | **ClutchCode** |
+|---|---|---|---|---|---|---|---|---|---|
+| License | Proprietary | Apache-2.0 | Apache-2.0 | MIT | Apache-2.0 | Apache-2.0 | Apache-2.0 | MIT | **Apache-2.0** |
+| Open source | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Local model first-class | ✗ | partial | ✓ | ✓ | ✓ | ✓ | ✓ | n/a | **✓ (adaptation layer)** |
+| **Per-model capability adaptation** | n/a | ~ | edit-fmt/model | ~ | ~ | ~ | routing | n/a | **✓ (probe+matrix)** |
+| Edit format | (bundle) | apply_patch | **search/replace (leader)** | LLM/ACI | XML search/replace | tools | apply | n/a | search/replace+fallback |
+| Verification-gated completion | partial | partial | lint/test | tests | tests | ~ | ✗ | n/a | **✓ + cheat detection** |
+| **Cheat detection** | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | n/a | **✓ (differentiator)** |
+| Sandbox | (managed) | **strong (Seatbelt/Landlock)** | confirm-only | **Docker (strong, heavy)** | approve | ~ | ✗ | n/a | tiered, laptop-first |
+| Git worktree isolation | ~ | ~ | dirty-commit | container fs | shadow-git checkpoints | ~ | ✗ | n/a | **✓ per-run worktree** |
+| Terminal | ✓ | ✓ | ✓ | (web) | ✗ (editor) | ✓ | ✗ | n/a | **✓** |
+| VS Code extension | (ecosystem) | ~ | ~ | ~ | **✓ (native)** | ✗ | **✓** | n/a | **✓ (same runtime)** |
+| Resumable RunState | ~ | session | chat hist | **✓ (State)** | task+ckpt | ~ | n/a | n/a | **✓** |
+| Telemetry-free / no-server | ✗ | config | ✓ | self-host | config | config | config | server | **✓ (by design, tested)** |
+| MCP support | ✓ | ✓ | ~ | ✓ | ✓ | **✓ (core)** | ✓ | ✓ (server) | ✓ (extension boundary) |
+
+(~ = partial/qualified; based on the repo notes and `research/00_METHOD.md`; several cells `UNVERIFIED:` at feature granularity.)
+
+### 23.2 The two–three defensible differentiators
+
+1. **Capability-adaptation layer that makes weak/local models usable** (§4) — probe + edit-format fallback + tool-call emulation + context budgeting. No competitor treats "adapt the harness to the model's measured ability" as the core product; most assume a capable model.
+2. **Verification-first completion with cheating detection** (§14) — a green checkmark that the agent *earned* and did not fake. The cheat-detection layer (§14.6) is, per this research, **not present in any reference project** and is high-value.
+3. **Laptop-appropriate security + true local-first** (§12, §17) — tiered OS sandbox (Docker optional, not mandatory) + a tested offline path + no servers/telemetry. This is a *combination* none of the competitors hit for the individual developer.
+
+### 23.3 Where each competitor is simply better (and will stay better)
+
+- **Claude Code / Codex:** on their own frontier model, their tuned harness will beat ours; they ship faster with lab resources. We do not contest that ground.
+- **Aider:** raw edit-application maturity and the published edit-format leaderboard — years of tuning we will not match soon; we adopt its lessons.
+- **OpenHands:** Docker-based isolation is genuinely stronger than our default tier, and its research/benchmark infrastructure is more mature.
+- **Cline:** deeper, more polished VS Code integration today (it *is* a VS Code extension); our extension will trail its editor UX for a while.
+- **Goose:** more mature MCP-centric extensibility.
+- **Continue:** more mature model-routing/config breadth and editor breadth.
+
+### 23.4 Differentiators we cons/could NOT substantiate — killed
+
+- "Faster than the vendor CLIs" — **killed**; unsubstantiated and irrelevant (model-bound).
+- "Better multi-agent orchestration" — **killed**; we argue *against* default multi-agent (§7).
+- "A vector-DB-powered deep code understanding" — **killed**; unjustified (§9).
+- "More secure than Docker-based tools" — **killed**; our default tier is *lighter*, not stronger, than Docker (§12.7 is explicit).
+
+### 23.5 Why this project might fail (honest)
+
+- **Vendor CLIs improve faster** and subsume "local model support" enough to erase differentiator #1.
+- **Local models stay too weak** for real tasks even with adaptation — if the §16.4 VTCR delta is small, the core claim collapses.
+- **Maintainer bandwidth** — a runtime + adaptation layer + sandbox tiers + VS Code extension is a lot for a small team; scope discipline (§21 MVP) is survival, not neatness.
+- **Security incident** — we execute LLM-generated code; one bad sandbox-escape headline could end trust. §12.7's honesty is partly reputational insurance.
+- **Ecosystem consolidation around one agent protocol** (MCP/ACP) could commoditize the harness layer, making "yet another runtime" redundant — mitigated by leaning into those protocols as a client rather than fighting them.
+- **The "adapt to weak models" bet is contrarian**: if the world simply gets cheap strong models, the adaptation layer's value shrinks. We accept this bet knowingly; the local-first/privacy/no-lock-in axis remains even then.
+
