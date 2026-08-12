@@ -12,7 +12,7 @@
 
 1. **We adopt Apache-2.0** for ClutchCode (argued in §3).
 2. **We use DCO, not a CLA** (argued in §4).
-3. **No third-party source is copied.** Every reference repo is **STUDY-ONLY** for *expression* (their specific code). We may reimplement *patterns/ideas* clean-room. Ideas are not copyrightable; expression is.
+3. **Reuse posture (amended 2026-08-12 by product-owner direction — see `EXECUTION.md §0.5`):** we now **fork-and-extend a permissively-licensed base** (Apache-2.0 or MIT) rather than pure clean-room, to guarantee we are not inferior to the top tools. Forking those bases is legal **with attribution** (preserve `LICENSE`+`NOTICE`, state changes, don't use their marks); this moves them from STUDY-ONLY to **REUSE-WITH-ATTRIBUTION** for the chosen base. **Unchanged hard limits:** Claude Code stays **STUDY-ONLY** (proprietary — never fork); **prompt text** from any tool stays STUDY-ONLY (authored from scratch); **no GPL/AGPL** deps; and inherited **sandbox/exec code is security-audited**, not blind-trusted. Ideas remain free; the only thing we still refuse to copy is proprietary code and creative prompt text.
 4. **All extracted system-prompt text is STUDY-ONLY and must never be pasted** into our prompts, tests, or fixtures — including paraphrase-close copies. (§7)
 5. **Claude Code is proprietary** (Anthropic Commercial ToS). We read its *docs and public markdown artifacts only*, never decompile the bundle, and never reproduce its prompts or code. (row in §2)
 6. **Provider ToS constrain our eval/telemetry** — several providers forbid using their outputs to train/improve a "competing model." We don't train models, but our eval-transcript storage must not be repurposed as training data, and we must document this. (§6)

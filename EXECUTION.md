@@ -18,7 +18,34 @@
 - `research/**` — provenance (`00_METHOD.md`), 11 repo notes, 6 cross-cutting comparisons, Tier-3 prior art.
 - Reference repos cloned to `/tmp/agent-research/repos/` (external to our tree; nothing third-party in our git history).
 
-**Starts now (this doc):** the build. Real product, Rust stack, learning system from day one.
+**Starts now (this doc):** the build. Real product, learning system from day one.
+
+---
+
+## 0.5 Strategy update (product-owner direction): fork-and-extend + bring-your-own-key
+
+Two directives set after the spec, both honored here:
+
+### (a) Build ON TOP of a mature base — don't start from zero
+To guarantee ClutchCode is **not inferior to the top tools in any way**, we **fork and extend** a mature, permissively-licensed reference project instead of pure clean-room reimplementation. This is legal for **every top repo except Claude Code** (proprietary):
+- **Apache-2.0 (fork freely; keep `LICENSE`+`NOTICE`, state changes, don't use their marks):** Codex, Aider, Cline, Continue, Roo, goose.
+- **MIT (fork freely; keep copyright+license):** OpenHands, opencode, Crush, Kilo, gptme, smolagents, SWE-agent.
+
+**Honest costs we accept when forking** (none are blockers): inherit the base's stack + attribution obligations; **strip any telemetry** (e.g. Codex's `analytics`) to honor no-telemetry; **rename** + imply no endorsement; **security-audit the sandbox/exec code we inherit** (we ship a tool that runs LLM code — inherited isolation gets reviewed, not trusted). We record provenance in `docs/PRIOR_ART.md` and preserve upstream `NOTICE`.
+
+**Base repo = the pivotal decision (see below / confirm before M1).** Leading candidate: **fork Codex** — it uniquely already gives us Rust + `ratatui` TUI (the "like Codex" UI, because it *is*), a real Landlock/seccomp/Seatbelt/bwrap **sandbox**, `apply_patch`, **MCP**, an **app-server** the VS Code extension can hang off, and **multi-provider via OpenAI-compatible config** — all Apache-2.0. We then ADD our differentiators (multi-provider BYO-key polish, CEM, verification+cheat-detection, local-first hardening). Alternative if VS-Code-first + fastest multi-provider matters more than a Codex-class TUI: **fork Cline** (Apache-2.0, TS, already multi-provider incl. Claude/GPT/Groq/Ollama, already VS Code-native).
+
+### (b) Bring-your-own-key is first-class — any provider, and we're "not less"
+**With a user's own frontier key (Claude/GPT/Groq/…), ClutchCode runs the same model the paid tools run — so on capability we are not inferior; we add verification + worktree safety + CEM on top.** The provider layer (spec §4.7) makes this concrete:
+
+| Path | Providers covered | Adapter |
+|---|---|---|
+| **OpenAI-compatible** (one adapter) | OpenAI, **Groq**, OpenRouter, DeepSeek, Together, Fireworks, Mistral, xAI/Grok, **Ollama, llama.cpp, vLLM, LM Studio** | `providers/openai-compat` (base_url + key) |
+| **Anthropic native** | **Claude** (tool use, prompt caching) | `providers/anthropic` |
+| **Gemini native** | Google Gemini | `providers/gemini` (Phase 2) |
+| **fake** | tests (no key, no GPU) | `providers/fake` |
+
+**BYO-key UX:** `clutch providers add anthropic` → prompt for key → **OS keychain** (env-var escape hatch; `.env.example` shipped, never a real key) → `clutch models` lists what's reachable → `clutch config set model <id>`. `clutch doctor` shows which providers have keys and which local servers are up. Each provider gets a **capability profile** (native tools? parallel? caching? effective context) so the adaptation layer (§4) drives it correctly. **A frontier key and a local model are the same code path** — only the adapter + capability profile differ. This is a **hard requirement from M1** (the OpenAI-compatible adapter) and M2 (Anthropic native + local), not a later add-on.
 
 ---
 
@@ -150,7 +177,7 @@ The clones live at `/tmp/agent-research/repos/` (re-clone with `research/00_METH
 2. **Distinctive subsystems are CLEAN-ROOM:** spec author ≠ code author; author writes from behavior/OS-docs, not from the reference's source open in another window.
 3. **Permissive libraries + open protocols (MCP/ACP) are fair reuse** with attribution in `docs/PRIOR_ART.md` and Cargo metadata.
 4. **No GPL/AGPL runtime deps** (CI license-scanner blocks them; keeps us Apache-2.0-clean).
-5. **No wholesale fork** of any agent — provenance/coupling/attribution cost is not worth it; we own a clean codebase (the security story depends on it).
+5. **Fork-and-extend is now allowed and encouraged** on a permissively-licensed base (§0.5) — this supersedes the earlier "no wholesale fork" stance. When we fork: preserve `LICENSE`+`NOTICE`, record provenance in `docs/PRIOR_ART.md`, strip telemetry, rename, and **security-audit inherited sandbox/exec code**. We still write our *differentiators* (CEM, verification, multi-provider polish) as clean, owned code, and prompt text is still authored from scratch (Claude Code prompts remain STUDY-ONLY).
 
 ---
 
