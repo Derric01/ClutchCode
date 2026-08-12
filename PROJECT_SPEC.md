@@ -1272,3 +1272,242 @@ Architecture only; marketing ignored. (Grok "Build"/xAI official CLI: **verified
 - **Ecosystem consolidation around one agent protocol** (MCP/ACP) could commoditize the harness layer, making "yet another runtime" redundant — mitigated by leaning into those protocols as a client rather than fighting them.
 - **The "adapt to weak models" bet is contrarian**: if the world simply gets cheap strong models, the adaptation layer's value shrinks. We accept this bet knowingly; the local-first/privacy/no-lock-in axis remains even then.
 
+
+## 24. Final Architecture
+
+### 24.1 Authoritative diagram
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ INTERFACE                                                                  │
+│   CLI / TUI  (apps/cli)          VS Code extension (apps/vscode)            │
+└───────────────┬──────────────────────────┬────────────────────────────────┘
+                │ in-process                │ stdio JSON-RPC (ACP-shaped)
+                ▼                            ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ AGENT API (packages/agent-api)  — one contract, two bindings               │
+└───────────────┬────────────────────────────────────────────────────────────┘
+                ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ RUNTIME (packages/runtime)                                                 │
+│  Planner · Context/Retrieval · Memory · Tool Router · State machine ·      │
+│  Budget/Policy guard · Loop detector                                        │
+│                     ▲                    │                                  │
+│      capability     │                    ▼                                  │
+│      profile ───► ADAPTATION LAYER (packages/capability)                    │
+│                   edit-format select · tool transport · context budget      │
+└───────────────┬────────────────────────────────────────────────────────────┘
+                ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ PROVIDER LAYER (packages/providers) — capability-aware adapters             │
+│  OpenAI-compat · Anthropic · Ollama · (Gemini) · FakeProvider(CI)          │
+└───────────────┬───────────────┬────────────────────────────────────────────┘
+                │               │
+    remote API  │               │ localhost (Ollama/llama.cpp/vLLM/LM Studio/MLX)
+                ▼               ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ TOOLS (packages/tools)  fs · shell · git · search · tests · pkg · process   │
+└───────────────┬────────────────────────────────────────────────────────────┘
+                ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ SANDBOX (packages/sandbox)  Tier0 policy · Seatbelt/bwrap+Landlock/WSL2 ·   │
+│   optional Docker · child-env scrub · egress default-deny  (+native/ helper)│
+└───────────────┬────────────────────────────────────────────────────────────┘
+                ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ VERIFICATION (packages/verification) build·test·lint·type·scan·cheat-detect │
+└───────────────┬────────────────────────────────────────────────────────────┘
+                ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ GIT / DELIVERY (packages/git)  worktree isolation · checkpoints · diff · PR │
+└──────────────────────────────────────────────────────────────────────────┘
+   cross-cutting: MEMORY (session/project/long-term) · OBSERVABILITY (JSONL+SQLite, redacted)
+```
+
+### 24.2 Data model (runs, steps, tool calls, artifacts, memory)
+
+```
+Run(run_id PK, task, workflow_id, provider, model, capability_profile_id,
+    base_commit, branch, worktree_path, state, final_status, termination_reason,
+    tokens_in, tokens_out, tokens_cached, cost, started_at, ended_at)
+Step(step_id PK, run_id FK, seq, state, kind[plan|inspect|act|edit|verify|repair],
+     started_at, ended_at)
+ToolCall(tc_id PK, step_id FK, tool, args_json, permission_decision, ok, error_class,
+         output_ref, truncated, duration_ms)
+Edit(edit_id PK, step_id FK, path, format, applied[bool], failed_block?, checkpoint_commit)
+VerifyResult(vr_id PK, run_id FK, stage, status, summary, cheat_flags_json)
+Artifact(artifact_id PK, run_id FK, kind[diff|log|report|subagent_out], path, sha256)
+Event(run_id FK, seq, ts, type, data_json)        -- append-only JSONL, indexed here
+--- memory ---
+ProjectFact(repo_id, key, value, derived_at, source, stale[bool])       -- derived cache
+MemoryDoc = AGENTS.md (in-repo, not in DB)                              -- human canonical
+LongTermDecision(id, repo_id, title, context, decision, outcome, ts)   -- ADR-like history
+CapabilityProfile(model_id PK, tool_transport, diff_acc, effective_ctx,
+         constrained_decode, instruction_fidelity, probed_at)          -- TOML on disk + DB
+```
+
+### 24.3 Main sequence for one task run
+
+```
+1. user: `agent run "fix the failing auth test"`  (TTY → interactive)
+2. Runtime: create Run; if git → worktree add (branch clutchcode/run-…) from HEAD (§13.1)
+3. load capability profile for the configured model (probe if missing, §4.9)
+4. UNDERSTANDING: read AGENTS.md (§10); toolchain autodetect (§14.2, from cache if fresh)
+5. PLANNING (only if task warrants, §6.7): cheap model call → plan[]
+6. INSPECTING: ripgrep/tree-sitter retrieval (§9), bounded by context budget (§4.5);
+   open only needed file windows
+7. ACTING/EDITING loop:
+     adaptation layer picks edit format + tool transport (§4.2)
+     model proposes edit → parse/validate → apply cascade (§4.4)
+       on fail → repair prompt → (downgrade format) → escalate if capped
+     tool calls (shell/tests) go through policy engine (§12.2) + sandbox (§12.6);
+       output truncated at ingestion (§11.3)
+8. VERIFYING: build→test(selected §14.4)→lint→type→scan→cheat-detect (§14)
+     fail → classify (§14.5) → REPAIRING → back to 7 (cap MAX_REPAIR_ITERS)
+     cheat flag → force human review
+9. AWAITING_APPROVAL: show diff (worktree vs base) + verify summary; user approves/edits/rejects (§18.3)
+10. COMMITTING: message gen, run user's pre-commit hooks, commit onto branch (§13.5)
+11. run.end: status DONE-SUCCESS (contract met §14.7); events flushed; worktree kept for `inspect`
+   (every step above emits Events (§15); at any point Ctrl-C → PAUSED+resumable, §6.5)
+```
+
+### 24.4 Failure & escalation paths
+
+```
+Model error (bad edit/tool) ─► repair prompt ─► format downgrade ─► escalate(human) at cap
+Tool error (bad args)       ─► structured error to model ─► self-correct
+Environment error (no tool/net/OOM) ─► NOT model's problem ─► surface to human/doctor
+                                        (local OOM ─► suggest lower quant/context §4.10)
+Task error (tests fail)     ─► classify ─► repair loop ─► escalate at MAX_REPAIR_ITERS
+Cheat detected              ─► block success ─► force human review (§14.6)
+Budget/cost hit             ─► pause ─► human extends or stops (§6.3)
+Loop/thrash                 ─► inject "already tried" ─► re-plan ─► escalate (§6.4)
+Sandbox denial              ─► ASK (if askable) or DENY+log ─► human decides (§12.2)
+Any escalation surfaces in the TUI/editor AND in `agent inspect` as a first-class event.
+```
+
+---
+
+## 25. Implementation Roadmap
+
+Dependency-aware. **Reordering vs the prompt's suggested phases, with justification:** (a) the **eval replay-harness is pulled into Phase 1** (it is what makes every later phase testable, §16.3c); (b) the **VS Code extension is pulled forward** from "Phase 10" to Phase 3–4 as a named deliverable, because the user requires terminal *and* editor from the outset and the Agent API boundary exists in Phase 1; (c) **provider abstraction + local support is Phase 1-2 co-located**, since MVP already needs Ollama.
+
+| Phase | Deliverables | Depends on | Tests | Key risks | Definition of Done | Rough effort |
+|---|---|---|---|---|---|---|
+| **0** | This spec + license analysis + research notes | — | n/a | scope creep | reviewed, decisions made | (done) |
+| **1** | Minimal agent: OpenAI-compat provider, RunState machine, native tools (fs/shell/search/tests), SEARCH/REPLACE + fallback, git worktree isolation, deterministic verify (build/test), TUI `run/diff/approve/commit/inspect`, **Agent API boundary**, **replay-test harness + FakeProvider + redaction canary** | 0 | unit (tools, edit cascade, state machine) + replay | edit-apply correctness; worktree edge cases | one real bug fixed on a sample repo end-to-end, verified+committed; replay tests green offline | **largest phase** |
+| **2** | Provider abstraction hardened + **Ollama/local** + **capability probe** + context budgeter + Anthropic native | 1 | probe scoring; budget tests; local-offline test | probe reliability across models | `agent doctor` sets up a local model + probe; offline task passes | large |
+| **3** | Tool system polish + **permission/policy engine** + sandbox Tier 0 + Tier 1 (mac Seatbelt / Linux bwrap+Landlock) | 1 | policy decision tests; sandbox confinement tests (canary) | per-OS sandbox correctness | denylist+egress+destructive-gate enforced & tested | medium-large |
+| **4** | **Verification pipeline full** (lint/type/scan) + **cheat detection** + toolchain autodetect + repair loop caps; **VS Code extension MVP** (same Agent API) | 1,3 | cheat-detection unit corpus; extension e2e | cheat-detection false-pos/neg | cheat corpus caught; extension runs a task+diff-review | medium-large |
+| **5** | Git: checkpoints/rollback (incl. untracked), dirty-tree handling, submodule/LFS/monorepo cases, PR prep | 1 | rollback tests incl. untracked; edge-case matrix | untracked rollback correctness | all §13.4 cases handled or explicitly deferred | medium |
+| **6** | Workflow engine: typed built-ins + JSON-Schema user workflows + versioning/migration | 1 | schema validation; migration | over-engineering | 3 built-ins + 1 user workflow validated | medium |
+| **7** | Memory (AGENTS.md read/write + correction UX) + repo-intel tier-1 (PageRank map) | 1,2 | memory staleness/invalidation; map accuracy | stale-memory correctness | `agent memory` correct/forget works; map improves retrieval metric | medium |
+| **8** | **Eval scoreboard** (SWE-bench Verified subset + Terminal-Bench-style + realistic suite) + published "local-model usability" methodology | 1,2,4 | scoreboard reproducibility | benchmark flakiness | VTCR delta (§16.4) measured + reported per tier | medium |
+| **9** | Multi-agent orchestration (contracts, worktree isolation, concurrency) — only if §7 rule justifies | 1,5 | subagent contract + partial-failure tests | complexity/cost | parallel independent subtask demo beats single-agent on a real case | medium |
+| **10** | Editor breadth (Zed/Neovim clients via Agent API) + single-binary/Homebrew install | 4 | client conformance | protocol churn | a 2nd editor client works unchanged against the API | medium |
+| **11** | Security hardening + release engineering (audit, threat-model review, signed releases, Windows/WSL2 hardening) | all | pen-test checklist; supply-chain | the security-incident risk (§23.5) | external review of §12; signed release; §12.7 doc final | ongoing |
+
+**First dogfooding milestone: end of Phase 1.** As soon as the minimal agent can fix a real bug on a sample repo with verification + worktree + diff-review, **we use ClutchCode to build ClutchCode** (the monorepo is its own best test repo). Everything after Phase 1 is developed partly by the tool itself, which is both a productivity win and continuous dogfood-driven eval. **[C:High]**
+
+---
+
+## 26. Architecture Decision Records
+
+Format: ID · Title · Status · Context · Decision · Alternatives · Why rejected · Consequences (incl. bad) · Reversal cost · Migration path. **One-way doors marked ⛔.**
+
+**ADR-001 ⛔ · Core runtime language = TypeScript/Node.** *Status:* Accepted. *Context:* need one runtime shared by CLI, TUI, and a required VS Code extension; §19. *Decision:* TypeScript on Node (Bun-compatible). *Alternatives:* Rust, Go, Python, Bun-only. *Why rejected:* Rust/Go force a second language for the extension + RPC to our own core; Python has weak CLI distribution + editor integration; perf isn't the bottleneck. *Consequences:* single shared runtime, huge contributor pool; **bad:** weaker single-binary story (mitigated Bun/SEA) and no native syscalls (mitigated by native/ helper). *Reversal:* **one-way-ish** — moving the core to Rust later means a rewrite, though the Agent API boundary lets clients survive. *Migration:* reimplement `packages/runtime` behind the same Agent API.
+
+**ADR-002 · Edit format default = SEARCH/REPLACE with exact-tolerant fallback, NO fuzzy apply.** *Status:* Accepted. *Context:* §4.3–4.4; Aider's disabled fuzzy matcher. *Decision:* SEARCH/REPLACE default; cascade exact→whitespace→blank-line→dotdotdots→fail-loud; downgrade to whole-file on repeated failure. *Alternatives:* unified diff default; JSON edits; fuzzy apply. *Why rejected:* diff/JSON weaker on local models; fuzzy silently misapplies (learned lesson). *Consequences:* robust on weak models; **bad:** whole-file fallback costs tokens. *Reversal:* moderate (edit-format is behind the adaptation layer). *Migration:* add formats as new selectable strategies.
+
+**ADR-003 ⛔ · Config schema/contract = TOML + JSON-Schema.** *Status:* Accepted. *Context:* §19.2. *Decision:* `agent.toml` validated by JSON-Schema; workflows typed-DSL + declarative schema. *Alternatives:* YAML, code-only. *Why rejected:* YAML control-flow temptation (§8); code-only hurts non-dev editing. *Consequences:* validation + editor hints; **bad:** two workflow authoring modes. *Reversal:* **hard once users have config files** — schema changes need migrations (built in, §8.2). *Migration:* `apiVersion` + migration functions.
+
+**ADR-004 ⛔ · Edit isolation = git worktree per run.** *Status:* Accepted. *Context:* §13. *Decision:* every run edits in its own worktree/branch off HEAD. *Alternatives:* edit-in-place with backups (Aider-style dirty commits); container fs (OpenHands). *Why rejected:* in-place risks the user's tree; container is heavy (§12.5). *Consequences:* main tree safe; **bad:** worktree setup cost + non-git fallback needed (§13.4). *Reversal:* moderate. *Migration:* the non-git snapshot path already generalizes.
+
+**ADR-005 · Sandbox = tiered OS primitives, Docker optional (not default).** *Status:* Accepted. *Context:* §12.5–12.6, laptop reality. *Decision:* Tier0 policy + Tier1 Seatbelt/bwrap+Landlock/WSL2; Docker = opt-in Tier2. *Alternatives:* Docker-default (OpenHands); no sandbox (Aider). *Why rejected:* Docker default gets disabled on laptops; no-sandbox is unsafe. *Consequences:* always-on lightweight safety; **bad:** weaker than Docker (stated §12.7); Windows weak. *Reversal:* cheap (add tiers). *Migration:* Docker/microVM as higher tiers.
+
+**ADR-006 · No vector DB; ripgrep+tree-sitter, PageRank later.** *Status:* Accepted. *Context:* §9. *Decision:* simplest retrieval that works; add tiers on measured need. *Alternatives:* embeddings from day one. *Why rejected:* dependency weight, staleness, VRAM contention, unproven gain. *Consequences:* zero index cost; **bad:** weaker fuzzy/concept search. *Reversal:* cheap (additive). *Migration:* add embeddings behind the retrieval interface if §16.2 metric demands.
+
+**ADR-007 · Storage = SQLite + JSONL + AGENTS.md.** *Status:* Accepted. *Context:* §10,§15,§19.2. *Decision:* embedded SQLite + append-only JSONL + in-repo AGENTS.md. *Alternatives:* Postgres, flat-files-only. *Why rejected:* Postgres needs a server (contra §17); flat-only is unqueryable. *Consequences:* offline, queryable, no server; **bad:** SQLite concurrency limits (fine single-user). *Reversal:* cheap. *Migration:* SQLite→libSQL/Postgres if ever multi-user (a non-goal).
+
+**ADR-008 · Provider abstraction = OpenAI-compatible-first + native Anthropic/Ollama.** *Status:* Accepted. *Context:* §4.7. *Decision:* one OpenAI-compat adapter covers the long tail incl. local servers. *Alternatives:* per-provider SDKs only. *Why rejected:* N SDKs = N maintenance. *Consequences:* broad coverage fast; **bad:** provider-specific features (caching, thinking) need native paths. *Reversal:* cheap (adapters are pluggable). *Migration:* add native adapters as needed.
+
+**ADR-009 · Completion contract = deterministic gate + no-cheat + human approval.** *Status:* Accepted. *Context:* §14. *Decision:* success requires green checks, zero cheat flags, and (interactive) human approval. *Alternatives:* model-self-report; tests-only. *Why rejected:* self-report is the problem; tests-only is gameable (§14.6). *Consequences:* trustworthy "done"; **bad:** more friction; `--yes` still enforces gate+no-cheat. *Reversal:* moderate (it's core to the value prop). *Migration:* tune per-stage strictness.
+
+**ADR-010 · Single agent by default; multi-agent opt-in (Phase 9).** *Status:* Accepted. *Context:* §7. *Decision:* one agent + sub-steps; delegate only under the §7.1 rule. *Alternatives:* multi-agent-by-default (market fashion). *Why rejected:* handoff loss, cost×N, latency, error compounding. *Consequences:* cheaper, debuggable; **bad:** genuinely-parallel tasks wait until Phase 9. *Reversal:* cheap (additive). *Migration:* the AgentContract (§7.2) is specified now.
+
+**ADR-011 · Interface = CLI/TUI-first core + VS Code as first-class Agent-API client (stdio JSON-RPC, ACP-shaped).** *Status:* Accepted. *Context:* §18; user requires both. *Decision:* one Agent API, two+ clients. *Alternatives:* web-first; extension with its own agent logic. *Why rejected:* web tempts a server (contra §17); duplicated logic diverges. *Consequences:* editor breadth is cheap; **bad:** stdio-RPC protocol to design/version. *Reversal:* moderate. *Migration:* protocol versioning; ACP alignment.
+
+**ADR-012 · License = Apache-2.0; contributions via DCO.** *Status:* Accepted. *Context:* LICENSE analysis. *Decision:* Apache-2.0 + DCO. *Alternatives:* MIT, AGPL, BSL; CLA. *Why rejected:* MIT lacks patent grant; AGPL/BSL hurt adoption for a local tool with no service to protect; CLA implies capture. *Consequences:* patent grant + adoption + no-capture; **bad:** relicensing later needs all contributors. *Reversal:* **⛔ effectively one-way** (intended permanence). *Migration:* none desired.
+
+**ADR-013 · No telemetry, no servers.** *Status:* Accepted. *Context:* §15,§17,§19,§21. *Decision:* all data local; OTel optional exporter only; offline path is a release gate. *Alternatives:* anonymous telemetry. *Why rejected:* contradicts the trust proposition. *Consequences:* privacy by construction; **bad:** no usage analytics to guide dev (we rely on local eval + community reports). *Reversal:* would break trust; treat as ⛔ culturally. *Migration:* n/a.
+
+**ADR-014 · Reference projects are STUDY-ONLY; high-risk subsystems CLEAN-ROOM.** *Status:* Accepted. *Context:* LICENSE §3,§7. *Decision:* patterns in, expression out; spec-author ≠ code-author for edit format, patch, sandbox, repo-map, prompts. *Alternatives:* copy permissively-licensed code with attribution. *Why rejected:* provenance/audit burden; prompt copyright. *Consequences:* clean codebase; **bad:** slower (reimplement). *Reversal:* n/a (compliance). *Migration:* n/a.
+
+**ADR-015 · Capability probe persisted per model.** *Status:* Accepted. *Context:* §4.9. *Decision:* probe once, store profile, drive adaptation. *Alternatives:* static per-model tables; probe every run. *Why rejected:* static rots; per-run wastes tokens. *Consequences:* self-tuning to new models; **bad:** probe must be cheap+reliable (schedule risk). *Reversal:* cheap. *Migration:* fall back to static defaults if probe fails.
+
+**ADR-016 · Extracted prompts are STUDY-ONLY; our prompts written from scratch.** *Status:* Accepted. *Context:* LICENSE §7. *Decision:* original prompts; reviewer confirms independence. *Alternatives:* adapt others' prompts. *Why rejected:* prompts are copyrightable. *Consequences:* legal safety; **bad:** re-derive prompt quality via eval. *Reversal:* n/a. *Migration:* n/a.
+
+**ADR-017 · MCP is the third-party tool boundary; small native core.** *Status:* Accepted. *Context:* §11.2. *Decision:* native core tools + MCP for extensions, treated as untrusted. *Alternatives:* everything-as-plugin; no extension boundary. *Why rejected:* plugins-everywhere bloats core; no-extensions limits reach. *Consequences:* fast core + open extension; **bad:** MCP = injection surface (controls in §12). *Reversal:* cheap. *Migration:* add plugin ABI if needed.
+
+**ADR-018 · Cheating detection is a required verification stage.** *Status:* Accepted. *Context:* §14.6. *Decision:* diff-based cheat detectors block success. *Alternatives:* trust green tests. *Why rejected:* agents game tests; unaddressed elsewhere. *Consequences:* trustworthy completion + a differentiator; **bad:** false positives annoy (tuned via §16.2 corpus). *Reversal:* moderate (core value). *Migration:* expand detector set.
+
+**ADR-019 · Network egress default-deny with allowlist.** *Status:* Accepted. *Context:* §12. *Decision:* deny egress by default; allowlist for registries/approved hosts; ASK to add. *Alternatives:* allow-all. *Why rejected:* exfiltration + supply-chain. *Consequences:* strong anti-exfil; **bad:** breaks installs/tests needing network until allowlisted (documented UX). *Reversal:* cheap (config). *Migration:* per-repo allowlists.
+
+**ADR-020 · Runtime is model-stubbable; replay-tests land in Phase 1.** *Status:* Accepted. *Context:* §2,§16.3. *Decision:* FakeProvider + recorded-transcript replay from the start. *Alternatives:* test against live models. *Why rejected:* nondeterministic, costs tokens, slow. *Consequences:* refactor-safe runtime, offline CI; **bad:** must maintain transcript fixtures. *Reversal:* n/a (foundational). *Migration:* n/a.
+
+---
+
+## 27. ASSUMPTIONS register
+
+| # | Assumption | Owner | Decision needed |
+|---|---|---|---|
+| A1 | Product name "ClutchCode" (matches repo) is acceptable and trademark-clearable. | maintainers | confirm name + clear TM before release (LICENSE §6) |
+| A2 | Target = individual devs on Profiles A–D; no enterprise features in scope. | product | confirmed by prompt §2; hold the line vs scope creep |
+| A3 | "A few weeks by a very small team" for MVP means ~2–4 engineers, several weeks; the estimate is tight. | eng lead | confirm team size; adjust Phase 1 scope if smaller |
+| A4 | Users can install a local model server (Ollama/llama.cpp) themselves; `agent doctor` assists but doesn't bundle a server. | product | decide whether to bundle/manage a server (bigger install) |
+| A5 | Bun-compile / Node SEA is mature enough for a single binary by Phase 2. | eng | validate on the build matrix early |
+| A6 | VS Code extension can spawn/attach the runtime over stdio without Marketplace policy issues. | eng | prototype the extension host boundary in Phase 3 |
+| A7 | Provider ToS permit our (non-training) eval-transcript storage; local models have none. | maintainers | re-read each provider ToS at ship (LICENSE §5) |
+| A8 | tree-sitter grammars cover the languages our users care about; missing grammars degrade to ripgrep. | eng | pick the initial language set from eval suite |
+| A9 | The "adapt-to-weak-models" bet has a real, measurable VTCR delta (§16.4). | research | prove/disprove in Phase 8; it validates the whole project |
+| A10 | Reference-project architecture claims are current as of the 2026-08-12 clones; they will rot. | research | re-verify before relying on any claim in build |
+| A11 | Windows users can/will use WSL2 for the strong sandbox tier; native Windows sandbox stays weak. | eng | decide Windows support level for MVP (doc-only vs code) |
+
+## 28. OPEN QUESTIONS register
+
+| # | Question | Owner | Decision needed / by when |
+|---|---|---|---|
+| Q1 | Exact current retention/training clauses per provider for the honesty disclosure (§5.5). | maintainers | before first release |
+| Q2 | Which SWE-bench Verified subset + how many realistic hand-built tasks constitute the eval suite (§16.3)? | research | before Phase 8 (design earlier) |
+| Q3 | Cheat-detection false-positive tolerance + the labeled corpus to tune it (§14.6, §16.2). | eng+research | Phase 4 |
+| Q4 | Default cost ceiling + step/wall-clock budgets that balance capability vs runaway (§6.3). | product | Phase 1 default, tune via eval |
+| Q5 | Windows MVP posture: WSL2-recommended doc-only, or ship a restricted-token sandbox? (§12.5, A11) | eng | Phase 3 |
+| Q6 | Should `agent doctor` bundle/manage a local model server or only detect one? (A4) | product | Phase 2 |
+| Q7 | Single-binary toolchain: Bun compile vs Node SEA vs pkg — which by Phase 2? (A5) | eng | Phase 2 |
+| Q8 | Workflow authoring: is the two-mode split (TS DSL + declarative) worth it, or declarative-only? (§8.1) | eng | after Phase 6 dogfood |
+| Q9 | ACP alignment: adopt the emerging Agent-Client Protocol verbatim for the editor boundary, or a compatible subset? (§18.5) | eng | Phase 3–4 |
+| Q10 | Trademark clearance + final product name (A1). | maintainers | before release |
+
+---
+## 29. SELF-REVIEW (adversarial pass)
+
+Answering the ten mandated questions honestly; fixes applied inline where they were needed.
+
+1. **Every claim about a reference project traceable to a file I read?** *Mostly.* The deep claims (Aider edit cascade + disabled fuzzy matcher `editblock_coder.py:183`; Aider repomap PageRank `repomap.py:365-529`; Codex `apply-patch/` + `linux-sandbox/{landlock,bwrap}.rs`; Claude Code subagent frontmatter `code-reviewer.md` + hook examples; Claude Code = docs/plugins only, proprietary) are file-traceable (`research/00_METHOD.md §6`). **Gap:** the five Tier-1 breadth sub-agents (OpenHands, Cline, Codex-notes, Aider-notes, Claude-Code-notes) and all Tier-2 sub-agents **failed on a session usage limit before writing `research/repos/*.md`**. So OpenHands/Cline/Goose/Continue/Archon/etc. claims in the competitive matrix rest on my prior knowledge + partial sub-agent findings (Cline monorepo `apps/vscode/src`; OpenHands clone is the `@openhands/agent-canvas` ACP frontend, not the Python core) rather than fresh file reads. **These are flagged here and several matrix cells carry `UNVERIFIED:`.** This is disclosed in `00_METHOD.md §2`, not hidden.
+2. **Marked everything I couldn't verify?** Yes — `UNVERIFIED:` tags on point-in-time provider capability/ToS numbers, several §23.1 matrix cells, default model recommendations, and the missing repo-note reads (above). The honesty log in `00_METHOD.md §2` is explicit.
+3. **Does the MVP actually fit the effort, or am I lying to myself?** **Tight, flagged [C:Med] (§21.1).** The MVP is genuinely small (1 agent, 1 workflow, 2 providers, core tools, verify+worktree, TUI). The schedule risks are honestly named: per-OS sandbox Tier 1 and the capability probe. If the team is <2, Phase 1 must shed the probe (defer to Phase 2) and Windows sandbox (doc-only). I did **not** claim multi-agent, workflows-UI, or vector DB in MVP — those would have been the lie.
+4. **Chosen — not listed — every tech decision?** Yes. §19 picks TypeScript (not "Rust or TS"), SQLite, TOML+JSON-Schema, tiered-sandbox, no-vector-DB, OpenAI-compat-first, stdio-JSON-RPC. Each has a confidence tag and an escape hatch. ADRs 001–020 record them with reversal cost + one-way-door marks.
+5. **Still works with a 14B local model on 12 GB VRAM at 8k context?** Yes — this is the canonical design target (Profile B, §3). §4.5 budgets against *effective* 8–12k with a hard no-repo-dump rule; §4.10 sizes 14B Q4_K_M (~10 GB) + KV to fit 12 GB and warns on 16k spill; §4.8 constrained-decoding (GBNF) makes tools reliable on weak models; §4.4 whole-file fallback caps at ~400 LOC for 8k. If any choice only worked above this bar it was called wrong.
+6. **Still works API-only, no GPU (Profile C)?** Yes — the most common case (§3). MVP ships an OpenAI-compatible adapter; nothing on the critical path needs a GPU; cost ceiling (§6.3) protects the API user from runaway bills.
+7. **Claimed any security property I didn't design a control for?** Checked. §12.7 ("What this system does NOT protect against") explicitly disclaims: prompt-injection into *allowed* actions, malicious deps under normal perms in Tier 0/1, sandbox-escape bugs, `bypassPermissions`, and a compromised OS. I did **not** claim to be stronger than Docker — §12.5/§12.7 say our default tier is *lighter*, not stronger. Redaction/denylist/egress-deny each have a named control + test (canary).
+8. **A single differentiator strong enough to justify existence?** Yes, and arguably two: (a) the **capability-adaptation layer that makes weak/local models usable** (§4) — the product's reason to exist, falsifiable via §16.4; (b) **verification with cheating-detection** (§14.6), which this research found in **no** reference project. If §16.4's VTCR delta turns out small, differentiator (a) collapses and the project should pivot to the local-first/privacy axis or not ship — stated plainly in §23.5.
+9. **Anything merely fashionable a skeptic would catch?** Actively killed: multi-agent-by-default (§7, argued against), vector DB (§9, refused), web dashboard (§22), OpenTelemetry-by-default (§15.2, demoted to optional exporter), "faster than vendors" and "more secure than Docker" (§23.4, killed). The remaining opinionated bets (TS core, adapt-to-weak-models) are defended with reasons a disagreeing engineer can attack.
+10. **Could a fresh agent build Phase 1 from this doc with no questions?** **Largely yes for the shape; some numbers need defaults.** Phase 1 has: the exact tool set + interfaces (§11.1), the edit cascade algorithm (§4.4), the RunState object (§6.2), the state machine (§6.2), the completion contract (§14.7), the repo structure (§20), the worktree protocol (§13.1), and the replay-test requirement (§16.3c). **Underspecified for a truly zero-question build:** concrete default budget numbers (Q4), the exact JSON-RPC Agent API message schema (named, not fully specified — a Phase 1 sub-task), and the precise SEARCH/REPLACE grammar bytes (the *contract* is specified; the wire grammar is a small design task). These are logged in OPEN QUESTIONS. A competent agent could build Phase 1 and would hit those three as bounded design tasks, not blockers.
+
+**Unresolved after self-review (carried, not hidden):**
+- The `research/repos/*.md` and `research/cross-cutting/*.md` supporting notes are **thin** because the breadth sub-agents hit the session usage limit (Q from #1/#2). The spec's *deep* claims are file-traceable; the *breadth* competitive claims lean on prior knowledge and are marked. A follow-up pass (fresh session, budget restored) should complete those notes and re-verify §23.1. This is the single largest known gap in the deliverable and it is disclosed here rather than papered over.
+- The central empirical bet (#8/A9) is unproven until Phase 8. The spec is honest that the project's justification is contingent on that measurement.
+
+---
+
+*End of PROJECT_SPEC.md v1.0 (2026-08-12). This document is the authoritative Phase-0 deliverable. Companion: `LICENSE_AND_REUSE_ANALYSIS.md`; supporting notes under `research/`. No executable code ships with Phase 0.*
