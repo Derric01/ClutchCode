@@ -9,6 +9,8 @@
 
 > This document optimizes for the skeptic. Where the honest conclusion is "don't build it," it says so (see §9 Repository Intelligence — no vector DB; §7 Multi-Agent — single agent by default; §23 — why this might fail). Every reference-project claim is traceable to a file listed in `research/00_METHOD.md §6` or marked `UNVERIFIED:`.
 
+> **⚠️ Post-Phase-0 amendment (2026-08-12) — see `EXECUTION.md`.** Product direction was set after this spec: (1) the core language is **Rust** (with a `ratatui` TUI and a TypeScript VS Code extension over the Agent-API/JSON-RPC boundary), **superseding ADR-001's TypeScript choice** — the change is cheap precisely because §18.1's Agent-API boundary was designed for it; (2) the product's **headline differentiator is elevated to "Compounding Engineering Memory"** — the agent measurably improves at your repo across sessions (this promotes §10's long-term memory + §23.2's differentiators into the lead feature). This spec remains the authoritative *architecture*; `EXECUTION.md` is the authoritative *build plan and stack*.
+
 ---
 
 ## Table of Contents
