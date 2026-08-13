@@ -118,6 +118,20 @@ If those trends are flat in dogfooding and the eval harness, CEM is not real and
 - It's **cumulative and local**: a competitor can copy the idea, but the *value* is the user's own accumulated history, which is portable to no other tool. Switching cost grows with use — the good kind of lock-in (data the user owns and can export).
 - It needs **no training infra, no cloud, no vector DB** — it fits precisely inside our constraints where a lab-backed tool has no incentive to build it (their moat is the model, not your repo's history).
 
+### 2.5 How we de-risk CEM (start narrow, prove the trend, THEN expand) — senior-level staging
+CEM is our biggest differentiator **and** our biggest research risk. The hard, unsolved part is **matching** the current situation to past ones **without a vector DB** — if matching is weak the memory never fires or fires wrongly, and **stale memory hurts more than no memory**. So we do NOT build all seven components at once. We stage it, and each stage is gated on the previous one showing a **measurable** gain (§2.3); if a stage doesn't move VTCR/steps-per-task, we stop there rather than pile on complexity.
+
+| Stage | Components | Matching key (no embeddings) | Risk | Gate to proceed |
+|---|---|---|---|---|
+| **CEM-1 (M5, must-have)** | learned project profile (#1) + run history (#2) + **failed-approach memory on CONCRETE signals** (#3) | exact **error signature + file path + symbol + approach tag** — deterministic, not fuzzy | low | project profile cuts wasted steps; failed-approach fires correctly on repeat errors |
+| **CEM-2 (later)** | per-repo capability refinement (#5) + retrieval prior (#6) + decision memory (#4) | structural keys (paths/symbols/task-type) | medium | measurable VTCR trend up across sessions on a fixed repo |
+| **CEM-3 (ambitious, only if 1–2 win)** | **task-recipe distillation** (#7) + semantic task-similarity | learned/optional embeddings **only if** symbolic keys proven insufficient (revisit §9) | high | recipes measurably beat cold planning; false-recipe rate ~0 |
+
+**Anti-stale rules (all stages):** every memory carries provenance + timestamp; verification is the truth oracle (a memory that contradicts a passing/failing check is marked stale and re-derived); failed-approach notes **decay** and are invalidated when the referenced code changes; human edits win; `clutch memory` lets the user inspect/correct/forget. **Kill-criterion stands:** if CEM-1's trend is flat in dogfooding + eval, CEM is not real — cut it and compete on the local-first/agnostic/verified axis instead. Better to ship the provable 20% that delivers most of the value than bet the project on the hardest 80% working first.
+
+### 2.4-note (honesty)
+The *concept* and data model are sound; the *matching algorithm* (CEM-2/3) is the least-specified, highest-risk piece and is deliberately deferred until CEM-1 proves the premise. Do not oversell CEM as done — it is a measured bet with a kill-criterion.
+
 ---
 
 ## 3. Stack decision (real product)
