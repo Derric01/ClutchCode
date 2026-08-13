@@ -16,9 +16,20 @@ BEFORE CODING, read (authoritative, in the repo):
                         Code + all prompt text stay STUDY-ONLY; no GPL/AGPL deps).
   - research/repos/codex-cli.md and the other research notes → prior art.
 
+SETUP FIRST: run `bash scripts/fetch-references.sh` to clone Codex (the fork base) + the study repos
+at their pinned SHAs into ../clutchcode-references (OUTSIDE our git tree). The scratch clones from the
+research session are gone — you must re-fetch.
+
 BASE (decided & verified real): fork **openai/codex** (Apache-2.0, Rust, ratatui TUI, best-in-class
 Landlock/seccomp/Seatbelt/bwrap sandbox, apply_patch, codex-mcp, app-server). It is OpenAI's official
 CLI (~1.35M LOC — real, not a stub) but BIG and cloud-coupled.
+
+⚠️ M0 IS THE HARDEST, RISKIEST STEP — do it carefully, not fast. Deleting the cloud crates
+(analytics/chatgpt/cloud-tasks/backend-client/aws-auth/connectors/feedback) will break compilation in
+crates that depend on them; untangling that in a 1.35M-line unfamiliar Rust monorepo is real work. Do
+M0 in small commits (delete a crate → fix the fallout → build green → commit), not one big bang. This
+step benefits from a stronger model and/or human review before trusting the result. Also add a /NOTICE
+file carrying Codex's NOTICE content, and fill docs/PRIOR_ART.md as you go.
 
 === MILESTONE M0 — fork, carve, de-cloud, green (do this FIRST) ===
   1. Re-clone openai/codex at the pinned SHA in research/00_METHOD.md §3, re-home under crates/.
