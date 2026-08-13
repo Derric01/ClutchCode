@@ -12,6 +12,7 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@clutchcode/repo-intel": "workspace:*",
     "@clutchcode/sandbox": "workspace:*"
   },
   "devDependencies": {

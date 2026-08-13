@@ -23,5 +23,8 @@
     "eslint": "^9.17.0",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["tree-sitter", "tree-sitter-javascript", "tree-sitter-typescript"]
   }
 }

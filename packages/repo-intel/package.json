@@ -1,0 +1,23 @@
+{
+  "name": "@clutchcode/repo-intel",
+  "version": "0.1.0",
+  "description": "Repository intelligence, Tier 0 (PROJECT_SPEC.md §9): ripgrep is packages/tools' search tool; this package adds on-demand tree-sitter symbol extraction — no persistent index, no vector DB.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "tree-sitter": "^0.21.1",
+    "tree-sitter-javascript": "0.23.1",
+    "tree-sitter-typescript": "0.23.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "@types/node": "^22.10.5"
+  }
+}

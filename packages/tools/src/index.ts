@@ -19,6 +19,8 @@ export { gitTool } from "./tools/git.js";
 export type { GitArgs, GitData, GitOp } from "./tools/git.js";
 export { processTool } from "./tools/process.js";
 export type { ProcessArgs, ProcessData, ProcessRow } from "./tools/process.js";
+export { symbolsTool } from "./tools/symbols.js";
+export type { SymbolsArgs, SymbolsData } from "./tools/symbols.js";
 
 import type { Tool } from "./types.js";
 import { readFileTool } from "./tools/read-file.js";
@@ -28,6 +30,7 @@ import { searchTool } from "./tools/search.js";
 import { shellTool } from "./tools/shell.js";
 import { gitTool } from "./tools/git.js";
 import { processTool } from "./tools/process.js";
+import { symbolsTool } from "./tools/symbols.js";
 
 /** The MVP native tool set (§11), keyed by name for the runtime's tool registry. */
 export function nativeToolSet(): Map<string, Tool<any, any>> {
@@ -38,7 +41,8 @@ export function nativeToolSet(): Map<string, Tool<any, any>> {
     searchTool,
     shellTool,
     gitTool,
-    processTool
+    processTool,
+    symbolsTool
   ];
   return new Map(tools.map((t) => [t.name, t]));
 }
