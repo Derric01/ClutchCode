@@ -53,6 +53,13 @@ export interface ToolContext {
   repoTrustMode: "trusted" | "untrusted";
   /** Extra hosts allowed to receive network egress (§12.2), empty by default. */
   networkAllowlist: string[];
+  /**
+   * §12.6: "tier0" (default, process isolation + policy engine only) or
+   * "tier1" (adds OS-level confinement — bubblewrap on Linux, §12.5). Tier 1
+   * is a no-op fallback to Tier 0 when the platform's sandbox tool isn't
+   * installed, so it's always safe to request.
+   */
+  sandboxTier?: "tier0" | "tier1";
   /** Cooperative cancellation (§6.6). */
   signal?: AbortSignal;
 }

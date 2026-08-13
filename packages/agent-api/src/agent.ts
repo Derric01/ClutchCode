@@ -116,7 +116,9 @@ export class Agent {
       denylist: new Denylist(),
       redactor,
       repoTrustMode: isTrustedRepo(config, this.repoPath) ? ("trusted" as const) : ("untrusted" as const),
-      networkAllowlist: []
+      networkAllowlist: [],
+      // §12.5/§12.6: opt-in via agent.toml `[policy] sandboxTier = "tier1"`; defaults to Tier 0.
+      sandboxTier: config.policy?.sandboxTier ?? ("tier0" as const)
     };
 
     const state = createRunState({

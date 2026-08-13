@@ -22,6 +22,8 @@ export interface AgentConfig {
   trustedRepos: string[];
   policy?: {
     costCeilingUsd?: number;
+    /** §12.5/§12.6: "tier0" (default) or "tier1" (OS-level confinement where available — bwrap on Linux). */
+    sandboxTier?: "tier0" | "tier1";
   };
 }
 

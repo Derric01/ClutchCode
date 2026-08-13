@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { isDestructiveCommand, scrubEnv } from "@clutchcode/sandbox";
+import { buildBwrapArgv, isBwrapAvailable, isDestructiveCommand, scrubEnv } from "@clutchcode/sandbox";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 import { fail, ok } from "../types.js";
 import { truncate } from "../truncate.js";
@@ -16,6 +16,8 @@ export interface ShellData {
   stderr: string;
   killed: boolean;
   timedOut: boolean;
+  /** True when this command actually ran under OS-level confinement (§12.5 Tier 1), not just Tier 0 policy checks. */
+  sandboxed: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -76,18 +78,29 @@ export const shellTool: Tool<ShellArgs, ShellData> = {
     const timeoutMs = args.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const cwd = args.cwd ? args.cwd : ctx.workspaceRoot;
 
+    // §12.5/§12.6 Tier 1: opt-in OS-level confinement (bubblewrap on Linux),
+    // layered on top of the Tier 0 policy check above. Falls back to Tier 0
+    // (plain process) transparently when bwrap isn't installed, so
+    // requesting Tier 1 is always safe.
+    const useTier1 = ctx.sandboxTier === "tier1" && isBwrapAvailable();
+
     return await new Promise<ToolResult<ShellData>>((resolve) => {
       // `detached: true` puts the child in its own process group so a
       // timeout/cancel can kill the whole group (`kill(-pid, …)`), not just
       // the top-level `/bin/sh` — otherwise a shell that doesn't exec-replace
       // itself for a compound command leaves its grandchildren running
       // (§6.6: "an in-flight shell command is sent SIGTERM→SIGKILL").
-      const child = spawn(args.cmd, {
-        shell: true,
-        cwd,
-        env: scrubEnv(process.env),
-        detached: true
-      });
+      const child = useTier1
+        ? spawn("bwrap", buildBwrapArgv(args.cmd, { workspaceRoot: ctx.workspaceRoot, chdir: cwd }), {
+            env: scrubEnv(process.env),
+            detached: true
+          })
+        : spawn(args.cmd, {
+            shell: true,
+            cwd,
+            env: scrubEnv(process.env),
+            detached: true
+          });
 
       let stdout = "";
       let stderr = "";
@@ -142,7 +155,8 @@ export const shellTool: Tool<ShellArgs, ShellData> = {
           stdout: shownStdout,
           stderr: shownStderr,
           killed,
-          timedOut
+          timedOut,
+          sandboxed: useTier1
         };
 
         if (timedOut) {

@@ -6,3 +6,5 @@ export { isDestructiveCommand } from "./destructive.js";
 export { PolicyEngine } from "./policy.js";
 export { scrubEnv } from "./env.js";
 export type { ScrubEnvOptions } from "./env.js";
+export { isBwrapAvailable, resetBwrapAvailabilityCache, buildBwrapArgv } from "./tier1-linux.js";
+export type { BwrapOptions } from "./tier1-linux.js";

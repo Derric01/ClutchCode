@@ -23,6 +23,16 @@ describe("shell tool", () => {
     expect(r.ok).toBe(true);
     expect(r.data?.exitCode).toBe(0);
     expect(r.data?.stdout).toContain("hello-clutchcode");
+    expect(r.data?.sandboxed).toBe(false); // Tier 0 by default (sandboxTier unset)
+  });
+
+  it("requesting sandboxTier 'tier1' still runs the command (falls back to Tier 0 when bwrap isn't installed)", async () => {
+    const r = await shellTool.run({ cmd: "echo still-works" }, { ...ctx, sandboxTier: "tier1" });
+    expect(r.ok).toBe(true);
+    expect(r.data?.exitCode).toBe(0);
+    expect(r.data?.stdout).toContain("still-works");
+    // Whether `sandboxed` is true depends on whether this machine has bwrap
+    // installed — either way the command must complete successfully.
   });
 
   it("surfaces a nonzero exit code as data, not as a tool error", async () => {
