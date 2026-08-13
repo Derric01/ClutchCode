@@ -1,0 +1,26 @@
+{
+  "name": "@clutchcode/evals",
+  "version": "0.1.0",
+  "description": "Recorded-transcript replay harness against FakeProvider (PROJECT_SPEC.md §16.3c, ADR-020) and the §5.2 redaction canary.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@clutchcode/agent-api": "workspace:*",
+    "@clutchcode/git": "workspace:*",
+    "@clutchcode/providers": "workspace:*",
+    "@clutchcode/runtime": "workspace:*",
+    "@clutchcode/sandbox": "workspace:*",
+    "@clutchcode/tools": "workspace:*",
+    "@clutchcode/verification": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

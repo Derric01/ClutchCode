@@ -1,0 +1,18 @@
+{
+  "name": "@clutchcode/sandbox",
+  "version": "0.1.0",
+  "description": "Permission policy engine, filesystem denylist, secret redaction, env scrubbing (PROJECT_SPEC.md §5, §12).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "@clutchcode/git",
+  "version": "0.1.0",
+  "description": "Git worktree isolation, checkpointing, rollback, and the non-git snapshot fallback (PROJECT_SPEC.md §13).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

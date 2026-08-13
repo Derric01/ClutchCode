@@ -1,0 +1,14 @@
+export { detectToolchain, applyAgentsMdOverrides } from "./toolchain.js";
+export type { ToolchainCommands, Language } from "./toolchain.js";
+export { runPipeline, STAGE_ORDER } from "./pipeline.js";
+export type { StageName, StageResult, PipelineOptions, PipelineResult } from "./pipeline.js";
+export { classifyFailure, isFlaky, shouldEscalate, MAX_REPAIR_ITERS } from "./classify.js";
+export type { FailureClass, RepairLoopState } from "./classify.js";
+export { detectCheats } from "./cheat-detection.js";
+export type { CheatFlag, CheatRule } from "./cheat-detection.js";
+export { evaluateCompletion } from "./completion.js";
+export type { CompletionStatus, CompletionInput } from "./completion.js";
+export { selectImpactedTests } from "./test-selection.js";
+export type { SelectedTests } from "./test-selection.js";
+export { parseUnifiedDiff } from "./diff-parser.js";
+export type { FileDiff } from "./diff-parser.js";

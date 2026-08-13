@@ -1,0 +1,20 @@
+{
+  "name": "@clutchcode/tools",
+  "version": "0.1.0",
+  "description": "Native tool set: fs read/write/edit, search, shell, git, process; output truncation (PROJECT_SPEC.md §11).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@clutchcode/sandbox": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}
