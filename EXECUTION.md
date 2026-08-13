@@ -51,6 +51,30 @@ To guarantee ClutchCode is **not inferior to the top tools in any way**, we **fo
 
 **BYO-key UX:** `clutch providers add anthropic` → prompt for key → **OS keychain** (env-var escape hatch; `.env.example` shipped, never a real key) → `clutch models` lists what's reachable → `clutch config set model <id>`. `clutch doctor` shows which providers have keys and which local servers are up. Each provider gets a **capability profile** (native tools? parallel? caching? effective context) so the adaptation layer (§4) drives it correctly. **A frontier key and a local model are the same code path** — only the adapter + capability profile differ. This is a **hard requirement from M1** (the OpenAI-compatible adapter) and M2 (Anthropic native + local), not a later add-on.
 
+### (c) Release model = FULLY OPEN (Apache-2.0) — decided; do not drift toward closing it
+ClutchCode is **fully open source (Apache-2.0), all changes public.** This is deliberate and load-bearing: the product's reason to exist is being open, local-first, auditable, no-lock-in. **The moat is NOT code secrecy** — it is (1) the per-user **CEM data** that accumulates locally and no competitor can copy (it's the user's own history), (2) **execution quality**, and (3) **community trust**. A competitor reading our code cannot take any of those. Closing the source would forfeit our only edge and turn us into a weak closed competitor to the vendor tools — so we don't. If monetization is ever needed, do **open-core** (sell something *additional* — hosted sync, team analytics, support — never hide the core).
+
+**Attribution is mandatory and permanent** (Apache-2.0 §4 + basic OSS ethics), whether or not code changes:
+- Preserve upstream `LICENSE` + `NOTICE` from Codex (and any repo we borrow from); never strip copyright/attribution.
+- Carry "modified by ClutchCode" notices on changed files.
+- Maintain **`docs/PRIOR_ART.md`** + a README **"Built on / Credits"** section listing every project we fork or port code from.
+- **Never** use OpenAI's / others' names or marks to promote ClutchCode or imply endorsement.
+- **Never** copy from Claude Code (proprietary) or any GPL/AGPL repo; **no GPL/AGPL runtime deps** (CI scans).
+
+### (d) "Best bits from all the repos" — the explicit port list (layered onto the Codex base)
+We take the *best idea* from each and reimplement/port it on top of Codex, crediting each. (Prefer porting the *idea* over copy-pasting code — cleaner, fewer inherited bugs — but permissive code copy is allowed WITH attribution.)
+
+| From | Best bit we take | License → how | Lands in |
+|---|---|---|---|
+| **Codex** (base) | Rust core, ratatui TUI, OS sandbox, `apply_patch`, MCP, app-server | Apache-2.0 → **fork** + attribute | M0 |
+| **Aider** | tree-sitter **PageRank repo map**; per-model **edit-format selection**; the "no fuzzy apply" lesson | Apache-2.0 → reimplement + attribute | M1/M7 |
+| **Cline** | **VS Code diff-review UX**; XML **tool protocol** for non-native-tool (weak/local) models | Apache-2.0 → reimplement + attribute | M2/M6 |
+| **OpenHands** | resumable **State** object; context **condenser** (compaction) | MIT → reimplement + attribute | M1/M7 |
+| **goose** | clean **MCP-extension** model; local-inference seam | Apache-2.0 → study; MCP = open protocol | M2/M7 |
+| **Continue** | per-role **model routing** + mature config schema | Apache-2.0 → study | M2/M6 |
+| **SWE-agent / SWE-bench** | **eval** trajectory logs + verified-subset harness design | MIT → study for our eval harness | M8 |
+| **Claude Code** | confidence-thresholded review *pattern* only | Proprietary → **STUDY-ONLY**, pattern not code/prompt | M4 |
+
 ---
 
 ## 1. Product thesis (one paragraph)

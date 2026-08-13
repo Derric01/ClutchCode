@@ -23,6 +23,7 @@
 **Compounding Engineering Memory (CEM)** — `EXECUTION.md §2`. Seven local, correctable, no-training memory components; the two that matter most and that no competitor does well: **failed-approach memory** and **task-recipe distillation**. CEM must be **measurable** (VTCR trend up, steps/task down) — it has a kill-criterion. When in doubt, invest here; this is the moat.
 
 ## Golden rules (do not violate)
+0. **Fully open source (Apache-2.0), all changes public — never close it.** The moat is the per-user CEM data + execution + community trust, **not** code secrecy. Attribution is mandatory and permanent: preserve upstream `LICENSE`/`NOTICE`, keep `docs/PRIOR_ART.md` + a README "Built on / Credits" section, carry "modified by" notices, never imply endorsement, never copy Claude Code or GPL/AGPL code.
 1. **Local-first, no telemetry, no servers, no account.** Ever. The offline test is a release gate.
 2. **Verification-gated "done":** a run is successful only if the deterministic gate is green **and** no cheat flags **and** (interactive) the human approved. Never report success on the model's word.
 3. **Secrets never enter model context, tool output, transcripts, or logs.** There is a canary test — keep it green.

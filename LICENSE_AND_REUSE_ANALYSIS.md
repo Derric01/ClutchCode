@@ -10,6 +10,7 @@
 
 ## 0. TL;DR (the rules that bind Phase 1+)
 
+0. **Release model = FULLY OPEN (Apache-2.0), all changes public** (product-owner decision, 2026-08-12). Apache-2.0 *would* permit a closed fork, but we deliberately stay open: the moat is the per-user CEM data + execution + community trust, not code secrecy. Attribution (LICENSE + NOTICE + `docs/PRIOR_ART.md` + README credits + "modified by" notices) is **mandatory and permanent** for Codex and every repo we fork/port. See `EXECUTION.md §0.5(c)/(d)`.
 1. **We adopt Apache-2.0** for ClutchCode (argued in §3).
 2. **We use DCO, not a CLA** (argued in §4).
 3. **Reuse posture (amended 2026-08-12 by product-owner direction — see `EXECUTION.md §0.5`):** we now **fork-and-extend a permissively-licensed base** (Apache-2.0 or MIT) rather than pure clean-room, to guarantee we are not inferior to the top tools. Forking those bases is legal **with attribution** (preserve `LICENSE`+`NOTICE`, state changes, don't use their marks); this moves them from STUDY-ONLY to **REUSE-WITH-ATTRIBUTION** for the chosen base. **Unchanged hard limits:** Claude Code stays **STUDY-ONLY** (proprietary — never fork); **prompt text** from any tool stays STUDY-ONLY (authored from scratch); **no GPL/AGPL** deps; and inherited **sandbox/exec code is security-audited**, not blind-trusted. Ideas remain free; the only thing we still refuse to copy is proprietary code and creative prompt text.
