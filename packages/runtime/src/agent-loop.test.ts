@@ -314,4 +314,47 @@ describe("AgentLoop (end-to-end with a real worktree + FakeProvider)", () => {
       fx.cleanup();
     }
   }, 30_000);
+
+  it("compacts conversation history mid-run for a tiny-effective-context profile (§4.5)", async () => {
+    const fx = setupAgentLoopFixture("run0000000e");
+    try {
+      // Several read_file round-trips first (padding the transcript), then the real fix.
+      const readMath = JSON.stringify({ path: "math.js" });
+      const readTest = JSON.stringify({ path: "math.test.js" });
+      const provider = new FakeProvider([
+        toolCallTurn("c1", "read_file", readMath),
+        toolCallTurn("c2", "read_file", readTest),
+        toolCallTurn("c3", "read_file", readMath),
+        toolCallTurn("c4", "edit_file", FIX_EDIT),
+        textTurn("Fixed.")
+      ]);
+      const state = createRunState({ runId: fx.run.runId, task: "fix add()", provider: "fake", model: "fake" });
+      const tinyProfile: CapabilityProfile = { ...unprobedProfile("fake", "fake"), toolTransport: "native", effectiveContext: 400 };
+
+      const events: RuntimeEvent[] = [];
+      const loop = new AgentLoop(
+        state,
+        {
+          provider,
+          tools: fx.tools,
+          toolContext: fx.toolContext,
+          run: fx.run,
+          toolchainCommands: fx.toolchainCommands,
+          evidenceDir: fx.evidenceDir,
+          capabilityProfile: tinyProfile
+        },
+        { yesMode: true, onEvent: (e) => events.push(e) }
+      );
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("DONE");
+      expect(events.some((e) => e.type === "context.compacted")).toBe(true);
+
+      // The last request's message list is bounded — not one entry per turn/tool-result piled up forever.
+      const lastRequest = provider.requestLog[provider.requestLog.length - 1]!;
+      expect(lastRequest.messages.some((m) => m.content.includes("compacted"))).toBe(true);
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
 });

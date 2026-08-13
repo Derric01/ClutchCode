@@ -3,7 +3,15 @@ import path from "node:path";
 import crypto from "node:crypto";
 import type { NormalizedMessage, Provider, ToolCallRequest } from "@clutchcode/providers";
 import { collect, MAX_TOOL_PARSE_RETRIES, parseToolProtocolResponse, renderToolProtocolInstructions } from "@clutchcode/providers";
-import { buildEditFormatGuidance, MAX_EDIT_RETRIES, type CapabilityProfile } from "@clutchcode/capability";
+import {
+  buildEditFormatGuidance,
+  computeContextBudget,
+  budgetToMaxOutputTokens,
+  defaultProfileFromProvider,
+  MAX_EDIT_RETRIES,
+  type CapabilityProfile,
+  type ContextBudget
+} from "@clutchcode/capability";
 import type { Tool, ToolContext } from "@clutchcode/tools";
 import type { RunWorktree } from "@clutchcode/git";
 import { approveRun, changedFiles, checkpoint, diffAgainstBase, diffStat } from "@clutchcode/git";
@@ -26,6 +34,7 @@ import { BudgetGuard, type BudgetLimitKind } from "./budget.js";
 import { LoopDetector, initLoopDetectorState, type LoopDetectorState, type LoopWarning } from "./loop-detector.js";
 import { shouldPlan } from "./planning-heuristic.js";
 import { buildCheatReviewMessage, buildInitialMessages, buildRepairMessage, toolsToSchemas } from "./message-builder.js";
+import { compactHistory } from "./context-compaction.js";
 import { classifyToolError } from "./error-taxonomy.js";
 
 /**
@@ -51,6 +60,7 @@ export type RuntimeEvent =
   | { type: "cheat.flag"; rule: string; file: string }
   | { type: "budget.hit"; kinds: BudgetLimitKind[] }
   | { type: "loop.detected"; warning: LoopWarning }
+  | { type: "context.compacted"; removedMessages: number }
   | { type: "escalation"; reason: string }
   | { type: "run.end"; status: RunStatus };
 
@@ -79,6 +89,8 @@ export class AgentLoop {
   private readonly loopDetector: LoopDetector;
   private messages: NormalizedMessage[];
   private readonly emulationMode: boolean;
+  private readonly effectiveProfile: CapabilityProfile;
+  private readonly contextBudget: ContextBudget;
   private toolParseRetries = 0;
   private readonly editFailureCounts = new Map<string, number>();
   private readonly downgradeNudgedPaths = new Set<string>();
@@ -89,7 +101,12 @@ export class AgentLoop {
     private readonly opts: AgentLoopOptions = {}
   ) {
     this.state = state;
-    this.emulationMode = deps.capabilityProfile?.toolTransport === "emulation";
+    // §4.9: an explicit probe result drives adaptation; absent one, fall
+    // back to the provider adapter's own declared defaults rather than
+    // assuming the worst (or the best) about an unknown model.
+    this.effectiveProfile = deps.capabilityProfile ?? defaultProfileFromProvider(deps.provider, state.model);
+    this.emulationMode = this.effectiveProfile.toolTransport === "emulation";
+    this.contextBudget = computeContextBudget(this.effectiveProfile);
     this.budgetGuard = new BudgetGuard(state.budgets, state.consumed);
     const restoredDetectorState = state.loopDetectorState as LoopDetectorState | undefined;
     this.loopDetector = new LoopDetector(restoredDetectorState ?? initLoopDetectorState());
@@ -158,11 +175,21 @@ export class AgentLoop {
         return "stopped";
       }
 
+      // §4.5: compact conversation/tool history before it blows the budget —
+      // mandatory for small-context local models, harmless (a no-op) for
+      // large-context ones since the budget scales with effectiveContext.
+      const compaction = compactHistory(this.messages, this.contextBudget.historyChars);
+      if (compaction.compactedCount > 0) {
+        this.messages = compaction.messages;
+        this.emit({ type: "context.compacted", removedMessages: compaction.compactedCount });
+      }
+
       this.emit({ type: "model.request" });
       const response = await collect(
         this.deps.provider.chat({
           model: this.state.model,
           messages: this.messages,
+          maxOutputTokens: budgetToMaxOutputTokens(this.contextBudget),
           // §4.8: an emulation-mode model isn't offered native tool schemas
           // at all — it was given the text protocol in the system prompt instead.
           tools: this.emulationMode ? undefined : toolsToSchemas(this.deps.tools)

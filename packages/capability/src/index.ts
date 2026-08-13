@@ -6,3 +6,5 @@ export { selectEditFormat, wholeFileLocCap, buildEditFormatGuidance, MAX_EDIT_RE
 export type { EditFormat, FileEditContext } from "./edit-format.js";
 export { CapabilityProfileStore } from "./profile-store.js";
 export { defaultProfileFromProvider } from "./default-profile.js";
+export { computeContextBudget, budgetToMaxOutputTokens } from "./context-budget.js";
+export type { ContextBudget } from "./context-budget.js";

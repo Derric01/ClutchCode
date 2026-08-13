@@ -30,6 +30,10 @@ export { shouldPlan } from "./planning-heuristic.js";
 export type { PlanningHeuristicInput } from "./planning-heuristic.js";
 
 export { buildSystemPrompt, buildInitialMessages, buildRepairMessage, buildCheatReviewMessage, toolsToSchemas } from "./message-builder.js";
+export type { SystemPromptContext } from "./message-builder.js";
+
+export { compactHistory } from "./context-compaction.js";
+export type { CompactionResult } from "./context-compaction.js";
 
 export { AgentLoop } from "./agent-loop.js";
 export type { AgentLoopDeps, AgentLoopOptions, RuntimeEvent } from "./agent-loop.js";
