@@ -16,6 +16,7 @@ import {
   type RunState,
   type RuntimeEvent
 } from "@clutchcode/runtime";
+import { CapabilityProfileStore, defaultProfileFromProvider, runCapabilityProbe, type CapabilityProfile, type ProbeOptions } from "@clutchcode/capability";
 
 import { loadConfig, isTrustedRepo } from "./config.js";
 import { loadCredentialsFromEnv } from "./credentials.js";
@@ -42,6 +43,10 @@ function defaultStateDir(): string {
   return path.join(os.homedir(), ".local", "state", "clutchcode");
 }
 
+function defaultConfigDir(): string {
+  return path.join(os.homedir(), ".config", "clutchcode");
+}
+
 function slugify(s: string): string {
   return (
     s
@@ -65,14 +70,19 @@ function newRunId(): string {
  */
 export class Agent {
   private readonly stateDir: string;
+  private readonly configDir: string;
   private readonly store: RunStateStore;
+  private readonly capabilityStore: CapabilityProfileStore;
 
   constructor(
     private readonly repoPath: string,
-    stateDir?: string
+    stateDir?: string,
+    configDir?: string
   ) {
     this.stateDir = stateDir ?? defaultStateDir();
+    this.configDir = configDir ?? defaultConfigDir();
     this.store = new RunStateStore(this.stateDir);
+    this.capabilityStore = new CapabilityProfileStore(this.configDir);
   }
 
   async run(opts: RunOptions): Promise<RunState> {
@@ -84,9 +94,11 @@ export class Agent {
     saveRunWorktree(this.stateDir, run);
 
     let toolchainCommands: ToolchainCommands = detectToolchain(run.worktreePath);
+    let projectMemory: string | undefined;
     const agentsMdPath = path.join(run.worktreePath, "AGENTS.md");
     if (fs.existsSync(agentsMdPath)) {
-      toolchainCommands = applyAgentsMdOverrides(toolchainCommands, fs.readFileSync(agentsMdPath, "utf8"));
+      projectMemory = fs.readFileSync(agentsMdPath, "utf8");
+      toolchainCommands = applyAgentsMdOverrides(toolchainCommands, projectMemory);
     }
 
     const evidenceDir = path.join(this.stateDir, "runs", runId, "evidence");
@@ -120,9 +132,15 @@ export class Agent {
 
     const provider = buildProvider({ kind: opts.providerKind, baseUrl: opts.baseUrl, credentials });
 
+    // §4.9: a previously-probed profile drives adaptation; absent one, fall
+    // back to the provider adapter's own declared defaults (§4.9 "fall back
+    // to static defaults if probe fails") rather than assuming the worst.
+    const capabilityProfile: CapabilityProfile =
+      this.capabilityStore.load(opts.providerKind, opts.model) ?? defaultProfileFromProvider(provider, opts.model);
+
     const loop = new AgentLoop(
       state,
-      { provider, tools, toolContext, run, toolchainCommands, evidenceDir },
+      { provider, tools, toolContext, run, toolchainCommands, evidenceDir, projectMemory, capabilityProfile },
       {
         yesMode: opts.yesMode,
         onEvent: (event) => {
@@ -188,6 +206,20 @@ export class Agent {
       throw new Error(`worktree for run ${runId} no longer exists at ${run.worktreePath}; cannot resume`);
     }
     return state;
+  }
+
+  /** `agent models probe` (§4.9, §18.2): probe once, persist the profile so future runs adapt without re-probing. */
+  async probeModel(opts: { providerKind: ProviderKind; model: string; baseUrl?: string }, probeOpts: ProbeOptions = {}): Promise<CapabilityProfile> {
+    const credentials = loadCredentialsFromEnv();
+    const provider = buildProvider({ kind: opts.providerKind, baseUrl: opts.baseUrl, credentials });
+    const profile = await runCapabilityProbe(provider, opts.model, probeOpts);
+    this.capabilityStore.save(profile);
+    return profile;
+  }
+
+  /** The persisted profile for a model, if it has been probed (§4.9) — null if not, without probing. */
+  getCapabilityProfile(providerKind: ProviderKind, model: string): CapabilityProfile | null {
+    return this.capabilityStore.load(providerKind, model);
   }
 
   private requireState(runId: string): RunState {

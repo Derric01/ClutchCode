@@ -4,6 +4,7 @@ export type { RunOptions, ApproveOptions } from "./agent.js";
 // Re-exported so `apps/*` never need to depend on @clutchcode/runtime
 // directly (§20 boundary rule: apps depend only on agent-api).
 export type { RunState, RunStatus, RuntimeEvent, ToolCallLogEntry, VerificationResultSummary } from "@clutchcode/runtime";
+export type { CapabilityProfile, ToolTransport, ProbeOptions } from "@clutchcode/capability";
 export { loadConfig, saveConfig, isTrustedRepo, markTrusted, configPath, DEFAULT_CONFIG } from "./config.js";
 export type { AgentConfig, ProviderConfig } from "./config.js";
 export { loadCredentialsFromEnv } from "./credentials.js";

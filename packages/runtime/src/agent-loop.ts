@@ -1,13 +1,24 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import type { NormalizedMessage, Provider } from "@clutchcode/providers";
-import { collect } from "@clutchcode/providers";
+import type { NormalizedMessage, Provider, ToolCallRequest } from "@clutchcode/providers";
+import { collect, MAX_TOOL_PARSE_RETRIES, parseToolProtocolResponse, renderToolProtocolInstructions } from "@clutchcode/providers";
+import { buildEditFormatGuidance, MAX_EDIT_RETRIES, type CapabilityProfile } from "@clutchcode/capability";
 import type { Tool, ToolContext } from "@clutchcode/tools";
 import type { RunWorktree } from "@clutchcode/git";
-import { approveRun, checkpoint, diffAgainstBase, diffStat } from "@clutchcode/git";
-import type { ToolchainCommands, CheatFlag } from "@clutchcode/verification";
-import { classifyFailure, detectCheats, evaluateCompletion, MAX_REPAIR_ITERS, runPipeline } from "@clutchcode/verification";
+import { approveRun, changedFiles, checkpoint, diffAgainstBase, diffStat } from "@clutchcode/git";
+import type { ToolchainCommands, CheatFlag, PipelineResult } from "@clutchcode/verification";
+import {
+  buildImpactedTestCommand,
+  classifyFailure,
+  detectCheats,
+  evaluateCompletion,
+  findTestFiles,
+  MAX_REPAIR_ITERS,
+  runAdHocCommand,
+  runPipeline,
+  selectImpactedTests
+} from "@clutchcode/verification";
 
 import type { RunState, RunStatus } from "./run-state.js";
 import { transition } from "./run-state.js";
@@ -50,6 +61,10 @@ export interface AgentLoopDeps {
   run: RunWorktree;
   toolchainCommands: ToolchainCommands;
   evidenceDir: string;
+  /** AGENTS.md prose (§10.1), if the repo has one — folded into the system prompt. */
+  projectMemory?: string;
+  /** §4.9: drives §4.8 tool-call transport selection. Falls back to native tool-calling when absent (unprobed model). */
+  capabilityProfile?: CapabilityProfile;
 }
 
 export interface AgentLoopOptions {
@@ -63,6 +78,10 @@ export class AgentLoop {
   private readonly budgetGuard: BudgetGuard;
   private readonly loopDetector: LoopDetector;
   private messages: NormalizedMessage[];
+  private readonly emulationMode: boolean;
+  private toolParseRetries = 0;
+  private readonly editFailureCounts = new Map<string, number>();
+  private readonly downgradeNudgedPaths = new Set<string>();
 
   constructor(
     state: RunState,
@@ -70,11 +89,14 @@ export class AgentLoop {
     private readonly opts: AgentLoopOptions = {}
   ) {
     this.state = state;
+    this.emulationMode = deps.capabilityProfile?.toolTransport === "emulation";
     this.budgetGuard = new BudgetGuard(state.budgets, state.consumed);
     const restoredDetectorState = state.loopDetectorState as LoopDetectorState | undefined;
     this.loopDetector = new LoopDetector(restoredDetectorState ?? initLoopDetectorState());
     state.loopDetectorState = this.loopDetector.getState();
-    this.messages = buildInitialMessages(state.task);
+    const toolProtocolInstructions = this.emulationMode ? renderToolProtocolInstructions(toolsToSchemas(deps.tools)) : undefined;
+    const editFormatGuidance = deps.capabilityProfile ? buildEditFormatGuidance(deps.capabilityProfile) : undefined;
+    this.messages = buildInitialMessages(state.task, { projectMemory: deps.projectMemory, toolProtocolInstructions, editFormatGuidance });
   }
 
   private emit(event: RuntimeEvent): void {
@@ -141,20 +163,47 @@ export class AgentLoop {
         this.deps.provider.chat({
           model: this.state.model,
           messages: this.messages,
-          tools: toolsToSchemas(this.deps.tools)
+          // §4.8: an emulation-mode model isn't offered native tool schemas
+          // at all — it was given the text protocol in the system prompt instead.
+          tools: this.emulationMode ? undefined : toolsToSchemas(this.deps.tools)
         })
       );
       this.budgetGuard.recordStep();
       if (response.usage) this.budgetGuard.recordUsage(response.usage.inputTokens, response.usage.outputTokens);
-      this.emit({ type: "model.response", text: response.text, toolCalls: response.toolCalls.length });
 
       if (response.finishReason === "error") {
+        this.emit({ type: "model.response", text: response.text, toolCalls: response.toolCalls.length });
         this.setStatus("ESCALATED");
         this.state.escalationReason = "the model provider returned an error";
         return "stopped";
       }
 
-      if (response.toolCalls.length === 0) {
+      let effectiveToolCalls: ToolCallRequest[] = response.toolCalls;
+
+      if (this.emulationMode) {
+        const parsed = parseToolProtocolResponse(response.text);
+        if (parsed.kind === "call") {
+          effectiveToolCalls = [{ id: `emu_${this.state.stepIndex}`, name: parsed.call.name, argsJson: parsed.call.argsJson }];
+        } else if (parsed.kind === "error") {
+          this.toolParseRetries += 1;
+          this.messages.push({ role: "assistant", content: response.text });
+          if (this.toolParseRetries > MAX_TOOL_PARSE_RETRIES) {
+            this.setStatus("ESCALATED");
+            this.state.escalationReason = `tool-call text protocol parse failed repeatedly: ${parsed.error}`;
+            return "stopped";
+          }
+          this.messages.push({
+            role: "user",
+            content: `Your tool call could not be parsed: ${parsed.error}. Follow the exact <tool name="..."><arg name="...">...</arg></tool> format from the system prompt, with exactly one block.`
+          });
+          continue; // re-prompt without executing anything or consuming a "real" step's tool-call bookkeeping
+        }
+        // kind === "none": effectiveToolCalls stays as response.toolCalls (already empty) — the model is done.
+      }
+
+      this.emit({ type: "model.response", text: response.text, toolCalls: effectiveToolCalls.length });
+
+      if (effectiveToolCalls.length === 0) {
         this.messages.push({ role: "assistant", content: response.text });
         return "completed";
       }
@@ -162,11 +211,11 @@ export class AgentLoop {
       this.messages.push({
         role: "assistant",
         content: response.text,
-        toolCalls: response.toolCalls.map((tc) => ({ id: tc.id, name: tc.name, argsJson: tc.argsJson }))
+        toolCalls: effectiveToolCalls.map((tc) => ({ id: tc.id, name: tc.name, argsJson: tc.argsJson }))
       });
 
       let anyEdit = false;
-      for (const call of response.toolCalls) {
+      for (const call of effectiveToolCalls) {
         const repeatWarning = this.loopDetector.recordToolCall(call.name, call.argsJson);
         if (repeatWarning) {
           this.emit({ type: "loop.detected", warning: repeatWarning });
@@ -183,12 +232,27 @@ export class AgentLoop {
         // before this reaches any persisted artifact (event log, RunState).
         const redactedArgs = this.deps.toolContext.redactor.scrub(call.argsJson).text;
         this.emit({ type: "tool.call", tool: call.name, args: redactedArgs });
-        const { ok, errorCode, payload, isEdit, editedPath } = await this.runToolCall(call.name, call.argsJson);
+        const { ok, errorCode, payload, isEdit, editedPath, attemptedPath } = await this.runToolCall(call.name, call.argsJson);
         if (isEdit) anyEdit = true;
 
         this.state.toolCallLog.push({ step: this.state.stepIndex++, tool: call.name, args: redactedArgs, ok, errorCode, ts: Date.now() });
         this.emit({ type: "tool.result", tool: call.name, ok, errorCode });
         this.messages.push({ role: "tool", toolCallId: call.id, content: payload });
+
+        // §4.4 repeated-failure fallback: after MAX_EDIT_RETRIES failed
+        // edit_file attempts on the same file, nudge the model to switch to
+        // write_file (whole-file) for that file instead of retrying forever.
+        if (call.name === "edit_file" && !ok && attemptedPath) {
+          const count = (this.editFailureCounts.get(attemptedPath) ?? 0) + 1;
+          this.editFailureCounts.set(attemptedPath, count);
+          if (count > MAX_EDIT_RETRIES && !this.downgradeNudgedPaths.has(attemptedPath)) {
+            this.downgradeNudgedPaths.add(attemptedPath);
+            this.messages.push({
+              role: "user",
+              content: `edit_file has failed ${count} times on "${attemptedPath}". Per the edit-format fallback (§4.4), switch to write_file to rewrite the whole file instead.`
+            });
+          }
+        }
 
         if (isEdit && editedPath) {
           const oscillationWarning = this.recordEditForLoopDetection(editedPath);
@@ -239,7 +303,7 @@ export class AgentLoop {
   private async runToolCall(
     name: string,
     argsJson: string
-  ): Promise<{ ok: boolean; errorCode?: string; payload: string; isEdit: boolean; editedPath?: string }> {
+  ): Promise<{ ok: boolean; errorCode?: string; payload: string; isEdit: boolean; editedPath?: string; attemptedPath?: string }> {
     const tool = this.deps.tools.get(name);
     if (!tool) {
       return { ok: false, errorCode: "unknown-tool", payload: JSON.stringify({ ok: false, error: { code: "unknown-tool", message: `no such tool: ${name}` } }), isEdit: false };
@@ -268,20 +332,55 @@ export class AgentLoop {
     }
 
     const result = await tool.run(validated.value, this.deps.toolContext);
-    const isEdit = result.ok && (name === "edit_file" || name === "write_file");
+    const isEditOrWriteTool = name === "edit_file" || name === "write_file";
+    const isEdit = result.ok && isEditOrWriteTool;
+    const attemptedPath = isEditOrWriteTool ? (validated.value as { path?: string }).path : undefined;
     return {
       ok: result.ok,
       errorCode: result.error?.code,
       payload: JSON.stringify(result),
       isEdit,
-      editedPath: isEdit ? (validated.value as { path?: string }).path : undefined
+      editedPath: isEdit ? attemptedPath : undefined,
+      attemptedPath
     };
+  }
+
+  /**
+   * §14.4: "don't run 20 min on a 1-line change" — a fast, scoped pass over
+   * just the tests impacted by the diff so far, run BEFORE the full
+   * pipeline. It can only ever short-circuit a *failure* faster; a pass
+   * here never substitutes for the full-suite run below, so an
+   * unsupported language or an imperfect file-filter heuristic can never
+   * weaken the completion gate — worst case it just doesn't save any time.
+   */
+  private runImpactedTestsFastPass(): PipelineResult | null {
+    const testCommand = this.deps.toolchainCommands.test;
+    if (!testCommand) return null;
+
+    const changed = changedFiles(this.deps.run);
+    if (changed.length === 0) return null;
+
+    const testFiles = findTestFiles(this.deps.toolContext.workspaceRoot);
+    const { selected, runFullSuite } = selectImpactedTests(changed, testFiles);
+    if (runFullSuite || selected.length === 0) return null;
+
+    const command = buildImpactedTestCommand(testCommand, selected, this.deps.toolchainCommands.language);
+    if (!command) return null;
+
+    const result = runAdHocCommand("test", command, {
+      cwd: this.deps.run.worktreePath,
+      evidenceDir: this.deps.evidenceDir,
+      timeoutMs: 60_000
+    });
+    if (result.passed) return null; // fast pass is only useful as an early failure signal
+
+    return { stages: [result], allGreen: false, firstFailure: result };
   }
 
   private async verifyAndFinish(): Promise<RunState> {
     this.setStatus("VERIFYING");
 
-    const pipelineResult = runPipeline(this.deps.toolchainCommands, {
+    const pipelineResult = this.runImpactedTestsFastPass() ?? runPipeline(this.deps.toolchainCommands, {
       cwd: this.deps.run.worktreePath,
       evidenceDir: this.deps.evidenceDir
     });

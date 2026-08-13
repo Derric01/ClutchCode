@@ -9,3 +9,5 @@ export { AnthropicProvider } from "./anthropic.js";
 export type { AnthropicOptions } from "./anthropic.js";
 export { parseSSE } from "./sse.js";
 export type { SSEEvent } from "./sse.js";
+export { renderToolProtocolInstructions, parseToolProtocolResponse, MAX_TOOL_PARSE_RETRIES } from "./text-tool-protocol.js";
+export type { ParsedToolCall, TextProtocolParseResult } from "./text-tool-protocol.js";

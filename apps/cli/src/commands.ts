@@ -5,6 +5,7 @@ import {
   loadConfig,
   loadCredentialsFromEnv,
   markTrusted,
+  type CapabilityProfile,
   type ProviderKind,
   type RunState
 } from "@clutchcode/agent-api";
@@ -18,7 +19,12 @@ export interface CommandResult {
 export interface CliContext {
   repoPath: string;
   stateDir?: string;
+  configDir?: string;
   json?: boolean;
+}
+
+function newAgent(ctx: CliContext): Agent {
+  return new Agent(ctx.repoPath, ctx.stateDir, ctx.configDir);
 }
 
 function summarizeRunState(state: RunState): Record<string, unknown> {
@@ -71,7 +77,7 @@ export interface RunCommandOptions {
 }
 
 export async function cmdRun(ctx: CliContext, opts: RunCommandOptions): Promise<CommandResult> {
-  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  const agent = newAgent(ctx);
   const state = await agent.run({
     task: opts.task,
     providerKind: opts.providerKind,
@@ -83,7 +89,7 @@ export async function cmdRun(ctx: CliContext, opts: RunCommandOptions): Promise<
 }
 
 export async function cmdStatus(ctx: CliContext): Promise<CommandResult> {
-  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  const agent = newAgent(ctx);
   const state = agent.status();
   if (!state) {
     return { exitCode: EXIT.SUCCESS, output: ctx.json ? "null" : "no runs yet" };
@@ -92,7 +98,7 @@ export async function cmdStatus(ctx: CliContext): Promise<CommandResult> {
 }
 
 export async function cmdDiff(ctx: CliContext, runId: string): Promise<CommandResult> {
-  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  const agent = newAgent(ctx);
   try {
     const diff = agent.diff(runId);
     return { exitCode: EXIT.SUCCESS, output: ctx.json ? JSON.stringify({ runId, diff }) : diff || "(no changes)" };
@@ -107,7 +113,7 @@ export interface ApproveCommandOptions {
 }
 
 export async function cmdApprove(ctx: CliContext, runId: string, opts: ApproveCommandOptions): Promise<CommandResult> {
-  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  const agent = newAgent(ctx);
   try {
     const state = agent.approve(runId, opts);
     return { exitCode: exitCodeForRunStatus(state.status), output: formatRunState(state, ctx.json) };
@@ -117,7 +123,7 @@ export async function cmdApprove(ctx: CliContext, runId: string, opts: ApproveCo
 }
 
 export async function cmdReject(ctx: CliContext, runId: string): Promise<CommandResult> {
-  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  const agent = newAgent(ctx);
   try {
     const state = agent.reject(runId);
     return { exitCode: exitCodeForRunStatus(state.status), output: formatRunState(state, ctx.json) };
@@ -127,7 +133,7 @@ export async function cmdReject(ctx: CliContext, runId: string): Promise<Command
 }
 
 export async function cmdInspect(ctx: CliContext, runId: string): Promise<CommandResult> {
-  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  const agent = newAgent(ctx);
   try {
     const { state, events } = agent.inspect(runId);
     if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify({ state: summarizeRunState(state), events }, null, 2) };
@@ -142,7 +148,7 @@ export async function cmdInspect(ctx: CliContext, runId: string): Promise<Comman
 }
 
 export async function cmdResume(ctx: CliContext, runId: string): Promise<CommandResult> {
-  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  const agent = newAgent(ctx);
   try {
     const state = agent.resume(runId);
     return {
@@ -174,6 +180,47 @@ export async function cmdProviders(ctx: CliContext): Promise<CommandResult> {
   lines.push("credential presence (env vars, §5.1):");
   for (const r of rows) lines.push(`  ${r.kind}: ${r.credentialPresent ? "present" : "not set"}`);
   return { exitCode: EXIT.SUCCESS, output: lines.join("\n") };
+}
+
+export interface ModelsProbeOptions {
+  providerKind: ProviderKind;
+  model: string;
+  baseUrl?: string;
+  trials?: number;
+}
+
+function formatCapabilityProfile(profile: CapabilityProfile, json?: boolean): string {
+  if (json) return JSON.stringify(profile, null, 2);
+  return [
+    `${profile.providerId}/${profile.modelId} capability profile (probed ${new Date(profile.probedAt).toISOString()}):`,
+    `  diff_acc (SEARCH/REPLACE accuracy): ${(profile.diffAcc * 100).toFixed(0)}%`,
+    `  instruction_fidelity (stop obedience): ${(profile.instructionFidelity * 100).toFixed(0)}%`,
+    `  tool_transport: ${profile.toolTransport}`,
+    `  structured_output_reliability: ${(profile.structuredOutputReliability * 100).toFixed(0)}%`,
+    `  effective_context: ~${profile.effectiveContext} chars`,
+    `  loop_check_passed: ${profile.loopCheckPassed}`,
+    `  constrained_decode: ${profile.supportsConstrainedDecode}`
+  ].join("\n");
+}
+
+/** `agent models probe` (§4.9, §18.2): probe once, persist, so future `agent run`s adapt without re-probing. */
+export async function cmdModelsProbe(ctx: CliContext, opts: ModelsProbeOptions): Promise<CommandResult> {
+  const agent = newAgent(ctx);
+  const profile = await agent.probeModel(
+    { providerKind: opts.providerKind, model: opts.model, baseUrl: opts.baseUrl },
+    { trials: opts.trials }
+  );
+  return { exitCode: EXIT.SUCCESS, output: formatCapabilityProfile(profile, ctx.json) };
+}
+
+/** `agent models` (§18.2): shows the persisted profile for a model, if any — doesn't probe. */
+export async function cmdModelsShow(ctx: CliContext, providerKind: ProviderKind, model: string): Promise<CommandResult> {
+  const agent = newAgent(ctx);
+  const profile = agent.getCapabilityProfile(providerKind, model);
+  if (!profile) {
+    return { exitCode: EXIT.SUCCESS, output: ctx.json ? "null" : `${providerKind}/${model} has not been probed yet — run \`clutchcode models probe\`` };
+  }
+  return { exitCode: EXIT.SUCCESS, output: formatCapabilityProfile(profile, ctx.json) };
 }
 
 interface DoctorCheck {

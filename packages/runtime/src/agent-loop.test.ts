@@ -2,11 +2,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { FakeProvider, textTurn, toolCallTurn } from "@clutchcode/providers";
+import { unprobedProfile, type CapabilityProfile } from "@clutchcode/capability";
 import { AgentLoop } from "./agent-loop.js";
 import { commitApprovedRun } from "./approve.js";
 import { createRunState } from "./run-state.js";
 import { setupAgentLoopFixture } from "./test-helpers.js";
 import type { RuntimeEvent } from "./agent-loop.js";
+
+function emulationProfile(): CapabilityProfile {
+  return { ...unprobedProfile("fake", "fake"), toolTransport: "emulation" };
+}
 
 const FIX_EDIT = JSON.stringify({ path: "math.js", edits: [{ search: "return a - b;", replace: "return a + b;" }] });
 
@@ -32,6 +37,35 @@ describe("AgentLoop (end-to-end with a real worktree + FakeProvider)", () => {
       expect(fs.readFileSync(path.join(fx.repoPath, "math.js"), "utf8")).toContain("return a + b;");
       expect(events.some((e) => e.type === "verify.stage" && e.stage === "test" && e.passed)).toBe(true);
       expect(events.some((e) => e.type === "run.end" && e.status === "DONE")).toBe(true);
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("folds projectMemory (AGENTS.md) into the first model request's system message (§10.1)", async () => {
+    const fx = setupAgentLoopFixture("run0000000a");
+    try {
+      const provider = new FakeProvider([toolCallTurn("c1", "edit_file", FIX_EDIT), textTurn("Fixed.")]);
+      const state = createRunState({ runId: fx.run.runId, task: "fix add()", provider: "fake", model: "fake" });
+
+      const loop = new AgentLoop(
+        state,
+        {
+          provider,
+          tools: fx.tools,
+          toolContext: fx.toolContext,
+          run: fx.run,
+          toolchainCommands: fx.toolchainCommands,
+          evidenceDir: fx.evidenceDir,
+          projectMemory: "## Conventions\n- this project uses tabs, not spaces"
+        },
+        { yesMode: true }
+      );
+      await loop.run();
+
+      const firstRequest = provider.requestLog[0]!;
+      expect(firstRequest.messages[0]!.role).toBe("system");
+      expect(firstRequest.messages[0]!.content).toContain("this project uses tabs, not spaces");
     } finally {
       fx.cleanup();
     }
@@ -172,6 +206,110 @@ describe("AgentLoop (end-to-end with a real worktree + FakeProvider)", () => {
 
       expect(finalState.status).toBe("ESCALATED");
       expect(finalState.escalationReason).toMatch(/loop detected: repeated-call/);
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("drives a full fix through the §4.8 text protocol when the capability profile says the model needs emulation", async () => {
+    const fx = setupAgentLoopFixture("run0000000b");
+    try {
+      const toolCallText = [
+        '<tool name="edit_file">',
+        '<arg name="path">math.js</arg>',
+        '<arg name="edits">[{"search":"return a - b;","replace":"return a + b;"}]</arg>',
+        "</tool>"
+      ].join("\n");
+      const provider = new FakeProvider([textTurn(toolCallText), textTurn("Fixed the add() bug.")]);
+      const state = createRunState({ runId: fx.run.runId, task: "fix add()", provider: "fake", model: "fake" });
+
+      const loop = new AgentLoop(
+        state,
+        {
+          provider,
+          tools: fx.tools,
+          toolContext: fx.toolContext,
+          run: fx.run,
+          toolchainCommands: fx.toolchainCommands,
+          evidenceDir: fx.evidenceDir,
+          capabilityProfile: emulationProfile()
+        },
+        { yesMode: true }
+      );
+
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("DONE");
+      expect(finalState.toolCallLog).toHaveLength(1);
+      expect(finalState.toolCallLog[0]!.tool).toBe("edit_file");
+      expect(fs.readFileSync(path.join(fx.repoPath, "math.js"), "utf8")).toContain("return a + b;");
+
+      // No native `tools` schema was offered to the provider — the instructions went in the system prompt instead.
+      expect(provider.requestLog[0]!.tools).toBeUndefined();
+      expect(provider.requestLog[0]!.messages[0]!.content).toContain("Tool-calling protocol");
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("re-prompts on a malformed text-protocol block, then escalates after MAX_TOOL_PARSE_RETRIES", async () => {
+    const fx = setupAgentLoopFixture("run0000000c");
+    try {
+      const malformed = '<tool name="edit_file"></tool><tool name="write_file"></tool>'; // two top-level blocks -> parse error
+      const provider = new FakeProvider([textTurn(malformed), textTurn(malformed), textTurn(malformed)]);
+      const state = createRunState({ runId: fx.run.runId, task: "fix add()", provider: "fake", model: "fake" });
+
+      const loop = new AgentLoop(state, {
+        provider,
+        tools: fx.tools,
+        toolContext: fx.toolContext,
+        run: fx.run,
+        toolchainCommands: fx.toolchainCommands,
+        evidenceDir: fx.evidenceDir,
+        capabilityProfile: emulationProfile()
+      });
+
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("ESCALATED");
+      expect(finalState.escalationReason).toMatch(/tool-call text protocol parse failed repeatedly/);
+      expect(finalState.toolCallLog).toHaveLength(0); // never got a valid call to execute
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("downgrades to write_file after MAX_EDIT_RETRIES failed edit_file attempts on the same file (§4.4)", async () => {
+    const fx = setupAgentLoopFixture("run0000000d");
+    try {
+      const badEdit = JSON.stringify({ path: "math.js", edits: [{ search: "this text does not exist in the file", replace: "x" }] });
+      const goodWrite = JSON.stringify({
+        path: "math.js",
+        body: "// TODO: fix the implementation\nfunction add(a, b) {\n  return a + b;\n}\nmodule.exports = { add };\n"
+      });
+      const provider = new FakeProvider([
+        toolCallTurn("c1", "edit_file", badEdit),
+        toolCallTurn("c2", "edit_file", badEdit),
+        toolCallTurn("c3", "edit_file", badEdit), // 3rd failure crosses MAX_EDIT_RETRIES (2) -> nudge injected
+        toolCallTurn("c4", "write_file", goodWrite),
+        textTurn("Rewrote the file.")
+      ]);
+      const state = createRunState({ runId: fx.run.runId, task: "fix add()", provider: "fake", model: "fake" });
+
+      const loop = new AgentLoop(
+        state,
+        { provider, tools: fx.tools, toolContext: fx.toolContext, run: fx.run, toolchainCommands: fx.toolchainCommands, evidenceDir: fx.evidenceDir },
+        { yesMode: true }
+      );
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("DONE");
+      expect(fs.readFileSync(path.join(fx.repoPath, "math.js"), "utf8")).toContain("return a + b;");
+
+      // The 4th request (index 3, sent right after the 3rd edit_file failure) carries the downgrade nudge.
+      const nudgedRequest = provider.requestLog[3]!;
+      const nudgeMessage = nudgedRequest.messages.find((m) => m.content.includes("switch to write_file"));
+      expect(nudgeMessage).toBeDefined();
     } finally {
       fx.cleanup();
     }

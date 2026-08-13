@@ -5,6 +5,7 @@ import { makeTempDir, makeTempRepo } from "./test-helpers.js";
 import { git } from "./git-exec.js";
 import {
   approveRun,
+  changedFiles,
   checkpoint,
   createRunWorktree,
   diffAgainstBase,
@@ -59,6 +60,16 @@ describe("worktree isolation (§13.1)", () => {
     const diff = diffAgainstBase(run);
     expect(diff).toContain("a.txt");
     expect(diff).toContain("b.txt");
+  });
+
+  it("changedFiles lists touched paths including uncommitted working-tree edits", () => {
+    fs.writeFileSync(path.join(run.worktreePath, "a.txt"), "a\n", "utf8");
+    checkpoint(run, "add a.txt");
+    fs.writeFileSync(path.join(run.worktreePath, "b.txt"), "b\n", "utf8"); // uncommitted
+
+    const files = changedFiles(run);
+    expect(files).toContain("a.txt");
+    expect(files).toContain("b.txt");
   });
 
   it("checkpoint returns null when there is nothing to commit", () => {

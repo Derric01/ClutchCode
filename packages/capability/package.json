@@ -1,7 +1,7 @@
 {
-  "name": "@clutchcode/runtime",
+  "name": "@clutchcode/capability",
   "version": "0.1.0",
-  "description": "The agent runtime: RunState state machine, budgets, loop detection, and the orchestration loop (PROJECT_SPEC.md §6). Model-stubbable via FakeProvider.",
+  "description": "The capability matrix, the per-model probe, and the edit-format selection algorithm (PROJECT_SPEC.md §4 — \"the heart\").",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -12,12 +12,9 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@clutchcode/capability": "workspace:*",
-    "@clutchcode/git": "workspace:*",
     "@clutchcode/providers": "workspace:*",
-    "@clutchcode/sandbox": "workspace:*",
     "@clutchcode/tools": "workspace:*",
-    "@clutchcode/verification": "workspace:*"
+    "smol-toml": "^1.3.1"
   },
   "devDependencies": {
     "typescript": "^5.7.2"

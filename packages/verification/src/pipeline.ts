@@ -48,6 +48,11 @@ export interface PipelineResult {
 const DEFAULT_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_OUTPUT_BUDGET = 20_000;
 
+/** Exported so callers (e.g. AgentLoop's impacted-test fast pass, §14.4) can run a one-off command with the same truncation/timeout handling as a pipeline stage, without going through the full ordered pipeline. */
+export function runAdHocCommand(stage: StageName, command: string | undefined, opts: PipelineOptions): StageResult {
+  return runStage(stage, command, opts);
+}
+
 function runStage(stage: StageName, command: string | undefined, opts: PipelineOptions): StageResult {
   if (!command) {
     return { stage, ran: false, exitCode: null, stdout: "", stderr: "", passed: true, durationMs: 0 };

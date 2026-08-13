@@ -7,6 +7,8 @@ import {
   cmdDoctor,
   cmdInit,
   cmdInspect,
+  cmdModelsProbe,
+  cmdModelsShow,
   cmdProviders,
   cmdReject,
   cmdResume,
@@ -28,6 +30,7 @@ interface GlobalOpts {
   repo: string;
   json: boolean;
   stateDir?: string;
+  configDir?: string;
 }
 
 function emit(result: CommandResult, json: boolean): never {
@@ -44,7 +47,7 @@ function emit(result: CommandResult, json: boolean): never {
 }
 
 function ctx(opts: GlobalOpts): CliContext {
-  return { repoPath: opts.repo, json: opts.json, stateDir: opts.stateDir };
+  return { repoPath: opts.repo, json: opts.json, stateDir: opts.stateDir, configDir: opts.configDir };
 }
 
 const program = new Command();
@@ -54,7 +57,8 @@ function baseOptions(cmd: Command): Command {
   return cmd
     .option("--repo <path>", "repository path", process.cwd())
     .option("--json", "machine-readable JSON output", false)
-    .option("--state-dir <path>", "override the state directory (default: ~/.local/state/clutchcode)");
+    .option("--state-dir <path>", "override the state directory (default: ~/.local/state/clutchcode)")
+    .option("--config-dir <path>", "override the config directory (default: ~/.config/clutchcode)");
 }
 
 baseOptions(program.command("init")).action(async (opts: GlobalOpts) => emit(await cmdInit(ctx(opts)), opts.json));
@@ -109,6 +113,22 @@ baseOptions(program.command("trust")).action(async (opts: GlobalOpts) => emit(aw
 baseOptions(program.command("providers")).action(async (opts: GlobalOpts) => emit(await cmdProviders(ctx(opts)), opts.json));
 
 baseOptions(program.command("doctor")).action(async (opts: GlobalOpts) => emit(await cmdDoctor(ctx(opts)), opts.json));
+
+const models = program.command("models").description("capability profiles (§4.9)");
+
+baseOptions(models.command("probe"))
+  .argument("<model>", "model id to probe")
+  .option("--provider <kind>", "openai-compatible | anthropic | ollama", "openai-compatible")
+  .option("--base-url <url>", "override the provider base URL")
+  .option("--trials <n>", "trials per check (default 2)", (v) => Number.parseInt(v, 10))
+  .action(async (model: string, opts: GlobalOpts & { provider: ProviderKind; baseUrl?: string; trials?: number }) =>
+    emit(await cmdModelsProbe(ctx(opts), { providerKind: opts.provider, model, baseUrl: opts.baseUrl, trials: opts.trials }), opts.json)
+  );
+
+baseOptions(models.command("show"))
+  .argument("<model>", "model id")
+  .option("--provider <kind>", "openai-compatible | anthropic | ollama", "openai-compatible")
+  .action(async (model: string, opts: GlobalOpts & { provider: ProviderKind }) => emit(await cmdModelsShow(ctx(opts), opts.provider, model), opts.json));
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error(err instanceof Error ? err.message : String(err));

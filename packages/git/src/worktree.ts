@@ -72,6 +72,29 @@ export function diffStat(run: RunWorktree): string {
 }
 
 /**
+ * File paths touched relative to base — tracked changes plus new untracked
+ * files, working tree included (for test-selection, §14.4). `git diff`
+ * alone misses untracked files, so it's unioned with `git status`.
+ */
+export function changedFiles(run: RunWorktree): string[] {
+  const tracked = git(["diff", "--name-only", run.baseCommit], { cwd: run.worktreePath, allowFailure: true });
+  const status = git(["status", "--porcelain"], { cwd: run.worktreePath, allowFailure: true });
+
+  const files = new Set<string>();
+  for (const line of tracked.split("\n")) {
+    const f = line.trim();
+    if (f) files.add(f);
+  }
+  for (const line of status.split("\n")) {
+    if (line.startsWith("??")) {
+      const f = line.slice(2).trim();
+      if (f) files.add(f);
+    }
+  }
+  return [...files];
+}
+
+/**
  * A checkpoint commit at each successful verify (§13.2), so rollback is
  * per-step. `--no-verify` bypasses the user's hooks for internal
  * checkpoints (§13.4: hooks run only on the final approved commit).

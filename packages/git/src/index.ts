@@ -6,6 +6,7 @@ export {
   createRunWorktree,
   diffAgainstBase,
   diffStat,
+  changedFiles,
   checkpoint,
   listCheckpoints,
   rollbackTo,

@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   cmdApprove,
@@ -6,6 +8,8 @@ import {
   cmdDoctor,
   cmdInit,
   cmdInspect,
+  cmdModelsProbe,
+  cmdModelsShow,
   cmdProviders,
   cmdReject,
   cmdRun,
@@ -103,6 +107,57 @@ describe("CLI commands (pure functions, no process spawning)", () => {
     const node = parsed.checks.find((c) => c.name === "node");
     expect(node?.ok).toBe(true);
   });
+});
+
+describe("models probe/show (§4.9)", () => {
+  function sseChunk(obj: unknown): string {
+    return `data: ${JSON.stringify(obj)}\n\n`;
+  }
+
+  function startDumbServer(): Promise<{ baseUrl: string; close: () => Promise<void> }> {
+    return new Promise((resolve) => {
+      const server = http.createServer((req, res) => {
+        let body = "";
+        req.on("data", (d) => (body += d));
+        req.on("end", () => {
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          res.write(sseChunk({ choices: [{ delta: { content: "I don't know." }, finish_reason: "stop" }] }));
+          res.end("data: [DONE]\n\n");
+        });
+      });
+      server.listen(0, "127.0.0.1", () => {
+        const addr = server.address() as AddressInfo;
+        resolve({ baseUrl: `http://127.0.0.1:${addr.port}`, close: () => new Promise((r) => server.close(() => r())) });
+      });
+    });
+  }
+
+  it("show reports unprobed before any probe, then probe persists a profile show can find", async () => {
+    const repoPath = makeSampleRepo();
+    const stateDir = makeTempDir("clutchcode-cli-cap-state-");
+    const configDir = makeTempDir("clutchcode-cli-cap-config-");
+    const server = await startDumbServer();
+    try {
+      const before = await cmdModelsShow({ repoPath, stateDir, configDir }, "openai-compatible", "dumb-model");
+      expect(before.output).toMatch(/not been probed/);
+
+      const probed = await cmdModelsProbe(
+        { repoPath, stateDir, configDir },
+        { providerKind: "openai-compatible", model: "dumb-model", baseUrl: server.baseUrl, trials: 1 }
+      );
+      expect(probed.exitCode).toBe(EXIT.SUCCESS);
+      expect(probed.output).toContain("tool_transport: emulation");
+
+      const after = await cmdModelsShow({ repoPath, stateDir, configDir, json: true }, "openai-compatible", "dumb-model");
+      const parsed = JSON.parse(after.output) as { toolTransport: string };
+      expect(parsed.toolTransport).toBe("emulation");
+    } finally {
+      await server.close();
+      fs.rmSync(repoPath, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+      fs.rmSync(configDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
 
 describe("exitCodeForRunStatus", () => {
