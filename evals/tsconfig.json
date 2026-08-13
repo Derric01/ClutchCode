@@ -1,0 +1,19 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "resolveJsonModule": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts", "dist"],
+  "references": [
+    { "path": "../packages/agent-api" },
+    { "path": "../packages/git" },
+    { "path": "../packages/providers" },
+    { "path": "../packages/runtime" },
+    { "path": "../packages/sandbox" },
+    { "path": "../packages/tools" },
+    { "path": "../packages/verification" }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@clutchcode/agent-api",
+  "version": "0.1.0",
+  "description": "The Agent API boundary (PROJECT_SPEC.md §18, §24, ADR-011): in-process binding for the CLI/TUI. apps/* depend only on this package, never on @clutchcode/runtime internals.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@clutchcode/git": "workspace:*",
+    "@clutchcode/providers": "workspace:*",
+    "@clutchcode/runtime": "workspace:*",
+    "@clutchcode/tools": "workspace:*",
+    "@clutchcode/verification": "workspace:*",
+    "@clutchcode/sandbox": "workspace:*",
+    "smol-toml": "^1.3.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

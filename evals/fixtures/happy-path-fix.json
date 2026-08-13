@@ -1,0 +1,47 @@
+{
+  "name": "happy-path-fix",
+  "description": "The model reads the bug, applies the correct SEARCH/REPLACE fix in one shot, and stops. Verification goes green, --yes auto-commits.",
+  "task": "fix add() to add instead of subtract",
+  "yesMode": true,
+  "turns": [
+    {
+      "kind": "deltas",
+      "deltas": [
+        {
+          "type": "tool_call_start",
+          "id": "c1",
+          "name": "edit_file"
+        },
+        {
+          "type": "tool_call_delta",
+          "id": "c1",
+          "argsDelta": "{\"path\":\"math.js\",\"edits\":[{\"search\":\"return a - b;\",\"replace\":\"return a + b;\"}]}"
+        },
+        {
+          "type": "tool_call_end",
+          "id": "c1"
+        },
+        {
+          "type": "done",
+          "finishReason": "tool_use"
+        }
+      ]
+    },
+    {
+      "kind": "deltas",
+      "deltas": [
+        {
+          "type": "text",
+          "text": "Fixed the add() bug."
+        },
+        {
+          "type": "done",
+          "finishReason": "stop"
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "status": "DONE"
+  }
+}

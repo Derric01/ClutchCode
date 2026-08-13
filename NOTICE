@@ -1,0 +1,10 @@
+ClutchCode
+Copyright 2026 The ClutchCode Authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+ClutchCode is an original implementation. It was designed after researching
+several prior-art open-source coding-agent projects for their publicly
+documented architecture and behavior (never their source code or prompts).
+See docs/PRIOR_ART.md and LICENSE_AND_REUSE_ANALYSIS.md for the full
+provenance and reuse rules that governed this implementation.

@@ -1,0 +1,24 @@
+{
+  "name": "@clutchcode/runtime",
+  "version": "0.1.0",
+  "description": "The agent runtime: RunState state machine, budgets, loop detection, and the orchestration loop (PROJECT_SPEC.md §6). Model-stubbable via FakeProvider.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@clutchcode/git": "workspace:*",
+    "@clutchcode/providers": "workspace:*",
+    "@clutchcode/sandbox": "workspace:*",
+    "@clutchcode/tools": "workspace:*",
+    "@clutchcode/verification": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "name": "adversarial-loop",
+  "description": "The model calls read_file with identical arguments four turns in a row (a stuck/looping model). The loop detector must escalate instead of burning the full step budget.",
+  "task": "investigate the bug (adversarial: never edits)",
+  "yesMode": false,
+  "turns": [
+    {
+      "kind": "deltas",
+      "deltas": [
+        {
+          "type": "tool_call_start",
+          "id": "c1",
+          "name": "read_file"
+        },
+        {
+          "type": "tool_call_delta",
+          "id": "c1",
+          "argsDelta": "{\"path\":\"math.js\"}"
+        },
+        {
+          "type": "tool_call_end",
+          "id": "c1"
+        },
+        {
+          "type": "done",
+          "finishReason": "tool_use"
+        }
+      ]
+    },
+    {
+      "kind": "deltas",
+      "deltas": [
+        {
+          "type": "tool_call_start",
+          "id": "c2",
+          "name": "read_file"
+        },
+        {
+          "type": "tool_call_delta",
+          "id": "c2",
+          "argsDelta": "{\"path\":\"math.js\"}"
+        },
+        {
+          "type": "tool_call_end",
+          "id": "c2"
+        },
+        {
+          "type": "done",
+          "finishReason": "tool_use"
+        }
+      ]
+    },
+    {
+      "kind": "deltas",
+      "deltas": [
+        {
+          "type": "tool_call_start",
+          "id": "c3",
+          "name": "read_file"
+        },
+        {
+          "type": "tool_call_delta",
+          "id": "c3",
+          "argsDelta": "{\"path\":\"math.js\"}"
+        },
+        {
+          "type": "tool_call_end",
+          "id": "c3"
+        },
+        {
+          "type": "done",
+          "finishReason": "tool_use"
+        }
+      ]
+    },
+    {
+      "kind": "deltas",
+      "deltas": [
+        {
+          "type": "tool_call_start",
+          "id": "c4",
+          "name": "read_file"
+        },
+        {
+          "type": "tool_call_delta",
+          "id": "c4",
+          "argsDelta": "{\"path\":\"math.js\"}"
+        },
+        {
+          "type": "tool_call_end",
+          "id": "c4"
+        },
+        {
+          "type": "done",
+          "finishReason": "tool_use"
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "status": "ESCALATED",
+    "escalationReasonMatches": "loop detected: repeated-call"
+  }
+}
