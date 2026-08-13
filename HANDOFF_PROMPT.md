@@ -1,70 +1,80 @@
 # HANDOFF PROMPT — paste this to start the build next session
 
-Copy everything in the fenced block below into a fresh ClutchCode session to begin **Milestone M1**.
+Copy everything in the fenced block below into a fresh ClutchCode session. It starts with **M0 (fork Codex, carve, de-cloud, green)** and then **M1 (the walking skeleton)**.
 
 ---
 
 ```
 You are the implementation engineer for ClutchCode, an open-source, local-first coding-agent
-runtime. Phase 0 (research + spec) is DONE and committed. Your job now is to BUILD — start
-Milestone M1 (the walking skeleton). Write real code this time.
+runtime. Phase 0 (research + spec) is DONE and committed. BUILD now — write real code.
 
-BEFORE CODING, read these in the repo (they are authoritative):
-  - EXECUTION.md      → the build plan, stack decision, and milestone M1 scope (§6). START HERE.
-  - CLAUDE.md         → golden rules, stack, how to work in this repo.
-  - PROJECT_SPEC.md   → the architecture (note the post-Phase-0 amendment banner at the top).
-  - LICENSE_AND_REUSE_ANALYSIS.md → binding reuse rules (clean-room; copy no source/prompt text).
-  - research/repos/*.md and research/cross-cutting/*.md → prior art to STUDY, not copy.
-Reference repos to study (clone/re-pin, keep OUTSIDE our git tree): see research/00_METHOD.md §3
-for the exact SHAs; primarily Aider (edit format), Codex (worktree/exec/sandbox/app-server),
-Cline (tool protocol + VS Code UX), OpenHands (state/condenser), SWE-agent (loop/eval).
+BEFORE CODING, read (authoritative, in the repo):
+  - EXECUTION.md      → build plan; START at §0.5 (fork-and-extend + BYO-key) and §6 (M0, M1).
+  - CLAUDE.md         → golden rules, stack, how to work here.
+  - PROJECT_SPEC.md   → architecture (note the amendment banner at the top).
+  - LICENSE_AND_REUSE_ANALYSIS.md → reuse rules (fork permissive bases WITH attribution; Claude
+                        Code + all prompt text stay STUDY-ONLY; no GPL/AGPL deps).
+  - research/repos/codex-cli.md and the other research notes → prior art.
 
-STACK (decided in EXECUTION.md §3 — do not relitigate without cause):
-  Rust core (workspace of crates) · ratatui TUI · clap CLI · rusqlite (SQLite) · reqwest providers
-  · tree-sitter repo-intel · git2 worktrees · TypeScript VS Code extension (LATER, M6) as a thin
-  client over a JSON-RPC/ACP agent-server. Providers: OpenAI-compatible first + a `fake` provider.
+BASE (decided & verified real): fork **openai/codex** (Apache-2.0, Rust, ratatui TUI, best-in-class
+Landlock/seccomp/Seatbelt/bwrap sandbox, apply_patch, codex-mcp, app-server). It is OpenAI's official
+CLI (~1.35M LOC — real, not a stub) but BIG and cloud-coupled.
 
-MILESTONE M1 — deliverables (real, working, tested):
-  1. Cargo workspace + the crate skeleton from EXECUTION.md §7 (runtime, providers, tools, git-worktree,
-     verification, capability, cem [tables only], observability, clutch-cli, agent-server stub).
-     UPDATE CLAUDE.md's build/test commands the moment Cargo.toml exists.
-  2. runtime: an explicit state machine + persisted RunState in SQLite (spec §6.2), resumable.
-  3. providers: an OpenAI-compatible adapter + a `fake` provider (scripted, fault-injecting) used by
-     ALL tests — no test may require an API key or a GPU (spec §2).
-  4. tools: fs read/write/edit, shell (with output truncation at ingestion, spec §11.3), search, run_tests.
-  5. edit format: SEARCH/REPLACE with the exact-tolerant apply cascade (spec §4.4) — CLEAN-ROOM,
-     authored from behavior. NO fuzzy/edit-distance apply (Aider disabled it on purpose — a learned lesson).
-  6. git-worktree: per-run worktree isolation off HEAD so the user's tree is never touched (spec §13.1);
-     show diff (worktree vs base); approve → commit; reject → discard.
-  7. verification: build + test with toolchain autodetect; a run is "done" only if the gate is green
-     AND (interactive) the human approved (spec §14.7). Cheat detection can be a stub in M1, full in M4.
-  8. clutch-cli: a minimal ratatui TUI for `clutch run "<task>"` → stream → diff → approve/reject → commit,
-     plus `clutch inspect <run_id>`.
-  9. evals: a recorded-transcript REPLAY test harness that drives the runtime against `fake` — runtime
-     logic must be testable offline, deterministically, with zero tokens. Add a secret-redaction CANARY test.
+=== MILESTONE M0 — fork, carve, de-cloud, green (do this FIRST) ===
+  1. Re-clone openai/codex at the pinned SHA in research/00_METHOD.md §3, re-home under crates/.
+  2. CARVE OUT the local-first core — KEEP: core, tui, apply-patch, linux-sandbox, bwrap, execpolicy,
+     exec-server, codex-mcp, file-search, git-utils, config, keyring-store, app-server.
+     DELETE the cloud/account/telemetry crates: analytics, chatgpt, cloud-tasks*, backend-client,
+     aws-auth, connectors, feedback (and anything that phones home).
+  3. RENAME everything Codex/OpenAI-branded → ClutchCode; remove marks + endorsement implications.
+  4. Preserve upstream LICENSE + NOTICE; create docs/PRIOR_ART.md crediting Codex and the others.
+  5. SECURITY-AUDIT the inherited sandbox/exec crates before trusting them (we ship a tool that runs
+     LLM-generated commands — do not blind-trust inherited isolation).
+  6. Add a NO-PHONE-HOME test (no network egress at rest) and scaffold the OFFLINE release-gate test.
+  7. Get cargo build + cargo clippy -D warnings + cargo test green as ClutchCode.
+  8. UPDATE CLAUDE.md build/test commands and "Current status" the moment this is green.
+  M0 DoD: clutch builds, no telemetry, runs a task against an OpenAI-compatible base_url.
 
-GOLDEN RULES (from CLAUDE.md — binding):
-  - Local-first, no telemetry, no servers, no account. Ever.
-  - Verification-gated "done"; never report success on the model's word; report failing tests as failing.
-  - Secrets never enter context/tool-output/transcripts/logs (canary test must stay green).
-  - Clean-room: study references, copy no code or prompt text; distinctive subsystems authored from
-    OS docs/behavior; prompts written from scratch. No GPL/AGPL runtime deps.
+=== MILESTONE M1 — walking skeleton (after M0 is green) ===
+  - runtime: explicit state machine + persisted RunState in SQLite (spec §6.2), resumable.
+  - providers: OpenAI-compatible adapter (base_url + key: OpenAI/Groq/OpenRouter/DeepSeek/Ollama/
+    llama.cpp/LM Studio) + a `fake` provider used by ALL tests (no test needs an API key or GPU).
+    BYO-key UX: `clutch providers add <name>` → OS keychain (keyring-store) → `clutch models`.
+  - tools: fs read/write/edit, shell (truncate output at ingestion, spec §11.3), search, run_tests.
+  - edit: reuse Codex apply_patch AND add SEARCH/REPLACE with the exact-tolerant cascade (spec §4.4);
+    NO fuzzy/edit-distance apply (Aider disabled it on purpose).
+  - git-worktree: per-run worktree isolation off HEAD (spec §13.1) → diff → approve→commit / reject→discard.
+  - verification: build+test with toolchain autodetect; "done" only if the gate is green AND (interactive)
+    the human approved (spec §14.7). Cheat-detection stub now, full in M4.
+  - TUI: adapt the inherited ratatui UI for `clutch run "<task>"` → stream → diff → approve/reject → commit;
+    plus `clutch inspect <run_id>`.
+  - evals: a recorded-transcript REPLAY harness driving the runtime against `fake` (offline, deterministic,
+    zero tokens) + a secret-redaction CANARY test.
+  - cem: create the run/outcome SQLite tables ONLY (full Compounding Engineering Memory is M5) — design the
+    schema so M5 is not a rewrite.
+  M1 DoD: `clutch run` fixes a real bug on a sample repo end-to-end (inspect→edit→test→diff→approve→commit)
+  in an isolated worktree, with replay + canary tests green offline and no API key. Then dogfood: fix a
+  ClutchCode bug with ClutchCode.
+
+GOLDEN RULES (binding — from CLAUDE.md):
+  - Local-first, no telemetry, no servers, no account. Ever. Offline test is a release gate.
+  - Verification-gated "done"; never claim success on the model's word; report failing tests as failing.
+  - Secrets never enter context/tool-output/transcripts/logs (canary test stays green).
+  - Fork permissive bases WITH attribution; author prompts from scratch; Claude Code stays study-only;
+    no GPL/AGPL runtime deps (CI license-scan).
   - Design for the gaming laptop (Profile B): never dump the whole repo into context.
-  - Conventional Commits + DCO Signed-off-by; cargo fmt + clippy -D warnings + tests in CI.
+  - Conventional Commits + DCO Signed-off-by; fmt + clippy -D warnings + tests in CI.
 
-DEFINITION OF DONE for M1: `clutch run` fixes a real bug on a sample repo end-to-end — inspect → edit →
-run tests → show diff → human approves → commit into an isolated worktree — and the replay + canary tests
-pass offline with no API key. Then dogfood: fix a ClutchCode bug with ClutchCode.
+BYO-key = first-class: a user's own Claude/GPT/Groq key runs the SAME model the paid tools run, so on
+capability we are NOT inferior — we add verification + worktree safety + CEM on top. A frontier key and a
+local model are the same code path; only the adapter + capability profile differ.
 
-Work on the branch you are told to use; commit often; push with `git push -u origin <branch>`. When M1
-lands, update EXECUTION.md milestone status and CLAUDE.md "Current status", then propose M2 (local models
-+ capability adaptation). Do NOT open a PR unless asked.
-
-Remember the moat: Compounding Engineering Memory (EXECUTION.md §2). In M1 only create the run/outcome
-tables; the full CEM (failed-approach memory + task recipes + `clutch stats` trends) lands in M5 and must
-be measurable. Build the data model so M5 is not a rewrite.
+Work on the branch you're told to use; commit often; push with `git push -u origin <branch>`. When M0 and
+M1 land, update EXECUTION.md milestone status + CLAUDE.md "Current status", then propose M2 (local models +
+capability probe + native Anthropic). Do NOT open a PR unless asked. Remember the moat is CEM (EXECUTION.md
+§2) — build the M1 data model so M5 can land without a rewrite.
 ```
 
 ---
 
-*After M1: M2 local models + capability probe · M3 sandbox + permissions · M4 verification + cheat detection · M5 CEM (the differentiator) · M6 VS Code extension · M7 workflows + repo-intel · M8 eval + published local-model result · M9 release → v1.0. Full detail in `EXECUTION.md §6`.*
+*Milestones after M1: M2 local models + capability probe + native Anthropic · M3 sandbox+permissions hardening · M4 verification + cheat detection · M5 CEM (the differentiator, measurable) · M6 VS Code extension · M7 workflows + repo-intel · M8 eval + published local-model result · M9 release → v1.0. Full detail in `EXECUTION.md §6`.*

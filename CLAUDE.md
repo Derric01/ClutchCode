@@ -7,10 +7,12 @@
 
 ## Current status
 - **Phase 0 (research + spec): DONE** — spec, license analysis, and `research/**` are committed.
-- **Next: Milestone M1** (walking skeleton) per `EXECUTION.md §6`. No product code exists yet.
+- **Base decided: fork `openai/codex`** (Apache-2.0, Rust, ratatui TUI, best-in-class sandbox, `app-server`). Verified real & official (~1.35M LOC). We fork the **local-first core** and **delete its cloud/telemetry crates** (`analytics`, `chatgpt`, `cloud-tasks*`, `backend-client`, `aws-auth`, `connectors`, `feedback`).
+- **Next: Milestone M0** (fork, carve, de-cloud, green) then **M1** (walking skeleton) per `EXECUTION.md §6`. No product code exists in this repo yet.
 
-## The stack (decided — see `EXECUTION.md §3`)
-- **Core: Rust** (workspace of crates). **TUI: `ratatui`** (Codex-like). **CLI: `clap`**.
+## The stack (decided — see `EXECUTION.md §3` and §0.5)
+- **Base: fork of `openai/codex`** (Apache-2.0), carved to the local-first core, cloud/telemetry crates removed. Study `research/repos/codex-cli.md` before touching it.
+- **Core: Rust** (workspace of crates). **TUI: `ratatui`** (inherited from Codex). **CLI: `clap`**.
 - **VS Code extension: TypeScript**, a *thin client* talking to the Rust `agent-server` over **JSON-RPC/ACP**. Do not put agent logic in the extension.
 - **Storage: SQLite** (`rusqlite`) + JSONL transcripts + in-repo `AGENTS.md`/`.clutchcode/`.
 - **Sandbox: native** Landlock+seccomp (Linux), Seatbelt (mac), bwrap; WSL2 for Windows.
