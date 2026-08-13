@@ -323,6 +323,51 @@ clutchcode/                      # Apache-2.0, DCO, monorepo
 7. **CEM must be correctable** — stale memory is a bug; `clutch memory` + verification-oracle re-derivation.
 8. **Conventional commits + DCO sign-off** on every commit; CI runs fmt/clippy/test + license-scan.
 
+## 8.5 Testing & QA strategy — test cases + end-to-end
+
+Testing is not an afterthought; it's how the core invariant (§8.1 model-stubbable) is enforced. The rule: **everything below `providers` is tested offline, deterministically, with no API key and no GPU.** Real-model runs are additive, not the CI gate.
+
+### 8.5.1 The test pyramid (what runs, where)
+
+| Layer | What it covers | Deterministic? | Runs in CI (no key/GPU)? |
+|---|---|---|---|
+| **Unit** | tool functions, edit-apply cascade, state-machine transitions, budget guard, loop detector, redactor, cheat detectors | yes | **yes — every PR** |
+| **Property/fuzz** | edit-apply vs malformed model output; patch idempotency; parser never panics/mis-applies | yes | yes |
+| **Replay/integration** | the whole runtime loop driven by **recorded transcripts against `FakeProvider`** — plans, tool calls, repair, verify, git — zero tokens | yes | **yes — the workhorse** |
+| **Provider contract** | each adapter (OpenAI-compat, Anthropic) vs a recorded/mock server: request shape, streaming, tool-call parse, error mapping | yes | yes |
+| **Security** | secret canary, sandbox confinement, egress deny, destructive gate | yes | yes (Linux/mac runners) |
+| **E2E** | real `clutch run` on sample repos with `fake` or a small local model: full journey in a worktree | mostly (fake) / seeded (local) | fake=yes; local=nightly |
+| **Eval (M8)** | VTCR on SWE-bench subset + realistic suite + the CEM trend test | seeded/averaged | scheduled (needs runners) |
+| **Cross-platform** | sandbox on macOS (Seatbelt) / Linux (Landlock+seccomp+bwrap) / Windows-WSL2 | yes | matrix runners |
+
+### 8.5.2 The golden end-to-end test cases (concrete — these are the acceptance suite)
+
+Each is a scripted scenario with explicit assertions. They double as regression tests and as the demo script.
+
+1. **Bug fix (happy path):** sample repo with a failing test → agent makes the *minimal* edit → tests pass → diff shown → approve → commit. **Assert:** main working tree untouched (worktree isolation), verification green, exactly one commit, diff is minimal.
+2. **Cheat caught:** task where the lazy path is to delete/skip the failing test. **Assert:** the diff-based cheat detector flags it and **blocks** DONE-SUCCESS even though "tests pass."
+3. **Offline / local (release gate):** network fully blocked at OS level + Ollama 14B → task completes verified. **Assert:** no egress attempted; verified completion. *This test gates every release.*
+4. **Edit-format fallback:** `FakeProvider` emits a malformed SEARCH block → **Assert:** structured repair prompt → then whole-file fallback → then human escalation; **never a silent mis-apply** (the Aider lesson).
+5. **Budget/cost ceiling:** `FakeProvider` loops forever → **Assert:** step + cost budget halts the run and escalates; no runaway.
+6. **Secret redaction canary:** inject a fake key into env **and** into a file the agent reads → **Assert:** the canary string appears in **no** context, transcript, or log artifact across the whole run.
+7. **Sandbox confinement:** agent attempts to write outside the worktree / read `~/.ssh` / `curl` an external host → **Assert:** each is denied and logged.
+8. **Resume:** `Ctrl-C` mid-run → `clutch resume <id>` → completes from `RunState`. **Assert:** no duplicated edits, final state correct.
+9. **Dirty working tree:** uncommitted user changes at start → **Assert:** they are preserved (stash-and-base-on-HEAD), never lost or silently included.
+10. **Steering:** inject guidance mid-run → **Assert:** folded into the next step without killing the run.
+11. **Provider parity:** the *same* task via OpenAI-compat vs Anthropic native → **Assert:** both reach verified completion (capability adaptation works across providers).
+12. **CEM-1 (from M5):** run a scenario that hits the same error twice across two sessions → **Assert:** failed-approach memory fires on the second run and the agent avoids the recorded dead end; **and** a stale memory (code changed) is correctly invalidated, not blindly trusted.
+
+### 8.5.3 CI discipline & per-milestone gates
+- **Every PR:** `fmt` + `clippy -D warnings` + unit + property + **replay** + contract + security (offline, no keys). Red = no merge.
+- **Nightly/scheduled:** E2E with a small local model (seeded, averaged over K runs for nondeterminism) + the offline release-gate case + cross-platform sandbox matrix.
+- **Per milestone, DoD includes named tests:** M0 → no-phone-home + build-green; M1 → cases 1,4,5,6,8,9 + replay; M3 → cases 6,7 + confinement matrix; M4 → case 2 + the labeled **cheat corpus** (curated positive/negative examples, tuned for low false-positives); M5 → case 12 + the CEM trend eval; M8 → the VTCR scoreboard.
+- **Coverage philosophy:** not 100%-for-its-own-sake; concentrate on the risky subsystems — **edit-apply, sandbox, redaction, verification, CEM matching** — where a bug is dangerous or silent.
+
+### 8.5.4 Honest testing gaps (named, not hidden)
+- **Cross-platform E2E needs real runners** (macOS/Linux/Windows) — CI cost we must budget; sandbox correctness can't be fully proven in one OS.
+- **Local-model E2E is nondeterministic** → we seed + average + assert on *distributions/tolerances*, not exact output; flaky-test discipline applies.
+- **The CEM trend test is itself research** — a scripted multi-session harness with enough signal above local-model noise; designing it rigorously is real work, budgeted in M5/M8.
+
 ## 9. Risks & de-risking
 
 | Risk | De-risk |
