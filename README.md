@@ -12,6 +12,9 @@ See [`PROJECT_SPEC.md`](./PROJECT_SPEC.md) for the full architecture and
 design rationale (the authoritative Phase 0 deliverable), and
 [`LICENSE_AND_REUSE_ANALYSIS.md`](./LICENSE_AND_REUSE_ANALYSIS.md) for the
 licensing/reuse rules that govern this implementation.
+[`HANDOFF.md`](./HANDOFF.md) tracks current status and what's next, and
+[`CLAUDE.md`](./CLAUDE.md) has dev commands and architecture orientation
+for Claude Code sessions working in this repo.
 
 ## Status
 
