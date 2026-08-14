@@ -5,8 +5,8 @@ import type { RunState } from "./run-state.js";
 /**
  * RunState persistence (PROJECT_SPEC.md §6.2, §15, §19.2).
  *
- * The spec's target storage is SQLite + JSONL (§15.1, §19.2). This MVP
- * implementation persists RunState as JSON under
+ * The spec's target storage is SQLite + JSONL (§15.1, §19.2). Phase 1
+ * persists RunState as JSON under
  * `<stateDir>/runs/<run_id>/state.json` — the same directory layout the
  * spec names for session storage (§10) — deliberately avoiding a native
  * SQLite dependency for Phase 1. It is a drop-in-replaceable interface

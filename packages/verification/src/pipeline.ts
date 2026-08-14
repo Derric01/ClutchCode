@@ -9,7 +9,7 @@ import type { ToolchainCommands } from "./toolchain.js";
  * build → test → lint → typecheck → static-analysis → security-scan → diff-review → behavior-verification
  * ```
  *
- * MVP implements the deterministic subset (build/test/lint/typecheck); the
+ * Phase 1 implements the deterministic subset (build/test/lint/typecheck); the
  * remaining stages are model-based/advisory (§14.3) or Phase 2+ (static
  * analysis, security scan) and are out of scope here. A model never
  * overrides a deterministic failure — this pipeline's result IS the gate.

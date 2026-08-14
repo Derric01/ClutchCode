@@ -13,7 +13,7 @@ auditable.
 | Explicit resumable run state | OpenHands' `AgentController` / `State` object (behavior studied via `research/repos/openhands.md`) | The idea that agent state should be a first-class, persisted, resumable object | OpenHands' source, its Action/Observation class hierarchy |
 | Workflow stage concept | Archon (behavior studied via `research/repos/archon.md`) | The idea of explicit, inspectable, resumable task/stage state | Archon's source (a knowledge-base/task service, not a code editor) |
 | Tiered OS sandbox | Codex's Seatbelt/Landlock/bwrap usage (behavior studied via `research/repos/codex-cli.md`) | The idea of tiering OS sandbox primitives with Docker as an optional stronger tier, not the default | Codex's source, its exact policy strings |
-| PageRank repo map (Phase 7, not in MVP) | Aider's `repomap.py` (behavior studied) | The idea of ranking symbols via PageRank over an import/symbol graph | Aider's source |
+| PageRank repo map (Phase 7, not Phase 1) | Aider's `repomap.py` (behavior studied) | The idea of ranking symbols via PageRank over an import/symbol graph | Aider's source |
 
 Rule of thumb enforced by code review: **patterns in, expression out.** If a
 PR's diff is close enough to a reference project's source that it reads as a

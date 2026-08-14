@@ -7,7 +7,7 @@
  *   chat(request: NormalizedRequest): AsyncStream<Delta>
  *   supportsNativeTools, supportsParallelTools, supportsConstrainedDecode
  * }
- * Adapters (MVP): OpenAICompatible (covers most), Anthropic (native), Ollama (native+model mgmt).
+ * Adapters (Phase 1): OpenAICompatible (covers most), Anthropic (native), Ollama (native+model mgmt).
  * FakeProvider (CI): scripted, fault-injecting.
  * ```
  */

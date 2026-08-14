@@ -2,7 +2,7 @@ import path from "node:path";
 
 /**
  * Test selection (PROJECT_SPEC.md §14.4) — "don't run 20 min on a 1-line
- * change." MVP heuristic: map changed files to test files by naming
+ * change." Phase 1 heuristic: map changed files to test files by naming
  * convention (path+import heuristics, per the spec's own admission that
  * impact-mapping is language-dependent and starts simple, §14.4 note).
  * Falls back to the full suite whenever any changed file can't be

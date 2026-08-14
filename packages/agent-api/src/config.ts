@@ -6,7 +6,7 @@ import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
  * Config schema/contract (PROJECT_SPEC.md §19.2, ADR-003): `agent.toml`,
  * TOML for human-editability + comments. Full JSON-Schema validation and
  * `apiVersion`-gated migrations (§8.2) are a Phase-2 hardening item; this
- * MVP loader validates just enough shape to fail loudly on garbage.
+ * loader validates just enough shape to fail loudly on garbage.
  */
 
 export interface ProviderConfig {

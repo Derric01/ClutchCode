@@ -10,7 +10,7 @@ export interface BuildProviderOptions {
 }
 
 /**
- * Provider abstraction wiring (§4.7): one factory over the MVP adapters.
+ * Provider abstraction wiring (§4.7): one factory over the Phase 1 adapters.
  * `"fake"` is exposed intentionally — it powers `agent run --dry-run` /
  * offline demos and the test suite, never a real task by accident (the CLI
  * never selects it implicitly).

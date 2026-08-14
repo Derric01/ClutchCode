@@ -25,7 +25,7 @@ Synthesized from Codex (`codex-rs/linux-sandbox/`, verified) + repo notes. Feeds
 | Windows restricted-token/AppContainer | med | n/a | unaffected | medium | weak story ([C:Low]) |
 | WSL2 | med | good in-distro | **CUDA works** | good | **Profile-B Windows path** |
 | Docker/Podman | **high** | **poor (virtiofs)** | **painful, esp. mac** | strong | **opt-in only** |
-| Firecracker microVM | high | good | complex | strongest | out of MVP scope |
+| Firecracker microVM | high | good | complex | strongest | out of Phase 1 scope |
 
 ## Key judgment (contra OpenHands)
 **Docker is not a free default on a laptop:** daemon startup, multi-GB images, slow bind-mounts on macOS, and it **fights local-model GPU passthrough** — so users disable it and end up *less* safe than a lightweight always-on OS sandbox. ClutchCode makes Tier1 (Seatbelt/bwrap+Landlock/WSL2) the default and Docker an opt-in stronger tier.

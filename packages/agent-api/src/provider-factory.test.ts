@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildProvider } from "./provider-factory.js";
 
 describe("buildProvider", () => {
-  it("builds each MVP provider kind with the expected id", () => {
+  it("builds each Phase 1 provider kind with the expected id", () => {
     expect(buildProvider({ kind: "anthropic", credentials: {} }).id).toBe("anthropic");
     expect(buildProvider({ kind: "openai-compatible", credentials: {} }).id).toBe("openai-compatible");
     expect(buildProvider({ kind: "ollama", credentials: {} }).id).toBe("ollama");

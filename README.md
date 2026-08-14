@@ -15,8 +15,8 @@ licensing/reuse rules that govern this implementation.
 
 ## Status
 
-**Phase 1 (MVP) shipped; Phase 2 in progress.** Per `PROJECT_SPEC.md §21`,
-the MVP is: one agent, one default workflow, two provider adapters
+**Phase 1 shipped; Phase 2 in progress.** Per `PROJECT_SPEC.md §21`,
+Phase 1 is: one agent, one default workflow, two provider adapters
 (OpenAI-compatible + Ollama; Anthropic native shipped early too),
 SEARCH/REPLACE edits with fallback, git worktree isolation, deterministic
 verification with cheat detection, and a terminal CLI — all done. The
@@ -41,8 +41,8 @@ resume <runId> --extend-steps N` (also `--extend-wallclock-ms` /
 transcript and actually continues it, rather than only re-attaching and
 reporting status. `agent run` gained matching `--max-steps` /
 `--max-wallclock-ms` / `--max-tokens` / `--cost-ceiling-usd` budget
-overrides. OS keychain credential storage and the VS Code extension remain
-the named Phase 2/3 follow-ups (`PROJECT_SPEC.md §21/§25`).
+overrides. OS keychain credential storage remains a named Phase 2 follow-up
+(`PROJECT_SPEC.md §21/§25`).
 
 **Phase 5's git edge cases (§13.4/§13.5) are done.** Submodule writes now
 ask for explicit approval instead of silently landing in the run's own
@@ -80,8 +80,33 @@ this environment, so that's flagged rather than claimed. `agent.toml`'s
 breaks a legitimate workflow; `agent doctor` reports which backend is
 active. Not yet layered in: Landlock/seccomp on top of bwrap, and a
 Windows backend (WSL2 is the spec's own recommended path there). OS
-keychain credential storage and the VS Code extension remain the last
-named Phase 2/3 follow-ups.
+keychain credential storage remains the last named Phase 2 follow-up.
+
+**Phase 4's VS Code extension (§18.1/§18.5) is built.** A new
+`@clutchcode/agent-rpc` package gives the runtime a second binding
+alongside the in-process one the CLI uses: LSP-style framed JSON-RPC 2.0
+over stdio (`Content-Length`-prefixed messages, a `FrameDecoder` that
+handles partial/chunked delivery), with `run/status/listRuns/diff/approve/
+reject/resume/inspect/checkpoints/rollback/pr` mapped onto real `Agent`
+methods and runtime events forwarded as `clutchcode/event` notifications.
+`clutchcode serve` runs it over real stdin/stdout. `apps/vscode` is a thin
+client of that boundary — per §18.1's "no separate reimplementation of
+agent logic," `runTask.ts`/`connection.ts`/`presentation.ts` hold all of
+the orchestration (run → stream → diff → approve/reject) and spawn logic
+with zero `vscode` import, and are proven with real round-trip tests: a
+real `Agent` behind a real `AgentRpcClient` over `PassThrough` streams, and
+a separate test that spawns the actual compiled `clutchcode serve` binary
+as a child process and drives a run through it end to end. `extension.ts`
+— the one file that calls `vscode.window`/`vscode.commands` — type-checks
+cleanly against the official `@types/vscode` but has **not** run inside a
+real VS Code extension host; there's no `vscode` runtime in this
+environment to verify it against, and the code says so in a header
+comment rather than claiming more than was checked (`apps/vscode/README.md`
+states the same boundary). Not yet built: a native two-sided diff view (a
+single read-only diff-highlighted document today, not `vscode.diff`), a
+run-picker instead of typing a run id, and resume/rollback/pr commands in
+the extension UI (the CLI has them; the extension covers §18.5's core
+run/diff/approve/reject loop).
 
 ## Repository layout
 
@@ -93,9 +118,11 @@ packages/
   git/            worktree isolation, checkpoints, diff
   verification/   pipeline, toolchain detect, cheat detection
   capability/     capability probe, profile persistence, context budgeter, edit-format selector
-  agent-api/      the Agent API boundary (in-process; stdio JSON-RPC later)
+  agent-api/      the Agent API boundary (in-process)
+  agent-rpc/      the Agent API's stdio JSON-RPC binding (LSP-style framing, ACP-shaped)
 apps/
-  cli/            `clutchcode` CLI (thin client of agent-api)
+  cli/            `clutchcode` CLI (thin client of agent-api; `serve` exposes agent-rpc)
+  vscode/         VS Code extension (thin client of agent-rpc over a spawned CLI)
 evals/            recorded-transcript replay harness against FakeProvider
 docs/             PRIOR_ART.md, adr/
 tests/            cross-package integration tests

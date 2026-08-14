@@ -25,7 +25,7 @@ Compressed notes (most-relevant fields) for the remaining Tier-2 targets. Each v
 ## gptme — `gptme/gptme` @ `fce2fbe` · MIT · Python
 - **What/why:** **Minimal-loop reference.** A small, hackable terminal agent — good for seeing the *irreducible core* of a coding agent.
 - **Architecture:** compact loop; tools via a simple registry (shell, python, file patch, browser); local + API providers; markdown-logged conversations.
-- **Reusable:** the **minimal viable loop** (read → tool → observe → repeat) validates our aggressively-small MVP (§21); simple **tool registry** design; markdown/append-only logging.
+- **Reusable:** the **minimal viable loop** (read → tool → observe → repeat) validates our aggressively-small Phase 1 scope (§21); simple **tool registry** design; markdown/append-only logging.
 - **Do-not-copy:** minimalism omits sandbox/verification/worktree — exactly the layers we add as differentiators.
 
 ## smolagents — `huggingface/smolagents` @ `e3a5b89` · Apache-2.0 · Python
@@ -51,5 +51,5 @@ Compressed notes (most-relevant fields) for the remaining Tier-2 targets. Each v
 1. **Convergence:** the Cline family (Cline/Roo/Kilo) has standardized editor coding-agent UX on **XML text tools + SEARCH/REPLACE + human approval + MCP** — strong signal for our §4.8/§4.4/§18.
 2. **ACP** appears in OpenHands-canvas + Goose → validates our ACP-shaped Agent API (§18.5).
 3. **Modes = persona prompt + tool allowlist + file scope** (Roo) is a clean single-agent specialization that avoids multi-agent cost (§7).
-4. **Minimal loops** (gptme/smolagents) confirm the MVP core is small; our value is the layers *around* it (sandbox, verification, worktree, adaptation).
+4. **Minimal loops** (gptme/smolagents) confirm the Phase 1 core is small; our value is the layers *around* it (sandbox, verification, worktree, adaptation).
 5. **Provider reach:** Grok/Gemini/local all reduce to **OpenAI-compat + a few native adapters** (§4.7).

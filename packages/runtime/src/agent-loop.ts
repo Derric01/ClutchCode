@@ -168,7 +168,7 @@ export class AgentLoop {
     });
     if (plan) {
       this.setStatus("PLANNING");
-      // MVP: the planning *stage* exists (state, gating heuristic, storage
+      // Phase 1: the planning *stage* exists (state, gating heuristic, storage
       // in RunState.plan) without a dedicated separate model call yet — a
       // Phase-2+ refinement per §6.7 [C:Med]. The main loop below still
       // does the work; this records that planning was warranted.

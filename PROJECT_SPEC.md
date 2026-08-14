@@ -33,7 +33,7 @@
 18. CLI/TUI & VS Code — Interface Strategy & UX
 19. Technology Selection
 20. Repository Structure
-21. MVP Boundary & Phasing Table
+21. Phase 1 Scope & Phasing Table
 22. Non-Goals
 23. Competitive Analysis — differentiators & failure modes
 24. Final Architecture
@@ -229,7 +229,7 @@ Techniques (all mandatory for local tiers): **aggressive retrieval** (open only 
 
 ### 4.6 Model routing (local-for-easy, escalate-for-hard) — optional, off by default
 
-Profiles A/D can run a cheap local model for inspection/simple edits and **escalate** hard steps to a stronger local or API model. This is **opt-in** (`[routing]` config), never automatic without consent (privacy + cost). Escalation triggers: repeated edit failure, verification failure loop, explicit "hard" task tag. Default: single configured model. **[C:Med]** (routing adds complexity; MVP ships single-model, routing is Phase 2+.)
+Profiles A/D can run a cheap local model for inspection/simple edits and **escalate** hard steps to a stronger local or API model. This is **opt-in** (`[routing]` config), never automatic without consent (privacy + cost). Escalation triggers: repeated edit failure, verification failure loop, explicit "hard" task tag. Default: single configured model. **[C:Med]** (routing adds complexity; Phase 1 ships single-model, routing is Phase 2+.)
 
 ### 4.7 Provider abstraction
 
@@ -241,7 +241,7 @@ interface Provider {
   chat(request: NormalizedRequest): AsyncStream<Delta>   // text + tool-call deltas
   supportsNativeTools, supportsParallelTools, supportsConstrainedDecode
 }
-Adapters (MVP): OpenAICompatible (covers most), Anthropic (native), Ollama (native+model mgmt).
+Adapters (Phase 1): OpenAICompatible (covers most), Anthropic (native), Ollama (native+model mgmt).
 Adapters (Phase 2): GeminiNative, plus constrained-decode hooks (GBNF/outlines/JSON-schema).
 FakeProvider (CI): scripted, fault-injecting (§2).
 ```
@@ -525,7 +525,7 @@ Delegation protocol:
     failing subtask and evidence.
 ```
 
-**MVP surface: none.** Multi-agent is **Phase 9** (§25). The single-agent runtime with sub-*steps* covers the MVP journey. **[C:High]**
+**Phase 1 surface: none.** Multi-agent is **Phase 9** (§25). The single-agent runtime with sub-*steps* covers the Phase 1 journey. **[C:High]**
 
 ---
 
@@ -558,7 +558,7 @@ Workflow (declarative, JSON-Schema-validated):
   apiVersion: clutchcode/v1
   id, name, stages: [ {id, uses: builtin-stage-id, when?: always|on_failure, params?} ]
 Versioning: apiVersion gates a migration function; unknown version → refuse + point to `agent config migrate`.
-Built-in workflows shipped in MVP:
+Built-in workflows shipped in Phase 1:
   - default   : plan(opt) → implement → verify → approve → commit
   - quickfix  : implement → verify → approve → commit   (skips planning; small tasks)
   - review-only: inspect → review → report              (no edits; read-only, safe on untrusted repos §12)
@@ -570,7 +570,7 @@ Stages are deterministic wrappers around runtime capabilities; only `implement`/
 
 ## 9. Repository Intelligence — the case against a vector DB
 
-**Starting assumption: a vector database is NOT needed. The spec must prove otherwise. It does not, for the MVP or Phase 2.** **[C:High]**
+**Starting assumption: a vector database is NOT needed. The spec must prove otherwise. It does not, for Phase 1 or Phase 2.** **[C:High]**
 
 ### 9.1 Options compared
 
@@ -586,7 +586,7 @@ Stages are deterministic wrappers around runtime capabilities; only `implement`/
 
 ### 9.2 Recommendation — the simplest thing that works, tiered
 
-1. **Tier 0 (MVP): ripgrep + filesystem + on-demand tree-sitter.** No persistent index. The agent searches by name/pattern (ripgrep) and, when it needs structure, parses the relevant files with tree-sitter to extract symbols/defs. Zero build time, zero memory at rest, fully offline, trivially correct after edits (no stale index). Covers the MVP journey on repos up to ~large. **[C:High]**
+1. **Tier 0 (Phase 1): ripgrep + filesystem + on-demand tree-sitter.** No persistent index. The agent searches by name/pattern (ripgrep) and, when it needs structure, parses the relevant files with tree-sitter to extract symbols/defs. Zero build time, zero memory at rest, fully offline, trivially correct after edits (no stale index). Covers the Phase 1 journey on repos up to ~large. **[C:High]**
 2. **Tier 1 (Phase 7): Aider-style PageRank repo map** (tree-sitter tags → symbol/import graph → PageRank with personalization on the task's mentioned identifiers/open files; reimplemented clean-room per LICENSE §3). Built **on demand**, cached, incrementally invalidated per changed file. **Trigger to add it:** measured retrieval-accuracy or token-budget failures on repos above a size threshold (e.g., >~1–2k files) where naive ripgrep floods context. Its ranked output is *token-bounded* and scales down for 8k local models (§4.5).
 3. **Tier 2 (only if proven): LSP** for languages where symbol precision matters and a server is available. Opt-in.
 4. **Vector DB: not adopted.** Trigger that would justply it: a *measured* task-success gap on our eval suite (§16) attributable to retrieval, that tree-sitter+PageRank+LSP cannot close, on realistic individual-developer repos — **and** a local embedding model that fits Profile B without evicting the coder model from VRAM. Until that evidence exists, a vector DB is dependency weight, index-staleness risk, and VRAM contention for no proven gain. This is the skeptical conclusion the prompt asked for. **[C:High]**
@@ -633,7 +633,7 @@ Stale memory is worse than none. Mechanisms:
 
 ## 11. Tool System
 
-One unified tool interface. Minimum set (MVP): filesystem read/write/edit · shell · git · search · process management · test runner · package manager · web-fetch (**optional, off by default**).
+One unified tool interface. Minimum set (Phase 1): filesystem read/write/edit · shell · git · search · process management · test runner · package manager · web-fetch (**optional, off by default**).
 
 ### 11.1 Tool interface
 
@@ -750,7 +750,7 @@ Approval fatigue is a real failure mode (§18.3): decisions are **remembered per
 | **Windows restricted token / AppContainer** | Windows | med | n/a | unaffected | medium | **[C:Low]** — weakest story; WSL2 preferred |
 | **WSL2** | Windows | med (VM) | good (in-distro) | CUDA works via WSL2 | good (real Linux sandbox inside) | **recommended path for Profile-B Windows** |
 | **Docker/Podman** | all | **high (daemon, image, mac fs is slow)** | **poor on macOS (virtiofs)** | **GPU passthrough painful, esp. macOS** | strong | **optional tier — NOT default**; many users disable it |
-| **microVM (Firecracker)** | Linux | high | good | complex | strongest | out of scope for individual-dev MVP |
+| **microVM (Firecracker)** | Linux | high | good | complex | strongest | out of scope for an individual-dev Phase 1 |
 
 **Why Docker is not the default (contra OpenHands):** on a laptop it costs daemon startup, multi-GB images, slow bind-mount FS on macOS, and **fights local-model GPU passthrough** — so a large fraction of Profile-A/B users simply turn it off, leaving them *less* safe than a lightweight always-on OS sandbox. We make Docker an **opt-in stronger tier**, not the floor. **[C:High]**
 
@@ -902,7 +902,7 @@ Any flag **forces human review** and blocks the "successful" completion contract
 A run is DONE-SUCCESS only if:
   deterministic gate is green (build+test+lint+typecheck as applicable)
   AND no cheating flags (§14.6)
-  AND the human approved the diff (§18.3)   # human-in-the-loop is part of the contract for MVP
+  AND the human approved the diff (§18.3)   # human-in-the-loop is part of the contract for Phase 1
 Otherwise: DONE-ESCALATED (with the standing reason) or FAILED. Never "success on the model's word."
 ```
 
@@ -1016,33 +1016,33 @@ The prompt's §23 asks to pick exactly one for v1. We choose **CLI/TUI-first as 
 | Factor | CLI/TUI-first | Web-first | Why CLI/TUI wins for our user |
 |---|---|---|---|
 | Target user (individual dev, terminal-native) | ✓ | partial | devs live in terminals + editors |
-| Implementation cost | low | high (server+frontend) | small team, MVP in weeks (§21) |
+| Implementation cost | low | high (server+frontend) | small team, Phase 1 in weeks (§21) |
 | Streaming/diff-review ergonomics | strong (TUI) / excellent (VS Code diff) | good | terminal for speed, editor for rich diff |
 | Remote/SSH usage (Profile D homelab) | **native** | needs port-forward | SSH into the homelab and run it |
 | Local-first fit | ✓ | tempts a server | no server (§17) |
 
 A **web dashboard is explicitly deprioritized** (§22). The **key architectural move**: the runtime exposes an **Agent API** with two bindings — (1) in-process for the CLI/TUI, (2) **JSON-RPC over stdio** (LSP/ACP-style) for editor clients. The VS Code extension is a thin TypeScript client of binding (2). Because the runtime is TypeScript (§19), the CLI, the TUI, and the extension **share 100% of runtime code**; only the presentation differs. This is the concrete reason the language choice (§19) is TypeScript. **[C:High]**
 
-### 18.2 Command surface (MVP / Phase 2 / Later)
+### 18.2 Command surface (Phase 1 / Phase 2 / Later)
 
 | Command | Purpose | Phase |
 |---|---|---|
-| `agent init` | scaffold config + AGENTS.md in a repo | **MVP** |
-| `agent doctor` | detect OS/GPU/VRAM, providers, local servers; recommend+pull a model; run capability probe; verify offline path (§4.10) | **MVP** |
-| `agent providers` | list/configure providers + keys (→ keychain §5) | **MVP** |
-| `agent models` | list models; `models pull`, `models probe` (§4.9) | **MVP** |
-| `agent run <task>` | run the default workflow on a task | **MVP** |
-| `agent status` | show active/last run state | **MVP** |
-| `agent diff` | show worktree-vs-base diff | **MVP** |
-| `agent approve` / `agent reject` | accept/discard a run's changes | **MVP** |
-| `agent commit` | finalize commit (message gen, hooks) | **MVP** |
-| `agent inspect <run_id>` | replay decision trail (§15.3) | **MVP** |
-| `agent resume <run_id>` | resume from RunState (§6.2) | **MVP** (thin) / hardened Phase 2 |
+| `agent init` | scaffold config + AGENTS.md in a repo | **Phase 1** |
+| `agent doctor` | detect OS/GPU/VRAM, providers, local servers; recommend+pull a model; run capability probe; verify offline path (§4.10) | **Phase 1** |
+| `agent providers` | list/configure providers + keys (→ keychain §5) | **Phase 1** |
+| `agent models` | list models; `models pull`, `models probe` (§4.9) | **Phase 1** |
+| `agent run <task>` | run the default workflow on a task | **Phase 1** |
+| `agent status` | show active/last run state | **Phase 1** |
+| `agent diff` | show worktree-vs-base diff | **Phase 1** |
+| `agent approve` / `agent reject` | accept/discard a run's changes | **Phase 1** |
+| `agent commit` | finalize commit (message gen, hooks) | **Phase 1** |
+| `agent inspect <run_id>` | replay decision trail (§15.3) | **Phase 1** |
+| `agent resume <run_id>` | resume from RunState (§6.2) | **Phase 1** (thin) / hardened Phase 2 |
 | `agent rollback <ckpt>` | restore a checkpoint (§13.3) | Phase 2 |
 | `agent memory` | list/show/correct project memory (§10.3) | Phase 2 |
-| `agent config` | get/set config; policy; allow-read | **MVP** (core) |
+| `agent config` | get/set config; policy; allow-read | **Phase 1** (core) |
 | `agent workflow` | list/select/validate workflows (§8) | Phase 2 |
-| `agent trust` | mark a repo trusted (§12.4) | **MVP** (as a config flag) |
+| `agent trust` | mark a repo trusted (§12.4) | **Phase 1** (as a config flag) |
 | `agent eval` | run the eval suite / scoreboard (§16) | Phase 2 (runtime-replay part earlier) |
 | `agent pr` | prepare a PR (§13.5) | Phase 2+ |
 
@@ -1073,12 +1073,12 @@ Approval fatigue (users blanket-approving everything) is *the* HITL failure mode
 
 | Path | Pros | Cons | Verdict |
 |---|---|---|---|
-| **npm (`npm i -g` / `npx clutchcode`)** | zero extra tooling for JS devs; matches runtime (§19) | needs Node | **primary for MVP** |
+| **npm (`npm i -g` / `npx clutchcode`)** | zero extra tooling for JS devs; matches runtime (§19) | needs Node | **primary for Phase 1** |
 | **Single binary (Bun compile / Node SEA)** + `curl \| sh` | no Node needed; Profile-D servers | build matrix; larger | **Phase 2** (broadens reach) |
 | **Homebrew / Scoop** | native feel | packaging upkeep | Phase 2 |
 | **VS Code Marketplace / OpenVSX** | discovery for editor users | review process | ships with the extension |
 
-**Metric to optimize: time-to-first-successful-task.** `agent init && agent doctor && agent run "..."` should reach a verified diff on a sample repo in minutes. `agent doctor` doing the local-model setup (§4.10) is the long pole for Profiles A/B/D and is why it's MVP. **[C:High]**
+**Metric to optimize: time-to-first-successful-task.** `agent init && agent doctor && agent run "..."` should reach a verified diff on a sample repo in minutes. `agent doctor` doing the local-model setup (§4.10) is the long pole for Profiles A/B/D and is why it's in Phase 1. **[C:High]**
 
 ---
 
@@ -1111,11 +1111,11 @@ Reasoning tied to constraints:
 |---|---|---|---|
 | **Storage** | **SQLite** (runs/memory/traces) + **JSONL** (transcripts) + **`AGENTS.md`** (project memory, committed) | High | No server (contra Postgres). SQLite is embedded, offline, queryable; flat JSONL for append-only transcripts. |
 | **Sandbox** | tiered per §12.6 (Seatbelt / bwrap+Landlock / WSL2 / optional Docker) via subprocess + optional Rust helper | Med (Win weak) | OS primitives per their docs; Codex studied not copied (LICENSE §3). |
-| **Repo indexing** | ripgrep + on-demand tree-sitter (MVP); PageRank map (Phase 7); **no vector DB** | High | §9 — simplest thing that works; add tiers on measured need. |
+| **Repo indexing** | ripgrep + on-demand tree-sitter (Phase 1); PageRank map (Phase 7); **no vector DB** | High | §9 — simplest thing that works; add tiers on measured need. |
 | **Internal API layer** | in-process for CLI; **stdio JSON-RPC** daemon boundary for editor clients (ACP-shaped) | High | No REST daemon by default (no open port, local-first §17). |
 | **Config format** | **TOML** for `agent.toml` (human) + **JSON-Schema** validation; workflows = typed TS DSL (built-ins) + JSON-Schema declarative (user) | Med | TOML is comment-friendly and unambiguous; schema gives validation + editor hints. |
 | **Packaging** | npm primary; Bun/SEA single-binary + Homebrew Phase 2; VS Code Marketplace/OpenVSX for extension | Med | §18.6; single-binary maturity is the risk. |
-| **Provider layer** | OpenAI-compatible-first + native Anthropic + native Ollama (MVP); Gemini + constrained-decode hooks (Phase 2) | High | §4.7 — one adapter covers the long tail incl. local servers. |
+| **Provider layer** | OpenAI-compatible-first + native Anthropic + native Ollama (Phase 1); Gemini + constrained-decode hooks (Phase 2) | High | §4.7 — one adapter covers the long tail incl. local servers. |
 
 **Explicit tension acknowledged (from the prompt):** Python maximizes AI-ecosystem libraries; Rust/Go maximize single-binary + sandbox; TypeScript maximizes CLI/TUI + editor integration. **We pick TypeScript, own the single-binary and native-syscall costs via Bun-compile + a process-boundary native helper, and gain the shared-runtime dual interface the product requires.** **[C:High]**
 
@@ -1136,7 +1136,7 @@ clutchcode/                      # monorepo (pnpm/bun workspaces), Apache-2.0, D
 │   ├── verification/            # pipeline, toolchain detect, cheat detection
 │   ├── memory/                  # session/project/long-term stores; AGENTS.md handling
 │   ├── git/                     # worktree isolation, checkpoints, diff, delivery
-│   ├── repo-intel/              # ripgrep+tree-sitter (MVP); pagerank map (later)
+│   ├── repo-intel/              # ripgrep+tree-sitter (Phase 1); pagerank map (later)
 │   ├── observability/           # event model, JSONL+SQLite, inspect/replay
 │   ├── agent-api/               # the Agent API: in-process + stdio JSON-RPC (ACP-shaped)
 │   └── capability/              # capability matrix, probe, profile persistence
@@ -1154,9 +1154,9 @@ Boundary rules: `runtime` depends on `providers`, `tools`, etc. **only through i
 
 ---
 
-## 21. MVP Boundary & Phasing Table
+## 21. Phase 1 Scope & Phasing Table
 
-**Aggressively small MVP.** It must do exactly this, well:
+**Aggressively small Phase 1 scope.** It must do exactly this, well:
 
 ```
 install → configure a provider (one API + one local) → open a repo → give a task →
@@ -1164,13 +1164,13 @@ inspect files → edit files → run commands → run tests → repair failures 
 show diff → human approves → commit
 ```
 
-Concretely, MVP = single agent, default workflow, one native tool set, **two provider adapters (OpenAI-compatible + Ollama)** so both an API user (Profile C) and a local user (Profile B/D) are covered day one, SEARCH/REPLACE edits with the fallback cascade, tiered sandbox Tier 0+1 (Seatbelt/bwrap; WSL2 doc for Windows), git worktree isolation, deterministic verification with cheat detection, terminal CLI/TUI, the capability probe, and the runtime-replay test harness. **The VS Code extension is a fast-follow** (the user requires it) — the Agent API boundary ships in MVP so the extension is a thin client, and the extension itself lands as the first post-MVP deliverable (§25 reorders it earlier than the prompt's Phase 10).
+Concretely, Phase 1 = single agent, default workflow, one native tool set, **two provider adapters (OpenAI-compatible + Ollama)** so both an API user (Profile C) and a local user (Profile B/D) are covered day one, SEARCH/REPLACE edits with the fallback cascade, tiered sandbox Tier 0+1 (Seatbelt/bwrap; WSL2 doc for Windows), git worktree isolation, deterministic verification with cheat detection, terminal CLI/TUI, the capability probe, and the runtime-replay test harness. **The VS Code extension is a fast-follow** (the user requires it) — the Agent API boundary ships in Phase 1 so the extension is a thin client, and the extension itself lands as the first deliverable after Phase 1 (§25 reorders it earlier than the prompt's Phase 10).
 
-**If a section of this spec has no MVP surface, it says so:** §7 Multi-Agent (none — Phase 9), §8 user-authored workflows (only built-ins in MVP), §9 PageRank map & vector DB (none — ripgrep+tree-sitter only), §16 full eval scoreboard (only the replay harness in MVP).
+**If a section of this spec has no Phase 1 surface, it says so:** §7 Multi-Agent (none — Phase 9), §8 user-authored workflows (only built-ins in Phase 1), §9 PageRank map & vector DB (none — ripgrep+tree-sitter only), §16 full eval scoreboard (only the replay harness in Phase 1).
 
 ### 21.1 Phase classification table
 
-| Capability | MVP | Phase 2 | Phase 3 | Future |
+| Capability | Phase 1 | Phase 2 | Phase 3 | Future |
 |---|---|---|---|---|
 | CLI/TUI, `run/diff/approve/commit/inspect/doctor` | ✓ | | | |
 | OpenAI-compat + Ollama providers | ✓ | | | |
@@ -1192,7 +1192,7 @@ Concretely, MVP = single agent, default workflow, one native tool set, **two pro
 | PR preparation, rollback, resume-hardening | | ✓ | | |
 | Single-binary + Homebrew install | | ✓ | | |
 
-**MVP feasibility check (self-review Q3, §29):** the MVP is one agent + one workflow + two providers + core tools + verification + worktree + TUI. That is buildable and dogfoodable by a very small team in a few weeks **because** the hardest, most novel piece (the capability-adaptation layer) has a small MVP surface: probe + edit-format select/fallback + context budget. The eval-replay harness is small and pays for itself immediately. **[C:Med]** (weeks is plausible but tight; sandbox Tier 1 per-OS and the probe are the schedule risks.)
+**Phase 1 feasibility check (self-review Q3, §29):** Phase 1 is one agent + one workflow + two providers + core tools + verification + worktree + TUI. That is buildable and dogfoodable by a very small team in a few weeks **because** the hardest, most novel piece (the capability-adaptation layer) has a small Phase 1 surface: probe + edit-format select/fallback + context budget. The eval-replay harness is small and pays for itself immediately. **[C:Med]** (weeks is plausible but tight; sandbox Tier 1 per-OS and the probe are the schedule risks.)
 
 ---
 
@@ -1267,7 +1267,7 @@ Architecture only; marketing ignored. (Grok "Build"/xAI official CLI: **verified
 
 - **Vendor CLIs improve faster** and subsume "local model support" enough to erase differentiator #1.
 - **Local models stay too weak** for real tasks even with adaptation — if the §16.4 VTCR delta is small, the core claim collapses.
-- **Maintainer bandwidth** — a runtime + adaptation layer + sandbox tiers + VS Code extension is a lot for a small team; scope discipline (§21 MVP) is survival, not neatness.
+- **Maintainer bandwidth** — a runtime + adaptation layer + sandbox tiers + VS Code extension is a lot for a small team; scope discipline (§21) is survival, not neatness.
 - **Security incident** — we execute LLM-generated code; one bad sandbox-escape headline could end trust. §12.7's honesty is partly reputational insurance.
 - **Ecosystem consolidation around one agent protocol** (MCP/ACP) could commoditize the harness layer, making "yet another runtime" redundant — mitigated by leaning into those protocols as a client rather than fighting them.
 - **The "adapt to weak models" bet is contrarian**: if the world simply gets cheap strong models, the adaptation layer's value shrinks. We accept this bet knowingly; the local-first/privacy/no-lock-in axis remains even then.
@@ -1390,7 +1390,7 @@ Any escalation surfaces in the TUI/editor AND in `agent inspect` as a first-clas
 
 ## 25. Implementation Roadmap
 
-Dependency-aware. **Reordering vs the prompt's suggested phases, with justification:** (a) the **eval replay-harness is pulled into Phase 1** (it is what makes every later phase testable, §16.3c); (b) the **VS Code extension is pulled forward** from "Phase 10" to Phase 3–4 as a named deliverable, because the user requires terminal *and* editor from the outset and the Agent API boundary exists in Phase 1; (c) **provider abstraction + local support is Phase 1-2 co-located**, since MVP already needs Ollama.
+Dependency-aware. **Reordering vs the prompt's suggested phases, with justification:** (a) the **eval replay-harness is pulled into Phase 1** (it is what makes every later phase testable, §16.3c); (b) the **VS Code extension is pulled forward** from "Phase 10" to Phase 3–4 as a named deliverable, because the user requires terminal *and* editor from the outset and the Agent API boundary exists in Phase 1; (c) **provider abstraction + local support is Phase 1-2 co-located**, since Phase 1 already needs Ollama.
 
 | Phase | Deliverables | Depends on | Tests | Key risks | Definition of Done | Rough effort |
 |---|---|---|---|---|---|---|
@@ -1398,7 +1398,7 @@ Dependency-aware. **Reordering vs the prompt's suggested phases, with justificat
 | **1** | Minimal agent: OpenAI-compat provider, RunState machine, native tools (fs/shell/search/tests), SEARCH/REPLACE + fallback, git worktree isolation, deterministic verify (build/test), TUI `run/diff/approve/commit/inspect`, **Agent API boundary**, **replay-test harness + FakeProvider + redaction canary** | 0 | unit (tools, edit cascade, state machine) + replay | edit-apply correctness; worktree edge cases | one real bug fixed on a sample repo end-to-end, verified+committed; replay tests green offline | **largest phase** |
 | **2** | Provider abstraction hardened + **Ollama/local** + **capability probe** + context budgeter + Anthropic native | 1 | probe scoring; budget tests; local-offline test | probe reliability across models | `agent doctor` sets up a local model + probe; offline task passes | large |
 | **3** | Tool system polish + **permission/policy engine** + sandbox Tier 0 + Tier 1 (mac Seatbelt / Linux bwrap+Landlock) | 1 | policy decision tests; sandbox confinement tests (canary) | per-OS sandbox correctness | denylist+egress+destructive-gate enforced & tested | medium-large |
-| **4** | **Verification pipeline full** (lint/type/scan) + **cheat detection** + toolchain autodetect + repair loop caps; **VS Code extension MVP** (same Agent API) | 1,3 | cheat-detection unit corpus; extension e2e | cheat-detection false-pos/neg | cheat corpus caught; extension runs a task+diff-review | medium-large |
+| **4** | **Verification pipeline full** (lint/type/scan) + **cheat detection** + toolchain autodetect + repair loop caps; **VS Code extension core** (same Agent API) | 1,3 | cheat-detection unit corpus; extension e2e | cheat-detection false-pos/neg | cheat corpus caught; extension runs a task+diff-review | medium-large |
 | **5** | Git: checkpoints/rollback (incl. untracked), dirty-tree handling, submodule/LFS/monorepo cases, PR prep | 1 | rollback tests incl. untracked; edge-case matrix | untracked rollback correctness | all §13.4 cases handled or explicitly deferred | medium |
 | **6** | Workflow engine: typed built-ins + JSON-Schema user workflows + versioning/migration | 1 | schema validation; migration | over-engineering | 3 built-ins + 1 user workflow validated | medium |
 | **7** | Memory (AGENTS.md read/write + correction UX) + repo-intel tier-1 (PageRank map) | 1,2 | memory staleness/invalidation; map accuracy | stale-memory correctness | `agent memory` correct/forget works; map improves retrieval metric | medium |
@@ -1463,7 +1463,7 @@ Format: ID · Title · Status · Context · Decision · Alternatives · Why reje
 |---|---|---|---|
 | A1 | Product name "ClutchCode" (matches repo) is acceptable and trademark-clearable. | maintainers | confirm name + clear TM before release (LICENSE §6) |
 | A2 | Target = individual devs on Profiles A–D; no enterprise features in scope. | product | confirmed by prompt §2; hold the line vs scope creep |
-| A3 | "A few weeks by a very small team" for MVP means ~2–4 engineers, several weeks; the estimate is tight. | eng lead | confirm team size; adjust Phase 1 scope if smaller |
+| A3 | "A few weeks by a very small team" for Phase 1 means ~2–4 engineers, several weeks; the estimate is tight. | eng lead | confirm team size; adjust Phase 1 scope if smaller |
 | A4 | Users can install a local model server (Ollama/llama.cpp) themselves; `agent doctor` assists but doesn't bundle a server. | product | decide whether to bundle/manage a server (bigger install) |
 | A5 | Bun-compile / Node SEA is mature enough for a single binary by Phase 2. | eng | validate on the build matrix early |
 | A6 | VS Code extension can spawn/attach the runtime over stdio without Marketplace policy issues. | eng | prototype the extension host boundary in Phase 3 |
@@ -1471,7 +1471,7 @@ Format: ID · Title · Status · Context · Decision · Alternatives · Why reje
 | A8 | tree-sitter grammars cover the languages our users care about; missing grammars degrade to ripgrep. | eng | pick the initial language set from eval suite |
 | A9 | The "adapt-to-weak-models" bet has a real, measurable VTCR delta (§16.4). | research | prove/disprove in Phase 8; it validates the whole project |
 | A10 | Reference-project architecture claims are current as of the 2026-08-12 clones; they will rot. | research | re-verify before relying on any claim in build |
-| A11 | Windows users can/will use WSL2 for the strong sandbox tier; native Windows sandbox stays weak. | eng | decide Windows support level for MVP (doc-only vs code) |
+| A11 | Windows users can/will use WSL2 for the strong sandbox tier; native Windows sandbox stays weak. | eng | decide Windows support level for Phase 1 (doc-only vs code) |
 
 ## 28. OPEN QUESTIONS register
 
@@ -1481,7 +1481,7 @@ Format: ID · Title · Status · Context · Decision · Alternatives · Why reje
 | Q2 | Which SWE-bench Verified subset + how many realistic hand-built tasks constitute the eval suite (§16.3)? | research | before Phase 8 (design earlier) |
 | Q3 | Cheat-detection false-positive tolerance + the labeled corpus to tune it (§14.6, §16.2). | eng+research | Phase 4 |
 | Q4 | Default cost ceiling + step/wall-clock budgets that balance capability vs runaway (§6.3). | product | Phase 1 default, tune via eval |
-| Q5 | Windows MVP posture: WSL2-recommended doc-only, or ship a restricted-token sandbox? (§12.5, A11) | eng | Phase 3 |
+| Q5 | Windows Phase 1 posture: WSL2-recommended doc-only, or ship a restricted-token sandbox? (§12.5, A11) | eng | Phase 3 |
 | Q6 | Should `agent doctor` bundle/manage a local model server or only detect one? (A4) | product | Phase 2 |
 | Q7 | Single-binary toolchain: Bun compile vs Node SEA vs pkg — which by Phase 2? (A5) | eng | Phase 2 |
 | Q8 | Workflow authoring: is the two-mode split (TS DSL + declarative) worth it, or declarative-only? (§8.1) | eng | after Phase 6 dogfood |
@@ -1495,10 +1495,10 @@ Answering the ten mandated questions honestly; fixes applied inline where they w
 
 1. **Every claim about a reference project traceable to a file I read?** *Mostly.* The deep claims (Aider edit cascade + disabled fuzzy matcher `editblock_coder.py:183`; Aider repomap PageRank `repomap.py:365-529`; Codex `apply-patch/` + `linux-sandbox/{landlock,bwrap}.rs`; Claude Code subagent frontmatter `code-reviewer.md` + hook examples; Claude Code = docs/plugins only, proprietary) are file-traceable (`research/00_METHOD.md §6`). **Gap:** the five Tier-1 breadth sub-agents (OpenHands, Cline, Codex-notes, Aider-notes, Claude-Code-notes) and all Tier-2 sub-agents **failed on a session usage limit before writing `research/repos/*.md`**. So OpenHands/Cline/Goose/Continue/Archon/etc. claims in the competitive matrix rest on my prior knowledge + partial sub-agent findings (Cline monorepo `apps/vscode/src`; OpenHands clone is the `@openhands/agent-canvas` ACP frontend, not the Python core) rather than fresh file reads. **These are flagged here and several matrix cells carry `UNVERIFIED:`.** This is disclosed in `00_METHOD.md §2`, not hidden.
 2. **Marked everything I couldn't verify?** Yes — `UNVERIFIED:` tags on point-in-time provider capability/ToS numbers, several §23.1 matrix cells, default model recommendations, and the missing repo-note reads (above). The honesty log in `00_METHOD.md §2` is explicit.
-3. **Does the MVP actually fit the effort, or am I lying to myself?** **Tight, flagged [C:Med] (§21.1).** The MVP is genuinely small (1 agent, 1 workflow, 2 providers, core tools, verify+worktree, TUI). The schedule risks are honestly named: per-OS sandbox Tier 1 and the capability probe. If the team is <2, Phase 1 must shed the probe (defer to Phase 2) and Windows sandbox (doc-only). I did **not** claim multi-agent, workflows-UI, or vector DB in MVP — those would have been the lie.
+3. **Does Phase 1 actually fit the effort, or am I lying to myself?** **Tight, flagged [C:Med] (§21.1).** Phase 1 is genuinely small (1 agent, 1 workflow, 2 providers, core tools, verify+worktree, TUI). The schedule risks are honestly named: per-OS sandbox Tier 1 and the capability probe. If the team is <2, Phase 1 must shed the probe (defer to Phase 2) and Windows sandbox (doc-only). I did **not** claim multi-agent, workflows-UI, or vector DB in Phase 1 — those would have been the lie.
 4. **Chosen — not listed — every tech decision?** Yes. §19 picks TypeScript (not "Rust or TS"), SQLite, TOML+JSON-Schema, tiered-sandbox, no-vector-DB, OpenAI-compat-first, stdio-JSON-RPC. Each has a confidence tag and an escape hatch. ADRs 001–020 record them with reversal cost + one-way-door marks.
 5. **Still works with a 14B local model on 12 GB VRAM at 8k context?** Yes — this is the canonical design target (Profile B, §3). §4.5 budgets against *effective* 8–12k with a hard no-repo-dump rule; §4.10 sizes 14B Q4_K_M (~10 GB) + KV to fit 12 GB and warns on 16k spill; §4.8 constrained-decoding (GBNF) makes tools reliable on weak models; §4.4 whole-file fallback caps at ~400 LOC for 8k. If any choice only worked above this bar it was called wrong.
-6. **Still works API-only, no GPU (Profile C)?** Yes — the most common case (§3). MVP ships an OpenAI-compatible adapter; nothing on the critical path needs a GPU; cost ceiling (§6.3) protects the API user from runaway bills.
+6. **Still works API-only, no GPU (Profile C)?** Yes — the most common case (§3). Phase 1 ships an OpenAI-compatible adapter; nothing on the critical path needs a GPU; cost ceiling (§6.3) protects the API user from runaway bills.
 7. **Claimed any security property I didn't design a control for?** Checked. §12.7 ("What this system does NOT protect against") explicitly disclaims: prompt-injection into *allowed* actions, malicious deps under normal perms in Tier 0/1, sandbox-escape bugs, `bypassPermissions`, and a compromised OS. I did **not** claim to be stronger than Docker — §12.5/§12.7 say our default tier is *lighter*, not stronger. Redaction/denylist/egress-deny each have a named control + test (canary).
 8. **A single differentiator strong enough to justify existence?** Yes, and arguably two: (a) the **capability-adaptation layer that makes weak/local models usable** (§4) — the product's reason to exist, falsifiable via §16.4; (b) **verification with cheating-detection** (§14.6), which this research found in **no** reference project. If §16.4's VTCR delta turns out small, differentiator (a) collapses and the project should pivot to the local-first/privacy axis or not ship — stated plainly in §23.5.
 9. **Anything merely fashionable a skeptic would catch?** Actively killed: multi-agent-by-default (§7, argued against), vector DB (§9, refused), web dashboard (§22), OpenTelemetry-by-default (§15.2, demoted to optional exporter), "faster than vendors" and "more secure than Docker" (§23.4, killed). The remaining opinionated bets (TS core, adapt-to-weak-models) are defended with reasons a disagreeing engineer can attack.
