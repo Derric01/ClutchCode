@@ -30,6 +30,7 @@ interface GlobalOpts {
   repo: string;
   json: boolean;
   stateDir?: string;
+  modelsDir?: string;
 }
 
 function emit(result: CommandResult, json: boolean): never {
@@ -46,7 +47,7 @@ function emit(result: CommandResult, json: boolean): never {
 }
 
 function ctx(opts: GlobalOpts): CliContext {
-  return { repoPath: opts.repo, json: opts.json, stateDir: opts.stateDir };
+  return { repoPath: opts.repo, json: opts.json, stateDir: opts.stateDir, modelsDir: opts.modelsDir };
 }
 
 interface ModelsGlobalOpts {
@@ -78,6 +79,7 @@ baseOptions(program.command("run"))
   .option("--model <model>", "model id", "")
   .option("--base-url <url>", "override the provider base URL")
   .option("--yes", "auto-approve when the deterministic gate is green and no cheats are flagged (§14.7)", false)
+  .option("--models-dir <path>", "capability-profile storage directory (§4.9, default: ~/.config/clutchcode/models)")
   .action(async (task: string, opts: GlobalOpts & { provider: ProviderKind; model: string; baseUrl?: string; yes: boolean }) =>
     emit(await cmdRun(ctx(opts), { task, providerKind: opts.provider, model: opts.model, baseUrl: opts.baseUrl, yes: opts.yes }), opts.json)
   );

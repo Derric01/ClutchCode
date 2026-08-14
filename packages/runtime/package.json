@@ -12,6 +12,7 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@clutchcode/capability": "workspace:*",
     "@clutchcode/git": "workspace:*",
     "@clutchcode/providers": "workspace:*",
     "@clutchcode/sandbox": "workspace:*",

@@ -82,7 +82,8 @@ export async function cmdRun(ctx: CliContext, opts: RunCommandOptions): Promise<
     providerKind: opts.providerKind,
     model: opts.model,
     baseUrl: opts.baseUrl,
-    yesMode: opts.yes
+    yesMode: opts.yes,
+    modelsDir: ctx.modelsDir
   });
   return { exitCode: exitCodeForRunStatus(state.status), output: formatRunState(state, ctx.json) };
 }

@@ -8,6 +8,7 @@ import type { RunWorktree } from "@clutchcode/git";
 import { approveRun, checkpoint, diffAgainstBase, diffStat } from "@clutchcode/git";
 import type { ToolchainCommands, CheatFlag } from "@clutchcode/verification";
 import { classifyFailure, detectCheats, evaluateCompletion, MAX_REPAIR_ITERS, runPipeline } from "@clutchcode/verification";
+import { computeContextBudget, resolveCapability, type ContextBudget, type EffectiveCapability } from "@clutchcode/capability";
 
 import type { RunState, RunStatus } from "./run-state.js";
 import { transition } from "./run-state.js";
@@ -15,6 +16,7 @@ import { BudgetGuard, type BudgetLimitKind } from "./budget.js";
 import { LoopDetector, initLoopDetectorState, type LoopDetectorState, type LoopWarning } from "./loop-detector.js";
 import { shouldPlan } from "./planning-heuristic.js";
 import { buildCheatReviewMessage, buildInitialMessages, buildRepairMessage, toolsToSchemas } from "./message-builder.js";
+import { compactHistory } from "./context-compaction.js";
 import { classifyToolError } from "./error-taxonomy.js";
 
 /**
@@ -40,6 +42,7 @@ export type RuntimeEvent =
   | { type: "cheat.flag"; rule: string; file: string }
   | { type: "budget.hit"; kinds: BudgetLimitKind[] }
   | { type: "loop.detected"; warning: LoopWarning }
+  | { type: "context.compacted"; droppedCount: number }
   | { type: "escalation"; reason: string }
   | { type: "run.end"; status: RunStatus };
 
@@ -50,6 +53,15 @@ export interface AgentLoopDeps {
   run: RunWorktree;
   toolchainCommands: ToolchainCommands;
   evidenceDir: string;
+  /**
+   * The adaptation layer's inputs (§4.2, §4.9): drives edit-format guidance
+   * (§4.4) and context budgeting (§4.5). Defaults to `resolveCapability(null,
+   * provider.capabilityDefaults)` when omitted — the same conservative
+   * fallback `@clutchcode/agent-api` uses when a model has never been
+   * probed, so callers that don't know about capability profiles (tests,
+   * the eval replay harness) get sane behavior for free.
+   */
+  capability?: EffectiveCapability;
 }
 
 export interface AgentLoopOptions {
@@ -62,6 +74,17 @@ export class AgentLoop {
   readonly state: RunState;
   private readonly budgetGuard: BudgetGuard;
   private readonly loopDetector: LoopDetector;
+  private readonly capability: EffectiveCapability;
+  private readonly contextBudget: ContextBudget;
+  /**
+   * The token ceiling `compactHistory` enforces on the live message list.
+   * §4.5 splits effective context into five segments, but repo-map
+   * retrieval and open-file-window management (§9) aren't built yet
+   * (Phase 7, §25) — nothing claims their share today, so it's folded into
+   * the history budget rather than left unused, which would over-constrain
+   * history before those subsystems exist for no benefit.
+   */
+  private readonly historyTokenBudget: number;
   private messages: NormalizedMessage[];
 
   constructor(
@@ -74,7 +97,12 @@ export class AgentLoop {
     const restoredDetectorState = state.loopDetectorState as LoopDetectorState | undefined;
     this.loopDetector = new LoopDetector(restoredDetectorState ?? initLoopDetectorState());
     state.loopDetectorState = this.loopDetector.getState();
-    this.messages = buildInitialMessages(state.task);
+
+    this.capability = deps.capability ?? resolveCapability(null, deps.provider.capabilityDefaults);
+    this.contextBudget = computeContextBudget(this.capability.effectiveContext);
+    this.historyTokenBudget = this.contextBudget.conversationHistory + this.contextBudget.repoMapRetrieval + this.contextBudget.openFileWindows;
+
+    this.messages = buildInitialMessages(state.task, this.capability);
   }
 
   private emit(event: RuntimeEvent): void {
@@ -136,12 +164,19 @@ export class AgentLoop {
         return "stopped";
       }
 
+      const compaction = compactHistory(this.messages, this.historyTokenBudget);
+      if (compaction.compacted) {
+        this.messages = compaction.messages;
+        this.emit({ type: "context.compacted", droppedCount: compaction.droppedCount });
+      }
+
       this.emit({ type: "model.request" });
       const response = await collect(
         this.deps.provider.chat({
           model: this.state.model,
           messages: this.messages,
-          tools: toolsToSchemas(this.deps.tools)
+          tools: toolsToSchemas(this.deps.tools),
+          maxOutputTokens: this.contextBudget.reservedOutput
         })
       );
       this.budgetGuard.recordStep();

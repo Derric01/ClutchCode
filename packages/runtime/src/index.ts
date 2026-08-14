@@ -29,7 +29,17 @@ export type { ErrorClass } from "./error-taxonomy.js";
 export { shouldPlan } from "./planning-heuristic.js";
 export type { PlanningHeuristicInput } from "./planning-heuristic.js";
 
-export { buildSystemPrompt, buildInitialMessages, buildRepairMessage, buildCheatReviewMessage, toolsToSchemas } from "./message-builder.js";
+export {
+  buildSystemPrompt,
+  buildInitialMessages,
+  buildRepairMessage,
+  buildCheatReviewMessage,
+  buildEditFormatGuidance,
+  toolsToSchemas
+} from "./message-builder.js";
+
+export { estimateTokens, estimateMessageTokens, compactHistory } from "./context-compaction.js";
+export type { CompactionResult } from "./context-compaction.js";
 
 export { AgentLoop } from "./agent-loop.js";
 export type { AgentLoopDeps, AgentLoopOptions, RuntimeEvent } from "./agent-loop.js";

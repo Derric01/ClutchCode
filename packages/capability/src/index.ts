@@ -13,3 +13,6 @@ export type { ContextBudget, ContextBudgetFractions } from "./budget.js";
 
 export { selectEditFormat, wholeFileLocCap } from "./edit-format.js";
 export type { EditFormatDecision, EditFormatFile, EditFormatProfile } from "./edit-format.js";
+
+export { resolveCapability } from "./resolve.js";
+export type { EffectiveCapability } from "./resolve.js";
