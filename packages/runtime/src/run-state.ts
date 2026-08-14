@@ -116,6 +116,22 @@ export interface RunState {
   budgets: Budgets;
   consumed: BudgetConsumed;
 
+  /**
+   * Set when `capabilityProfileId` resolved to a persisted profile (§4.9):
+   * the §4.5 context-budget allocation derived from it, for observability
+   * (`agent inspect`). Shaped like @clutchcode/capability's `ContextBudget`,
+   * duplicated by hand rather than imported so this file stays
+   * dependency-free.
+   */
+  contextBudget?: {
+    effectiveContext: number;
+    systemAndTools: number;
+    repoMapRetrieval: number;
+    openFileWindows: number;
+    conversationHistory: number;
+    reservedOutput: number;
+  };
+
   worktreePath?: string;
   baseCommit?: string;
 

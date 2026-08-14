@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { selectEditFormat, wholeFileLocCap } from "./edit-format.js";
+import { describeAdaptationGuidance, selectEditFormat, wholeFileLocCap } from "./edit-format.js";
 
 describe("wholeFileLocCap", () => {
   it("is ~400 LOC at an 8k effective context (§4.4)", () => {
@@ -55,5 +55,40 @@ describe("selectEditFormat", () => {
   it("a high-accuracy model with no constrained decode still gets grammar-free search/replace, never downgraded", () => {
     const decision = selectEditFormat({ diffApplicationAccuracy: 0.99, constrainedDecodeAvailable: false, effectiveContext: 32000 }, existingLargeFile);
     expect(decision.format).toBe("search-replace");
+  });
+});
+
+describe("describeAdaptationGuidance", () => {
+  it("recommends edit_file for a high-accuracy model with constrained decode", () => {
+    const text = describeAdaptationGuidance({ diffApplicationAccuracy: 0.9, constrainedDecodeAvailable: true, effectiveContext: 8000 });
+    expect(text).toContain("90%");
+    expect(text).toContain("edit_file");
+    expect(text).toContain("grammar-enforced");
+  });
+
+  it("recommends edit_file for a high-accuracy model without constrained decode, no grammar claim", () => {
+    const text = describeAdaptationGuidance({ diffApplicationAccuracy: 0.8, constrainedDecodeAvailable: false, effectiveContext: 8000 });
+    expect(text).toContain("80%");
+    expect(text).toContain("edit_file");
+    expect(text).not.toContain("grammar-enforced");
+  });
+
+  it("recommends write_file below ~350 LOC for a mid-accuracy model, and mentions the LOC cap", () => {
+    const text = describeAdaptationGuidance({ diffApplicationAccuracy: 0.6, constrainedDecodeAvailable: false, effectiveContext: 8000 });
+    expect(text).toContain("60%");
+    expect(text).toContain("write_file");
+    expect(text).toContain(String(wholeFileLocCap(8000)));
+  });
+
+  it("strongly recommends write_file for a low-accuracy model", () => {
+    const text = describeAdaptationGuidance({ diffApplicationAccuracy: 0.2, constrainedDecodeAvailable: false, effectiveContext: 8000 });
+    expect(text).toContain("low");
+    expect(text).toContain("write_file");
+  });
+
+  it("scales the mentioned LOC cap with effective context", () => {
+    const small = describeAdaptationGuidance({ diffApplicationAccuracy: 0.6, constrainedDecodeAvailable: false, effectiveContext: 4000 });
+    const large = describeAdaptationGuidance({ diffApplicationAccuracy: 0.6, constrainedDecodeAvailable: false, effectiveContext: 32000 });
+    expect(small).not.toBe(large);
   });
 });

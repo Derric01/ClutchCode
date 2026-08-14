@@ -56,3 +56,28 @@ export function selectEditFormat(profile: EditFormatProfile, file: EditFormatFil
   }
   return { format: "whole-file", chunked: true };
 }
+
+/**
+ * A one-paragraph, model-facing summary of `selectEditFormat`'s thresholds
+ * for *this* model, meant to be injected into the system prompt (§4.2
+ * "prompt assembler") so the model's own edit-tool choices track its
+ * measured accuracy instead of a fixed instruction that's wrong for weak
+ * models. Same thresholds as `selectEditFormat`, expressed for a "typical"
+ * file rather than one specific target (the harness doesn't know which
+ * file the model will pick before it picks it).
+ */
+export function describeAdaptationGuidance(profile: EditFormatProfile): string {
+  const pct = Math.round(profile.diffApplicationAccuracy * 100);
+  const cap = wholeFileLocCap(profile.effectiveContext);
+
+  if (profile.constrainedDecodeAvailable && profile.diffApplicationAccuracy >= 0.85) {
+    return `Capability profile: this model's measured SEARCH/REPLACE accuracy is ${pct}% with grammar-enforced decoding available — edit_file is highly reliable, prefer it over rewriting whole files.`;
+  }
+  if (profile.diffApplicationAccuracy >= 0.75) {
+    return `Capability profile: this model's measured SEARCH/REPLACE accuracy is ${pct}% — edit_file is reliable, prefer it over rewriting whole files.`;
+  }
+  if (profile.diffApplicationAccuracy >= 0.5) {
+    return `Capability profile: this model's measured SEARCH/REPLACE accuracy is only ${pct}% — use edit_file only for small, unambiguous changes and quote SEARCH blocks exactly as they appear in the file. For files under ~${cap} lines, prefer write_file (rewrite the whole file) instead.`;
+  }
+  return `Capability profile: this model's measured SEARCH/REPLACE accuracy is low (${pct}%) — prefer write_file (rewrite the whole file) for anything under ~${cap} lines. For larger files, make the smallest possible edit_file change and expect it may need a retry.`;
+}

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { FakeProvider, textTurn, toolCallTurn } from "@clutchcode/providers";
+import type { CapabilityProfile } from "@clutchcode/capability";
 import { AgentLoop } from "./agent-loop.js";
 import { commitApprovedRun } from "./approve.js";
 import { createRunState } from "./run-state.js";
@@ -9,6 +10,28 @@ import { setupAgentLoopFixture } from "./test-helpers.js";
 import type { RuntimeEvent } from "./agent-loop.js";
 
 const FIX_EDIT = JSON.stringify({ path: "math.js", edits: [{ search: "return a - b;", replace: "return a + b;" }] });
+
+function sampleProfile(overrides: Partial<CapabilityProfile> = {}): CapabilityProfile {
+  return {
+    modelId: "probed-model",
+    providerId: "fake",
+    probedAt: "2026-08-14T00:00:00.000Z",
+    probeDurationMs: 100,
+    trials: 3,
+    diffApplicationAccuracy: 0.4,
+    instructionFidelity: 0.7,
+    longPromptInstructionFidelity: "medium",
+    toolTransport: "native",
+    structuredOutputScore: 0.7,
+    structuredOutputReliability: "medium",
+    effectiveContext: 8000,
+    loopCheckPassed: true,
+    supportsParallelTools: false,
+    constrainedDecodeAvailable: false,
+    notes: [],
+    ...overrides
+  };
+}
 
 describe("AgentLoop (end-to-end with a real worktree + FakeProvider)", () => {
   it("fixes the bug, verifies green, and auto-commits in --yes mode", async () => {
@@ -172,6 +195,91 @@ describe("AgentLoop (end-to-end with a real worktree + FakeProvider)", () => {
 
       expect(finalState.status).toBe("ESCALATED");
       expect(finalState.escalationReason).toMatch(/loop detected: repeated-call/);
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("with a capability profile: derives a context budget, caps output tokens, and adds adaptation guidance (§4.2/§4.5)", async () => {
+    const fx = setupAgentLoopFixture("run00000007");
+    try {
+      const provider = new FakeProvider([toolCallTurn("c1", "edit_file", FIX_EDIT), textTurn("Fixed the add() bug.")]);
+      const state = createRunState({ runId: fx.run.runId, task: "fix add()", provider: "fake", model: "probed-model" });
+      const profile = sampleProfile();
+
+      const loop = new AgentLoop(
+        state,
+        { provider, tools: fx.tools, toolContext: fx.toolContext, run: fx.run, toolchainCommands: fx.toolchainCommands, evidenceDir: fx.evidenceDir, capabilityProfile: profile },
+        { yesMode: true }
+      );
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("DONE");
+      expect(finalState.contextBudget).toEqual({
+        effectiveContext: 8000,
+        systemAndTools: 1200,
+        repoMapRetrieval: 1600,
+        openFileWindows: 2400,
+        conversationHistory: 2000,
+        reservedOutput: 800
+      });
+
+      // Every request the model saw was capped at the budget's reserved-output share.
+      for (const req of provider.requestLog) expect(req.maxOutputTokens).toBe(800);
+
+      // The adaptation note (low diff-accuracy -> prefer write_file) is its own system message.
+      const systemMessages = provider.requestLog[0]!.messages.filter((m) => m.role === "system");
+      expect(systemMessages).toHaveLength(2);
+      expect(systemMessages[1]!.content).toContain("write_file");
+      expect(systemMessages[1]!.content).toContain("40%");
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("with a capability profile that has no usable effective context: skips the budget without crashing", async () => {
+    const fx = setupAgentLoopFixture("run00000008");
+    try {
+      const provider = new FakeProvider([toolCallTurn("c1", "edit_file", FIX_EDIT), textTurn("Fixed.")]);
+      const state = createRunState({ runId: fx.run.runId, task: "fix add()", provider: "fake", model: "unmeasurable-model" });
+      const profile = sampleProfile({ effectiveContext: 0, notes: ["context recall failed at every rung"] });
+
+      const loop = new AgentLoop(state, {
+        provider,
+        tools: fx.tools,
+        toolContext: fx.toolContext,
+        run: fx.run,
+        toolchainCommands: fx.toolchainCommands,
+        evidenceDir: fx.evidenceDir,
+        capabilityProfile: profile
+      });
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("AWAITING_APPROVAL");
+      expect(finalState.contextBudget).toBeUndefined();
+      expect(provider.requestLog[0]!.maxOutputTokens).toBeUndefined();
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("without a capability profile: behaves exactly as before (no budget, no extra system message)", async () => {
+    const fx = setupAgentLoopFixture("run00000009");
+    try {
+      const provider = new FakeProvider([toolCallTurn("c1", "edit_file", FIX_EDIT), textTurn("Fixed.")]);
+      const state = createRunState({ runId: fx.run.runId, task: "fix add()", provider: "fake", model: "fake" });
+
+      const loop = new AgentLoop(
+        state,
+        { provider, tools: fx.tools, toolContext: fx.toolContext, run: fx.run, toolchainCommands: fx.toolchainCommands, evidenceDir: fx.evidenceDir },
+        { yesMode: true }
+      );
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("DONE");
+      expect(finalState.contextBudget).toBeUndefined();
+      expect(provider.requestLog[0]!.maxOutputTokens).toBeUndefined();
+      expect(provider.requestLog[0]!.messages.filter((m) => m.role === "system")).toHaveLength(1);
     } finally {
       fx.cleanup();
     }

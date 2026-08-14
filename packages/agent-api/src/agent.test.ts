@@ -1,8 +1,31 @@
 import fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { saveCapabilityProfile, type CapabilityProfile } from "@clutchcode/capability";
 import { Agent } from "./agent.js";
 import { makeSampleRepo, makeTempDir } from "./test-helpers.js";
 import { initRepo } from "./scaffold.js";
+
+function sampleProfile(overrides: Partial<CapabilityProfile> = {}): CapabilityProfile {
+  return {
+    modelId: "n/a",
+    providerId: "fake",
+    probedAt: "2026-08-14T00:00:00.000Z",
+    probeDurationMs: 100,
+    trials: 3,
+    diffApplicationAccuracy: 0.9,
+    instructionFidelity: 0.9,
+    longPromptInstructionFidelity: "high",
+    toolTransport: "native",
+    structuredOutputScore: 0.9,
+    structuredOutputReliability: "high",
+    effectiveContext: 16000,
+    loopCheckPassed: true,
+    supportsParallelTools: true,
+    constrainedDecodeAvailable: false,
+    notes: [],
+    ...overrides
+  };
+}
 
 describe("Agent (agent-api boundary, wired end-to-end with a real worktree)", () => {
   let repoPath: string;
@@ -59,6 +82,43 @@ describe("Agent (agent-api boundary, wired end-to-end with a real worktree)", ()
   it("status() is null with no runs yet", () => {
     expect(agent.status()).toBeNull();
   });
+});
+
+describe("Agent + capability profile (§4.9 wired into a live run)", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let modelsDir: string;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+    modelsDir = makeTempDir("clutchcode-agentapi-models-");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    fs.rmSync(modelsDir, { recursive: true, force: true });
+  });
+
+  it("picks up a persisted profile for the run's model and records the derived budget on RunState", async () => {
+    saveCapabilityProfile(sampleProfile({ modelId: "n/a" }), modelsDir);
+    const agent = new Agent(repoPath, stateDir, modelsDir);
+
+    const state = await agent.run({ task: "investigate the repo", providerKind: "fake", model: "n/a", yesMode: true });
+
+    expect(state.capabilityProfileId).toBe("n/a");
+    expect(state.contextBudget?.effectiveContext).toBe(16000);
+    expect(state.contextBudget?.reservedOutput).toBe(1600); // 10% of 16000
+  }, 30_000);
+
+  it("a model with no persisted profile runs exactly as before (no profile id, no budget)", async () => {
+    const agent = new Agent(repoPath, stateDir, modelsDir); // modelsDir exists but is empty
+    const state = await agent.run({ task: "investigate the repo", providerKind: "fake", model: "n/a", yesMode: true });
+
+    expect(state.capabilityProfileId).toBeUndefined();
+    expect(state.contextBudget).toBeUndefined();
+  }, 30_000);
 });
 
 describe("initRepo", () => {

@@ -36,7 +36,9 @@ function summarizeRunState(state: RunState): Record<string, unknown> {
     repairIterations: state.repairIterations,
     verificationResults: state.verificationResults,
     escalationReason: state.escalationReason,
-    lastError: state.lastError
+    lastError: state.lastError,
+    capabilityProfileId: state.capabilityProfileId,
+    contextBudget: state.contextBudget
   };
 }
 
@@ -47,6 +49,10 @@ function formatRunState(state: RunState, json?: boolean): string {
     `task: ${state.task}`,
     `steps: ${state.consumed.steps}/${state.budgets.steps}  tokens: ${state.consumed.tokens}/${state.budgets.tokens}`
   ];
+  if (state.capabilityProfileId) {
+    const ctx = state.contextBudget ? ` (effective ctx ~${state.contextBudget.effectiveContext}, output reserve ~${state.contextBudget.reservedOutput})` : "";
+    lines.push(`capability profile: ${state.capabilityProfileId}${ctx}`);
+  }
   if (state.verificationResults.length > 0) {
     const last = state.verificationResults[state.verificationResults.length - 1]!;
     lines.push(`verification: ${last.allGreen ? "green" : `red (${last.firstFailureStage})`}; cheat flags: ${last.cheatFlagCount}`);
@@ -76,7 +82,7 @@ export interface RunCommandOptions {
 }
 
 export async function cmdRun(ctx: CliContext, opts: RunCommandOptions): Promise<CommandResult> {
-  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  const agent = new Agent(ctx.repoPath, ctx.stateDir, ctx.modelsDir);
   const state = await agent.run({
     task: opts.task,
     providerKind: opts.providerKind,
@@ -88,7 +94,7 @@ export async function cmdRun(ctx: CliContext, opts: RunCommandOptions): Promise<
 }
 
 export async function cmdStatus(ctx: CliContext): Promise<CommandResult> {
-  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  const agent = new Agent(ctx.repoPath, ctx.stateDir, ctx.modelsDir);
   const state = agent.status();
   if (!state) {
     return { exitCode: EXIT.SUCCESS, output: ctx.json ? "null" : "no runs yet" };
@@ -97,7 +103,7 @@ export async function cmdStatus(ctx: CliContext): Promise<CommandResult> {
 }
 
 export async function cmdDiff(ctx: CliContext, runId: string): Promise<CommandResult> {
-  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  const agent = new Agent(ctx.repoPath, ctx.stateDir, ctx.modelsDir);
   try {
     const diff = agent.diff(runId);
     return { exitCode: EXIT.SUCCESS, output: ctx.json ? JSON.stringify({ runId, diff }) : diff || "(no changes)" };
@@ -112,7 +118,7 @@ export interface ApproveCommandOptions {
 }
 
 export async function cmdApprove(ctx: CliContext, runId: string, opts: ApproveCommandOptions): Promise<CommandResult> {
-  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  const agent = new Agent(ctx.repoPath, ctx.stateDir, ctx.modelsDir);
   try {
     const state = agent.approve(runId, opts);
     return { exitCode: exitCodeForRunStatus(state.status), output: formatRunState(state, ctx.json) };
@@ -122,7 +128,7 @@ export async function cmdApprove(ctx: CliContext, runId: string, opts: ApproveCo
 }
 
 export async function cmdReject(ctx: CliContext, runId: string): Promise<CommandResult> {
-  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  const agent = new Agent(ctx.repoPath, ctx.stateDir, ctx.modelsDir);
   try {
     const state = agent.reject(runId);
     return { exitCode: exitCodeForRunStatus(state.status), output: formatRunState(state, ctx.json) };
@@ -132,7 +138,7 @@ export async function cmdReject(ctx: CliContext, runId: string): Promise<Command
 }
 
 export async function cmdInspect(ctx: CliContext, runId: string): Promise<CommandResult> {
-  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  const agent = new Agent(ctx.repoPath, ctx.stateDir, ctx.modelsDir);
   try {
     const { state, events } = agent.inspect(runId);
     if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify({ state: summarizeRunState(state), events }, null, 2) };
@@ -147,7 +153,7 @@ export async function cmdInspect(ctx: CliContext, runId: string): Promise<Comman
 }
 
 export async function cmdResume(ctx: CliContext, runId: string): Promise<CommandResult> {
-  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  const agent = new Agent(ctx.repoPath, ctx.stateDir, ctx.modelsDir);
   try {
     const state = agent.resume(runId);
     return {

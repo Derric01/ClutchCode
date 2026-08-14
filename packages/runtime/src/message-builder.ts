@@ -17,11 +17,19 @@ export function toolsToSchemas(tools: Map<string, Tool<unknown, unknown>>): Tool
   return [...tools.values()].map((t) => ({ name: t.name, description: t.description, parameters: t.schema }));
 }
 
-export function buildInitialMessages(task: string): NormalizedMessage[] {
-  return [
-    { role: "system", content: buildSystemPrompt() },
-    { role: "user", content: task }
-  ];
+/**
+ * `adaptationNote` (§4.2, optional) is the capability profile's edit-format
+ * guidance (`describeAdaptationGuidance`, §4.4) — sent as its own system
+ * message rather than concatenated into `buildSystemPrompt()` so the fixed
+ * prompt stays testable/stable on its own, and so a run with no probed
+ * profile for its model sends exactly the same messages as before this
+ * existed.
+ */
+export function buildInitialMessages(task: string, adaptationNote?: string): NormalizedMessage[] {
+  const messages: NormalizedMessage[] = [{ role: "system", content: buildSystemPrompt() }];
+  if (adaptationNote) messages.push({ role: "system", content: adaptationNote });
+  messages.push({ role: "user", content: task });
+  return messages;
 }
 
 /** Fed back into the conversation on a verification failure (§14.5 repair loop: "feed the FAILURE, truncated, not the whole log"). */

@@ -11,5 +11,5 @@ export { defaultModelsDir, capabilityProfilePath, saveCapabilityProfile, loadCap
 export { computeContextBudget, DEFAULT_BUDGET_FRACTIONS } from "./budget.js";
 export type { ContextBudget, ContextBudgetFractions } from "./budget.js";
 
-export { selectEditFormat, wholeFileLocCap } from "./edit-format.js";
+export { selectEditFormat, wholeFileLocCap, describeAdaptationGuidance } from "./edit-format.js";
 export type { EditFormatDecision, EditFormatFile, EditFormatProfile } from "./edit-format.js";

@@ -30,6 +30,7 @@ interface GlobalOpts {
   repo: string;
   json: boolean;
   stateDir?: string;
+  modelsDir?: string;
 }
 
 function emit(result: CommandResult, json: boolean): never {
@@ -46,7 +47,7 @@ function emit(result: CommandResult, json: boolean): never {
 }
 
 function ctx(opts: GlobalOpts): CliContext {
-  return { repoPath: opts.repo, json: opts.json, stateDir: opts.stateDir };
+  return { repoPath: opts.repo, json: opts.json, stateDir: opts.stateDir, modelsDir: opts.modelsDir };
 }
 
 interface ModelsGlobalOpts {
@@ -67,7 +68,8 @@ function baseOptions(cmd: Command): Command {
   return cmd
     .option("--repo <path>", "repository path", process.cwd())
     .option("--json", "machine-readable JSON output", false)
-    .option("--state-dir <path>", "override the state directory (default: ~/.local/state/clutchcode)");
+    .option("--state-dir <path>", "override the state directory (default: ~/.local/state/clutchcode)")
+    .option("--models-dir <path>", "override the capability-profile directory (default: ~/.config/clutchcode/models)");
 }
 
 baseOptions(program.command("init")).action(async (opts: GlobalOpts) => emit(await cmdInit(ctx(opts)), opts.json));

@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import type { NormalizedMessage, Provider } from "@clutchcode/providers";
 import { collect } from "@clutchcode/providers";
+import { computeContextBudget, describeAdaptationGuidance, type CapabilityProfile, type ContextBudget } from "@clutchcode/capability";
 import type { Tool, ToolContext } from "@clutchcode/tools";
 import type { RunWorktree } from "@clutchcode/git";
 import { approveRun, checkpoint, diffAgainstBase, diffStat } from "@clutchcode/git";
@@ -50,6 +51,8 @@ export interface AgentLoopDeps {
   run: RunWorktree;
   toolchainCommands: ToolchainCommands;
   evidenceDir: string;
+  /** From `agent-api`'s lookup of a persisted profile for this run's model (§4.9) — optional, never required. */
+  capabilityProfile?: CapabilityProfile;
 }
 
 export interface AgentLoopOptions {
@@ -62,6 +65,7 @@ export class AgentLoop {
   readonly state: RunState;
   private readonly budgetGuard: BudgetGuard;
   private readonly loopDetector: LoopDetector;
+  private readonly contextBudget?: ContextBudget;
   private messages: NormalizedMessage[];
 
   constructor(
@@ -74,7 +78,17 @@ export class AgentLoop {
     const restoredDetectorState = state.loopDetectorState as LoopDetectorState | undefined;
     this.loopDetector = new LoopDetector(restoredDetectorState ?? initLoopDetectorState());
     state.loopDetectorState = this.loopDetector.getState();
-    this.messages = buildInitialMessages(state.task);
+
+    const profile = deps.capabilityProfile;
+    // A profile with no usable effective-context measurement (e.g. every
+    // context-probe rung failed) can't drive a budget — §4.5 requires a
+    // positive number. Guidance text still degrades gracefully in that case.
+    if (profile && profile.effectiveContext > 0) {
+      this.contextBudget = computeContextBudget(profile.effectiveContext);
+      state.contextBudget = { ...this.contextBudget };
+    }
+    const adaptationNote = profile ? describeAdaptationGuidance(profile) : undefined;
+    this.messages = buildInitialMessages(state.task, adaptationNote);
   }
 
   private emit(event: RuntimeEvent): void {
@@ -141,7 +155,11 @@ export class AgentLoop {
         this.deps.provider.chat({
           model: this.state.model,
           messages: this.messages,
-          tools: toolsToSchemas(this.deps.tools)
+          tools: toolsToSchemas(this.deps.tools),
+          // §4.5 "reserved for model output" segment of the profile's context
+          // budget, when one was derived; unset (provider default) otherwise —
+          // never omit-then-crash for a run with no probed profile.
+          maxOutputTokens: this.contextBudget?.reservedOutput
         })
       );
       this.budgetGuard.recordStep();

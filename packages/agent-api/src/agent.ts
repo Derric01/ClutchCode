@@ -7,6 +7,7 @@ import { Denylist, PolicyEngine, Redactor } from "@clutchcode/sandbox";
 import { nativeToolSet, type Tool } from "@clutchcode/tools";
 import { createRunWorktree, diffAgainstBase, type RunWorktree } from "@clutchcode/git";
 import { applyAgentsMdOverrides, detectToolchain, type ToolchainCommands } from "@clutchcode/verification";
+import { defaultModelsDir, loadCapabilityProfile } from "@clutchcode/capability";
 import {
   AgentLoop,
   RunStateStore,
@@ -65,13 +66,16 @@ function newRunId(): string {
  */
 export class Agent {
   private readonly stateDir: string;
+  private readonly modelsDir: string;
   private readonly store: RunStateStore;
 
   constructor(
     private readonly repoPath: string,
-    stateDir?: string
+    stateDir?: string,
+    modelsDir?: string
   ) {
     this.stateDir = stateDir ?? defaultStateDir();
+    this.modelsDir = modelsDir ?? defaultModelsDir();
     this.store = new RunStateStore(this.stateDir);
   }
 
@@ -107,11 +111,19 @@ export class Agent {
       networkAllowlist: []
     };
 
+    // §4.9: a capability profile is looked up by model id only if one was
+    // ever probed and persisted — a cheap local file read, never a probe
+    // run of its own. No profile for this model is the common/default case
+    // and changes nothing about how the run proceeds (§4.2's adaptation
+    // layer degrades to "no adaptation" rather than failing).
+    const capabilityProfile = loadCapabilityProfile(opts.model, this.modelsDir) ?? undefined;
+
     const state = createRunState({
       runId,
       task: opts.task,
       provider: opts.providerKind,
       model: opts.model,
+      capabilityProfileId: capabilityProfile?.modelId,
       budgets: config.policy?.costCeilingUsd !== undefined ? { costUsd: config.policy.costCeilingUsd } : undefined
     });
     state.worktreePath = run.worktreePath;
@@ -122,7 +134,7 @@ export class Agent {
 
     const loop = new AgentLoop(
       state,
-      { provider, tools, toolContext, run, toolchainCommands, evidenceDir },
+      { provider, tools, toolContext, run, toolchainCommands, evidenceDir, capabilityProfile },
       {
         yesMode: opts.yesMode,
         onEvent: (event) => {
