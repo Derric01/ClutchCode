@@ -1,0 +1,22 @@
+{
+  "name": "@clutchcode/capability",
+  "version": "0.1.0",
+  "description": "The model capability probe (§4.9), capability-profile persistence, the context budgeter (§4.5), and edit-format selection (§4.4) — the adaptation layer's 'crown jewel' (§4.2).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@clutchcode/providers": "workspace:*",
+    "@clutchcode/tools": "workspace:*",
+    "smol-toml": "^1.3.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

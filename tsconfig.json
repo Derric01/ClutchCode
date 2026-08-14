@@ -6,6 +6,7 @@
     { "path": "packages/git" },
     { "path": "packages/verification" },
     { "path": "packages/runtime" },
+    { "path": "packages/capability" },
     { "path": "packages/agent-api" },
     { "path": "apps/cli" },
     { "path": "evals" }
