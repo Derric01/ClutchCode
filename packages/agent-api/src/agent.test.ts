@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { saveCapabilityProfile, type CapabilityProfile } from "@clutchcode/capability";
 import { Agent } from "./agent.js";
 import { makeSampleRepo, makeTempDir } from "./test-helpers.js";
 import { initRepo } from "./scaffold.js";
@@ -59,6 +60,63 @@ describe("Agent (agent-api boundary, wired end-to-end with a real worktree)", ()
   it("status() is null with no runs yet", () => {
     expect(agent.status()).toBeNull();
   });
+});
+
+describe("Agent + capability profiles (§4.2/§4.9)", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let modelsDir: string;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+    modelsDir = makeTempDir("clutchcode-agentapi-models-");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    fs.rmSync(modelsDir, { recursive: true, force: true });
+  });
+
+  function sampleProfile(overrides: Partial<CapabilityProfile> = {}): CapabilityProfile {
+    return {
+      modelId: "probed-model",
+      providerId: "fake",
+      probedAt: "2026-08-14T00:00:00.000Z",
+      probeDurationMs: 1,
+      trials: 1,
+      diffApplicationAccuracy: 0.9,
+      instructionFidelity: 0.8,
+      longPromptInstructionFidelity: "high",
+      toolTransport: "native",
+      structuredOutputScore: 0.7,
+      structuredOutputReliability: "medium",
+      effectiveContext: 8000,
+      loopCheckPassed: true,
+      supportsParallelTools: false,
+      constrainedDecodeAvailable: true,
+      notes: [],
+      ...overrides
+    };
+  }
+
+  it("stamps capabilityProfileId when a persisted profile exists for the model", async () => {
+    saveCapabilityProfile(sampleProfile(), modelsDir);
+    const agent = new Agent(repoPath, stateDir);
+
+    const state = await agent.run({ task: "investigate the repo", providerKind: "fake", model: "probed-model", yesMode: true, modelsDir });
+
+    expect(state.capabilityProfileId).toBe("probed-model");
+  }, 30_000);
+
+  it("leaves capabilityProfileId unset when the model was never probed", async () => {
+    const agent = new Agent(repoPath, stateDir);
+
+    const state = await agent.run({ task: "investigate the repo", providerKind: "fake", model: "never-probed", yesMode: true, modelsDir });
+
+    expect(state.capabilityProfileId).toBeUndefined();
+  }, 30_000);
 });
 
 describe("initRepo", () => {

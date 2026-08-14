@@ -7,6 +7,7 @@ import { Denylist, PolicyEngine, Redactor } from "@clutchcode/sandbox";
 import { nativeToolSet, type Tool } from "@clutchcode/tools";
 import { createRunWorktree, diffAgainstBase, type RunWorktree } from "@clutchcode/git";
 import { applyAgentsMdOverrides, detectToolchain, type ToolchainCommands } from "@clutchcode/verification";
+import { defaultModelsDir, loadCapabilityProfile, resolveCapability } from "@clutchcode/capability";
 import {
   AgentLoop,
   RunStateStore,
@@ -30,6 +31,8 @@ export interface RunOptions {
   baseUrl?: string;
   yesMode?: boolean;
   runId?: string;
+  /** Capability-profile storage directory (§4.9); default: ~/.config/clutchcode/models — same default `agent models probe` writes to. */
+  modelsDir?: string;
   onEvent?: (event: RuntimeEvent) => void;
 }
 
@@ -107,22 +110,31 @@ export class Agent {
       networkAllowlist: []
     };
 
+    const provider = buildProvider({ kind: opts.providerKind, baseUrl: opts.baseUrl, credentials });
+
+    // §4.2/§4.9 adaptation layer: use a persisted capability profile if this
+    // model has been probed (`agent models probe`); otherwise fall back to
+    // the provider's own best-effort defaults (ADR-015) — never block a run
+    // on probing.
+    const modelsDir = opts.modelsDir ?? defaultModelsDir();
+    const capabilityProfile = loadCapabilityProfile(opts.model, modelsDir);
+    const capability = resolveCapability(capabilityProfile, provider.capabilityDefaults);
+
     const state = createRunState({
       runId,
       task: opts.task,
       provider: opts.providerKind,
       model: opts.model,
+      capabilityProfileId: capabilityProfile ? opts.model : undefined,
       budgets: config.policy?.costCeilingUsd !== undefined ? { costUsd: config.policy.costCeilingUsd } : undefined
     });
     state.worktreePath = run.worktreePath;
     state.baseCommit = run.baseCommit;
     this.store.save(state);
 
-    const provider = buildProvider({ kind: opts.providerKind, baseUrl: opts.baseUrl, credentials });
-
     const loop = new AgentLoop(
       state,
-      { provider, tools, toolContext, run, toolchainCommands, evidenceDir },
+      { provider, tools, toolContext, run, toolchainCommands, evidenceDir, capability },
       {
         yesMode: opts.yesMode,
         onEvent: (event) => {

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { FakeProvider, textTurn, toolCallTurn } from "@clutchcode/providers";
+import { computeContextBudget, type EffectiveCapability } from "@clutchcode/capability";
 import { AgentLoop } from "./agent-loop.js";
 import { commitApprovedRun } from "./approve.js";
 import { createRunState } from "./run-state.js";
@@ -172,6 +173,103 @@ describe("AgentLoop (end-to-end with a real worktree + FakeProvider)", () => {
 
       expect(finalState.status).toBe("ESCALATED");
       expect(finalState.escalationReason).toMatch(/loop detected: repeated-call/);
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+});
+
+describe("AgentLoop capability wiring (§4.2/§4.4/§4.5)", () => {
+  it("with no explicit capability, derives maxOutputTokens from the provider's own CapabilityDefaults", async () => {
+    const fx = setupAgentLoopFixture("run00000010");
+    try {
+      const provider = new FakeProvider([toolCallTurn("c1", "edit_file", FIX_EDIT), textTurn("Fixed.")]);
+      const state = createRunState({ runId: fx.run.runId, task: "fix add()", provider: "fake", model: "fake" });
+
+      const loop = new AgentLoop(state, {
+        provider,
+        tools: fx.tools,
+        toolContext: fx.toolContext,
+        run: fx.run,
+        toolchainCommands: fx.toolchainCommands,
+        evidenceDir: fx.evidenceDir
+      });
+      await loop.run();
+
+      const expectedReserved = computeContextBudget(provider.capabilityDefaults.approxEffectiveContext).reservedOutput;
+      expect(provider.requestLog.length).toBeGreaterThan(0);
+      for (const req of provider.requestLog) {
+        expect(req.maxOutputTokens).toBe(expectedReserved);
+      }
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("embeds edit-format guidance from an explicit capability profile into the system prompt", async () => {
+    const fx = setupAgentLoopFixture("run00000011");
+    try {
+      const provider = new FakeProvider([toolCallTurn("c1", "edit_file", FIX_EDIT), textTurn("Fixed.")]);
+      const state = createRunState({ runId: fx.run.runId, task: "fix add()", provider: "fake", model: "fake" });
+      const capability: EffectiveCapability = { effectiveContext: 8000, diffApplicationAccuracy: 0.2, constrainedDecodeAvailable: false, probed: true };
+
+      const loop = new AgentLoop(state, {
+        provider,
+        tools: fx.tools,
+        toolContext: fx.toolContext,
+        run: fx.run,
+        toolchainCommands: fx.toolchainCommands,
+        evidenceDir: fx.evidenceDir,
+        capability
+      });
+      await loop.run();
+
+      expect(provider.requestLog[0]!.messages[0]!.content).toContain("write_file (whole-file rewrite)");
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("compacts history and emits context.compacted once the effective-context budget is exceeded, without breaking the run", async () => {
+    const fx = setupAgentLoopFixture("run00000012");
+    try {
+      const bigBody = (n: number) => "z".repeat(400) + n;
+      // A step budget of 4 stops the run deterministically after 4 model turns — well
+      // short of verification (irrelevant here) and short of any loop-detector escalation.
+      const turns = Array.from({ length: 5 }, (_, i) => toolCallTurn(`c${i}`, "write_file", JSON.stringify({ path: "scratch.txt", body: bigBody(i) })));
+      const provider = new FakeProvider(turns);
+      const state = createRunState({
+        runId: fx.run.runId,
+        task: "scratch work",
+        provider: "fake",
+        model: "fake",
+        budgets: { steps: 4, wallclockMs: 60_000, tokens: 1_000_000, costUsd: 0 }
+      });
+      // Tiny effective context so the folded history+repo-map+open-file budget is crossed in a couple of turns.
+      const capability: EffectiveCapability = { effectiveContext: 200, diffApplicationAccuracy: 0.75, constrainedDecodeAvailable: false, probed: true };
+
+      const events: RuntimeEvent[] = [];
+      const loop = new AgentLoop(
+        state,
+        {
+          provider,
+          tools: fx.tools,
+          toolContext: fx.toolContext,
+          run: fx.run,
+          toolchainCommands: fx.toolchainCommands,
+          evidenceDir: fx.evidenceDir,
+          capability
+        },
+        { yesMode: true, onEvent: (e) => events.push(e) }
+      );
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("PAUSED");
+      const compactionEvents = events.filter((e): e is Extract<RuntimeEvent, { type: "context.compacted" }> => e.type === "context.compacted");
+      expect(compactionEvents.length).toBeGreaterThan(0);
+      expect(compactionEvents[0]!.droppedCount).toBeGreaterThan(0);
+      // The task message is always pinned, even after aggressive compaction.
+      expect(provider.requestLog.at(-1)!.messages[1]).toEqual({ role: "user", content: "scratch work" });
     } finally {
       fx.cleanup();
     }

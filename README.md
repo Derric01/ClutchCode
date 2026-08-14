@@ -21,12 +21,20 @@ the MVP is: one agent, one default workflow, two provider adapters
 SEARCH/REPLACE edits with fallback, git worktree isolation, deterministic
 verification with cheat detection, and a terminal CLI — all done. The
 capability probe (§4.9), context budgeter (§4.5), and edit-format selector
-(§4.4) — the adaptation layer's "crown jewel" (§4.2) — now exist as a
-standalone, tested package (`clutchcode models probe`), but are not yet
-wired into the live agent loop's prompt assembly; that integration, OS
-sandbox Tier 1, OS keychain credential storage, the VS Code extension, and
-mid-run resume hardening are the remaining named Phase 2/3 follow-ups
-(`PROJECT_SPEC.md §21/§25`).
+(§4.4) — the adaptation layer's "crown jewel" (§4.2) — exist as a
+standalone, tested package (`clutchcode models probe`) and are now wired
+into the live agent loop: a run picks up a probed model's profile
+automatically (falling back to the provider's own defaults per ADR-015
+when nothing's been probed yet), the system prompt's edit-format guidance
+follows `select_edit_format`, `maxOutputTokens` follows the reserved-output
+budget, and conversation history is compacted (turn-safe, never splitting
+a tool call from its result) once the effective-context budget is
+exceeded. Not yet enforced: dedicated repo-map/open-file-window budgets
+(§9, §4.5) — that subsystem doesn't exist before Phase 7, so their share
+is folded into the live history budget for now. OS sandbox Tier 1, OS
+keychain credential storage, the VS Code extension, and mid-run resume
+hardening remain the named Phase 2/3 follow-ups (`PROJECT_SPEC.md
+§21/§25`).
 
 ## Repository layout
 
