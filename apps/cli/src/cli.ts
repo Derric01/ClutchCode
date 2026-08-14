@@ -16,11 +16,13 @@ import {
   cmdResume,
   cmdRollback,
   cmdRun,
+  cmdServe,
   cmdStatus,
   cmdTrust,
   type CliContext,
   type CommandResult
 } from "./commands.js";
+import { EXIT } from "./exit-codes.js";
 
 /**
  * The `clutchcode` CLI (PROJECT_SPEC.md §18.2) — a thin client of
@@ -200,6 +202,25 @@ baseOptions(program.command("trust")).action(async (opts: GlobalOpts) => emit(aw
 baseOptions(program.command("providers")).action(async (opts: GlobalOpts) => emit(await cmdProviders(ctx(opts)), opts.json));
 
 baseOptions(program.command("doctor")).action(async (opts: GlobalOpts) => emit(await cmdDoctor(ctx(opts)), opts.json));
+
+baseOptions(program.command("serve"))
+  .description("speak the Agent API over stdio JSON-RPC (§18.1/§18.5) — for editor clients (VS Code today), not interactive use")
+  .action((opts: GlobalOpts) => {
+    // Long-running, not a one-shot `emit()` command: stays alive for as
+    // long as the client (a spawned child process's parent, e.g. the VS
+    // Code extension host) keeps stdin open, and exits cleanly the moment
+    // it doesn't — never left orphaned if the editor closes without
+    // saying goodbye.
+    const handle = cmdServe(ctx(opts), process.stdin, process.stdout);
+    process.stdin.resume();
+    const shutdown = (): void => {
+      handle.close();
+      process.exit(EXIT.SUCCESS);
+    };
+    process.stdin.on("end", shutdown);
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  });
 
 const models = program.command("models").description("model capability profiles (§4.9)");
 

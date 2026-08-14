@@ -1,0 +1,63 @@
+{
+  "name": "clutchcode-vscode",
+  "displayName": "ClutchCode",
+  "description": "A model-agnostic, local-first coding agent — run tasks, review diffs, and approve/reject changes from the editor, backed by the same runtime as the `clutchcode` CLI (PROJECT_SPEC.md §18.5).",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "publisher": "clutchcode",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onCommand:clutchcode.run"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "clutchcode.run", "title": "ClutchCode: Run Task" },
+      { "command": "clutchcode.diff", "title": "ClutchCode: Show Diff for Run" },
+      { "command": "clutchcode.approve", "title": "ClutchCode: Approve Run" },
+      { "command": "clutchcode.reject", "title": "ClutchCode: Reject Run" }
+    ],
+    "configuration": {
+      "title": "ClutchCode",
+      "properties": {
+        "clutchcode.providerKind": {
+          "type": "string",
+          "enum": ["openai-compatible", "anthropic", "ollama", "fake"],
+          "default": "ollama",
+          "description": "Which provider adapter to use (§4.7)."
+        },
+        "clutchcode.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model id to pass to the provider."
+        },
+        "clutchcode.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Override the provider base URL (e.g. a local Ollama/OpenAI-compatible server)."
+        },
+        "clutchcode.cliPath": {
+          "type": "string",
+          "default": "clutchcode",
+          "description": "Path to the `clutchcode` binary this extension spawns (`clutchcode serve`, §18.5) — override if it isn't on PATH."
+        }
+      }
+    }
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@clutchcode/agent-api": "workspace:*",
+    "@clutchcode/agent-rpc": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.7.2"
+  }
+}

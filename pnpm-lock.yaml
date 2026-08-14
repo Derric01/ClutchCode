@@ -32,10 +32,29 @@ importers:
       '@clutchcode/agent-api':
         specifier: workspace:*
         version: link:../../packages/agent-api
+      '@clutchcode/agent-rpc':
+        specifier: workspace:*
+        version: link:../../packages/agent-rpc
       commander:
         specifier: ^15.0.0
         version: 15.0.0
     devDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
+  apps/vscode:
+    dependencies:
+      '@clutchcode/agent-api':
+        specifier: workspace:*
+        version: link:../../packages/agent-api
+      '@clutchcode/agent-rpc':
+        specifier: workspace:*
+        version: link:../../packages/agent-rpc
+    devDependencies:
+      '@types/vscode':
+        specifier: ^1.85.0
+        version: 1.125.0
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
@@ -94,6 +113,16 @@ importers:
       smol-toml:
         specifier: ^1.3.1
         version: 1.8.0
+    devDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
+  packages/agent-rpc:
+    dependencies:
+      '@clutchcode/agent-api':
+        specifier: workspace:*
+        version: link:../agent-api
     devDependencies:
       typescript:
         specifier: ^5.7.2
@@ -532,6 +561,9 @@ packages:
 
   '@types/node@22.20.1':
     resolution: {integrity: sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==}
+
+  '@types/vscode@1.125.0':
+    resolution: {integrity: sha512-0icm/ZQAaism87P0ekHqi4/Ju9du+Tm0RUW+y7vqRsxY2cY0FNRX1nAnaW7nT6npPt2tfHiheZ55Zm9UhqonFA==}
 
   '@typescript-eslint/eslint-plugin@8.67.0':
     resolution: {integrity: sha512-Un7Heoyj65NREbKAyIrFxeM143NZpExWmy1Nep4DLeQOeLlTeumPjoNKnBrU5D5moWXbPJgRa5Uwcdu0faVNGQ==}
@@ -1345,6 +1377,8 @@ snapshots:
   '@types/node@22.20.1':
     dependencies:
       undici-types: 6.21.0
+
+  '@types/vscode@1.125.0': {}
 
   '@typescript-eslint/eslint-plugin@8.67.0(@typescript-eslint/parser@8.67.0(eslint@9.39.5)(typescript@5.9.3))(eslint@9.39.5)(typescript@5.9.3)':
     dependencies:

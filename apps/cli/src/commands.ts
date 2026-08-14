@@ -1,3 +1,4 @@
+import type { Readable, Writable } from "node:stream";
 import { execFileSync } from "node:child_process";
 import {
   Agent,
@@ -13,6 +14,7 @@ import {
   type ProviderKind,
   type RunState
 } from "@clutchcode/agent-api";
+import { serveAgentRpc, type AgentRpcServerHandle } from "@clutchcode/agent-rpc";
 import { exitCodeForRunStatus, EXIT } from "./exit-codes.js";
 
 export interface CommandResult {
@@ -298,7 +300,7 @@ async function checkOllama(): Promise<DoctorCheck> {
   }
 }
 
-/** `agent doctor` (§4.10, §18.2): real, honest checks — never fabricated. No GPU/VRAM probing in this MVP pass. */
+/** `agent doctor` (§4.10, §18.2): real, honest checks — never fabricated. No GPU/VRAM probing in this pass (tracked as a Phase 2 follow-up). */
 export async function cmdDoctor(ctx: CliContext): Promise<CommandResult> {
   const creds = loadCredentialsFromEnv();
   const sandbox = detectSandboxBackend();
@@ -369,4 +371,18 @@ export async function cmdModelsList(ctx: CliContext): Promise<CommandResult> {
       `${p.modelId}\tprovider=${p.providerId}\tdiff_acc=${p.diffApplicationAccuracy.toFixed(2)}\ttransport=${p.toolTransport}\tctx=${p.effectiveContext}`
   );
   return { exitCode: EXIT.SUCCESS, output: lines.join("\n") };
+}
+
+/**
+ * `clutchcode serve` (§18.1/§18.5): the Agent API's stdio JSON-RPC
+ * binding, the same shape a VS Code (or, later, Zed/Neovim) client
+ * spawns and speaks to — "the extension spawns/attaches to the runtime;
+ * no separate reimplementation of agent logic in the extension." A thin
+ * pass-through over `serveAgentRpc` so it's callable with any
+ * Readable/Writable pair — tests use in-memory streams; `cli.ts` wires
+ * real `process.stdin`/`process.stdout` and owns the process lifecycle
+ * (this function doesn't call `process.exit` itself, so it stays testable).
+ */
+export function cmdServe(ctx: CliContext, stdin: Readable, stdout: Writable): AgentRpcServerHandle {
+  return serveAgentRpc({ repoPath: ctx.repoPath, stateDir: ctx.stateDir }, stdin, stdout);
 }
