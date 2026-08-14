@@ -7,6 +7,7 @@ import {
   loadCredentialsFromEnv,
   markTrusted,
   probeModel,
+  type Budgets,
   type CapabilityProfile,
   type ProviderKind,
   type RunState
@@ -67,12 +68,34 @@ export async function cmdInit(ctx: CliContext): Promise<CommandResult> {
   return { exitCode: EXIT.SUCCESS, output };
 }
 
+/**
+ * Builds `{ steps, wallclockMs, tokens, costUsd }` from only the fields the
+ * caller actually set. `Agent.run`/`Agent.resume` spread this straight over
+ * defaults/existing budgets (§6.3) — an object literal with an *explicit*
+ * `undefined` value for an unset flag would spread right over that default
+ * and silently zero it out, so unset flags must be omitted entirely, not
+ * included as `undefined`.
+ */
+function definedBudgets(opts: { steps?: number; wallclockMs?: number; tokens?: number; costUsd?: number }): Partial<Budgets> | undefined {
+  const budgets: Partial<Budgets> = {};
+  if (opts.steps !== undefined) budgets.steps = opts.steps;
+  if (opts.wallclockMs !== undefined) budgets.wallclockMs = opts.wallclockMs;
+  if (opts.tokens !== undefined) budgets.tokens = opts.tokens;
+  if (opts.costUsd !== undefined) budgets.costUsd = opts.costUsd;
+  return Object.keys(budgets).length > 0 ? budgets : undefined;
+}
+
 export interface RunCommandOptions {
   task: string;
   providerKind: ProviderKind;
   model: string;
   baseUrl?: string;
   yes?: boolean;
+  /** §6.3 budget overrides; unset fields keep the config/default value. */
+  maxSteps?: number;
+  maxWallclockMs?: number;
+  maxTokens?: number;
+  costCeilingUsd?: number;
 }
 
 export async function cmdRun(ctx: CliContext, opts: RunCommandOptions): Promise<CommandResult> {
@@ -83,7 +106,8 @@ export async function cmdRun(ctx: CliContext, opts: RunCommandOptions): Promise<
     model: opts.model,
     baseUrl: opts.baseUrl,
     yesMode: opts.yes,
-    modelsDir: ctx.modelsDir
+    modelsDir: ctx.modelsDir,
+    budgets: definedBudgets({ steps: opts.maxSteps, wallclockMs: opts.maxWallclockMs, tokens: opts.maxTokens, costUsd: opts.costCeilingUsd })
   });
   return { exitCode: exitCodeForRunStatus(state.status), output: formatRunState(state, ctx.json) };
 }
@@ -147,16 +171,28 @@ export async function cmdInspect(ctx: CliContext, runId: string): Promise<Comman
   }
 }
 
-export async function cmdResume(ctx: CliContext, runId: string): Promise<CommandResult> {
+export interface ResumeCommandOptions {
+  /** §6.3's "ask to extend/stop": how much to raise each budget before continuing a PAUSED run. A run that isn't PAUSED ignores these and is returned as-is. */
+  extendSteps?: number;
+  extendWallclockMs?: number;
+  extendTokens?: number;
+  extendCostUsd?: number;
+  /** Overrides the run's original `--yes` for this resume only. */
+  yes?: boolean;
+}
+
+export async function cmdResume(ctx: CliContext, runId: string, opts: ResumeCommandOptions = {}): Promise<CommandResult> {
   const agent = new Agent(ctx.repoPath, ctx.stateDir);
   try {
-    const state = agent.resume(runId);
-    return {
-      exitCode: EXIT.SUCCESS,
-      output: ctx.json
-        ? formatRunState(state, true)
-        : `${formatRunState(state)}\n\n(note: MVP resume re-attaches and reports state; continuing an in-flight loop is a Phase 2 hardening item, §18.2)`
-    };
+    const state = await agent.resume(runId, {
+      extendSteps: opts.extendSteps,
+      extendWallclockMs: opts.extendWallclockMs,
+      extendTokens: opts.extendTokens,
+      extendCostUsd: opts.extendCostUsd,
+      yesMode: opts.yes,
+      modelsDir: ctx.modelsDir
+    });
+    return { exitCode: exitCodeForRunStatus(state.status), output: formatRunState(state, ctx.json) };
   } catch (e) {
     return { exitCode: EXIT.CONFIG_ERROR, output: String((e as Error).message) };
   }

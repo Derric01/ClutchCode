@@ -80,8 +80,38 @@ baseOptions(program.command("run"))
   .option("--base-url <url>", "override the provider base URL")
   .option("--yes", "auto-approve when the deterministic gate is green and no cheats are flagged (§14.7)", false)
   .option("--models-dir <path>", "capability-profile storage directory (§4.9, default: ~/.config/clutchcode/models)")
-  .action(async (task: string, opts: GlobalOpts & { provider: ProviderKind; model: string; baseUrl?: string; yes: boolean }) =>
-    emit(await cmdRun(ctx(opts), { task, providerKind: opts.provider, model: opts.model, baseUrl: opts.baseUrl, yes: opts.yes }), opts.json)
+  .option("--max-steps <n>", "override the step budget (§6.3, default: 50)", (v) => parseInt(v, 10))
+  .option("--max-wallclock-ms <n>", "override the wall-clock budget (default: 20 min)", (v) => parseInt(v, 10))
+  .option("--max-tokens <n>", "override the token budget (default: 200000)", (v) => parseInt(v, 10))
+  .option("--cost-ceiling-usd <n>", "override the cost ceiling (overrides agent.toml's policy.costCeilingUsd)", (v) => parseFloat(v))
+  .action(
+    async (
+      task: string,
+      opts: GlobalOpts & {
+        provider: ProviderKind;
+        model: string;
+        baseUrl?: string;
+        yes: boolean;
+        maxSteps?: number;
+        maxWallclockMs?: number;
+        maxTokens?: number;
+        costCeilingUsd?: number;
+      }
+    ) =>
+      emit(
+        await cmdRun(ctx(opts), {
+          task,
+          providerKind: opts.provider,
+          model: opts.model,
+          baseUrl: opts.baseUrl,
+          yes: opts.yes,
+          maxSteps: opts.maxSteps,
+          maxWallclockMs: opts.maxWallclockMs,
+          maxTokens: opts.maxTokens,
+          costCeilingUsd: opts.costCeilingUsd
+        }),
+        opts.json
+      )
   );
 
 baseOptions(program.command("status")).action(async (opts: GlobalOpts) => emit(await cmdStatus(ctx(opts)), opts.json));
@@ -117,7 +147,30 @@ baseOptions(program.command("inspect"))
 
 baseOptions(program.command("resume"))
   .argument("<runId>")
-  .action(async (runId: string, opts: GlobalOpts) => emit(await cmdResume(ctx(opts), runId), opts.json));
+  .option("--extend-steps <n>", "raise the step budget by this many steps before continuing (§6.3)", (v) => parseInt(v, 10))
+  .option("--extend-wallclock-ms <n>", "raise the wall-clock budget by this many ms before continuing", (v) => parseInt(v, 10))
+  .option("--extend-tokens <n>", "raise the token budget by this many tokens before continuing", (v) => parseInt(v, 10))
+  .option("--extend-cost-usd <n>", "raise the cost ceiling by this much before continuing", (v) => parseFloat(v))
+  // No default here (unlike `run`'s --yes): leaving it unset lets `Agent.resume`
+  // fall back to the run's own persisted --yes instead of silently forcing false.
+  .option("--yes", "override the run's original --yes setting for this resume")
+  .option("--models-dir <path>", "capability-profile storage directory (§4.9, default: ~/.config/clutchcode/models)")
+  .action(
+    async (
+      runId: string,
+      opts: GlobalOpts & { extendSteps?: number; extendWallclockMs?: number; extendTokens?: number; extendCostUsd?: number; yes?: boolean }
+    ) =>
+      emit(
+        await cmdResume(ctx(opts), runId, {
+          extendSteps: opts.extendSteps,
+          extendWallclockMs: opts.extendWallclockMs,
+          extendTokens: opts.extendTokens,
+          extendCostUsd: opts.extendCostUsd,
+          yes: opts.yes
+        }),
+        opts.json
+      )
+  );
 
 baseOptions(program.command("trust")).action(async (opts: GlobalOpts) => emit(await cmdTrust(ctx(opts)), opts.json));
 

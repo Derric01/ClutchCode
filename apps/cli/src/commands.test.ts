@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { markTrusted } from "@clutchcode/agent-api";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   cmdApprove,
@@ -10,12 +11,13 @@ import {
   cmdModelsProbe,
   cmdProviders,
   cmdReject,
+  cmdResume,
   cmdRun,
   cmdStatus,
   cmdTrust
 } from "./commands.js";
 import { EXIT, exitCodeForRunStatus } from "./exit-codes.js";
-import { makeSampleRepo, makeTempDir } from "./test-helpers.js";
+import { makeSampleRepo, makeTempDir, sseChunk, startScriptedServer, type ScriptedServer } from "./test-helpers.js";
 
 describe("CLI commands (pure functions, no process spawning)", () => {
   let repoPath: string;
@@ -104,6 +106,65 @@ describe("CLI commands (pure functions, no process spawning)", () => {
     const parsed = JSON.parse(result.output) as { checks: Array<{ name: string; ok: boolean }> };
     const node = parsed.checks.find((c) => c.name === "node");
     expect(node?.ok).toBe(true);
+  });
+});
+
+describe("resume (§6.2, §6.3)", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let server: ScriptedServer;
+
+  const toolCallThenStop = [
+    [
+      sseChunk({
+        choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "shell", arguments: JSON.stringify({ cmd: "echo hi" }) } }] } }]
+      }),
+      sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 5, completion_tokens: 2 } }),
+      "data: [DONE]\n\n"
+    ],
+    [sseChunk({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }), "data: [DONE]\n\n"]
+  ];
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-cli-state-");
+    markTrusted(repoPath);
+  });
+
+  afterEach(async () => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    await server?.close();
+  });
+
+  it("run --max-steps 1 pauses, then resume --extend-steps continues to DONE with the right exit codes", async () => {
+    server = await startScriptedServer(toolCallThenStop);
+
+    const paused = await cmdRun(
+      { repoPath, stateDir, json: true },
+      { task: "investigate", providerKind: "openai-compatible", model: "gpt-test", baseUrl: server.baseUrl, yes: true, maxSteps: 1 }
+    );
+    expect(paused.exitCode).toBe(EXIT.BUDGET);
+    const runId = (JSON.parse(paused.output) as { runId: string }).runId;
+
+    const resumed = await cmdResume({ repoPath, stateDir, json: true }, runId, { extendSteps: 5 });
+    expect(resumed.exitCode).toBe(EXIT.SUCCESS);
+    expect(JSON.parse(resumed.output)).toMatchObject({ status: "DONE" });
+  }, 30_000);
+
+  it("resume on a run that's already DONE is a no-op with exit code 0", async () => {
+    const runResult = await cmdRun({ repoPath, stateDir, json: true }, { task: "investigate", providerKind: "fake", model: "n/a", yes: true });
+    const runId = (JSON.parse(runResult.output) as { runId: string }).runId;
+
+    const result = await cmdResume({ repoPath, stateDir, json: true }, runId);
+    expect(result.exitCode).toBe(EXIT.SUCCESS);
+    expect(JSON.parse(result.output)).toMatchObject({ status: "DONE" });
+  }, 30_000);
+
+  it("resume on an unknown run id reports a config error", async () => {
+    const result = await cmdResume({ repoPath, stateDir }, "does-not-exist");
+    expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect(result.output).toMatch(/no such run/);
   });
 });
 

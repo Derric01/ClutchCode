@@ -2,8 +2,9 @@ import fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { saveCapabilityProfile, type CapabilityProfile } from "@clutchcode/capability";
 import { Agent } from "./agent.js";
-import { makeSampleRepo, makeTempDir } from "./test-helpers.js";
+import { makeSampleRepo, makeTempDir, sseChunk, startScriptedServer, type ScriptedServer } from "./test-helpers.js";
 import { initRepo } from "./scaffold.js";
+import { markTrusted } from "./config.js";
 
 describe("Agent (agent-api boundary, wired end-to-end with a real worktree)", () => {
   let repoPath: string;
@@ -117,6 +118,79 @@ describe("Agent + capability profiles (§4.2/§4.9)", () => {
 
     expect(state.capabilityProfileId).toBeUndefined();
   }, 30_000);
+});
+
+describe("Agent.resume (§6.2, §6.3, §18.2)", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let server: ScriptedServer;
+
+  // `providerKind: "fake"` pins to one fixed no-op turn (§4.7) — no good for
+  // scripting a pause/resume across multiple turns. A local scripted
+  // openai-compatible server drives the real provider adapter instead, the
+  // same wire path `Agent.run`/`Agent.resume` use in production.
+  const toolCallThenStop = [
+    [
+      sseChunk({
+        choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "shell", arguments: JSON.stringify({ cmd: "echo hi" }) } }] } }]
+      }),
+      sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 5, completion_tokens: 2 } }),
+      "data: [DONE]\n\n"
+    ],
+    [sseChunk({ choices: [{ delta: { content: "Investigated, nothing to fix." }, finish_reason: "stop" }] }), "data: [DONE]\n\n"]
+  ];
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+    markTrusted(repoPath); // so the non-destructive `echo` is ALLOW'd outright instead of parking on an ASK approval
+  });
+
+  afterEach(async () => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    await server?.close();
+  });
+
+  it("continues a run past its step budget: pauses after 1 step, resumes after extending, reaches DONE", async () => {
+    server = await startScriptedServer(toolCallThenStop);
+    const agent = new Agent(repoPath, stateDir);
+
+    const paused = await agent.run({
+      task: "investigate",
+      providerKind: "openai-compatible",
+      model: "gpt-test",
+      baseUrl: server.baseUrl,
+      yesMode: true,
+      budgets: { steps: 1 }
+    });
+    expect(paused.status).toBe("PAUSED");
+    expect(paused.escalationReason).toMatch(/budget exceeded: steps/);
+    expect(server.callCount()).toBe(1);
+
+    const resumed = await agent.resume(paused.runId, { extendSteps: 5 });
+
+    expect(resumed.status).toBe("DONE");
+    expect(server.callCount()).toBe(2);
+    // The resumed run reconnected to the same baseUrl without being asked again (§4.7, persisted on RunState).
+    expect(resumed.baseUrl).toBe(server.baseUrl);
+  }, 30_000);
+
+  it("is a no-op that returns the state unchanged when the run isn't PAUSED", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    const done = await agent.run({ task: "investigate the repo", providerKind: "fake", model: "n/a", yesMode: true });
+    expect(done.status).toBe("DONE");
+
+    const result = await agent.resume(done.runId);
+
+    expect(result.status).toBe("DONE");
+    expect(result.runId).toBe(done.runId);
+  }, 30_000);
+
+  it("throws a clear error for an unknown run id", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    await expect(agent.resume("does-not-exist")).rejects.toThrow(/no such run/);
+  });
 });
 
 describe("initRepo", () => {

@@ -31,9 +31,18 @@ budget, and conversation history is compacted (turn-safe, never splitting
 a tool call from its result) once the effective-context budget is
 exceeded. Not yet enforced: dedicated repo-map/open-file-window budgets
 (§9, §4.5) — that subsystem doesn't exist before Phase 7, so their share
-is folded into the live history budget for now. OS sandbox Tier 1, OS
-keychain credential storage, the VS Code extension, and mid-run resume
-hardening remain the named Phase 2/3 follow-ups (`PROJECT_SPEC.md
+is folded into the live history budget for now.
+
+`agent resume` is hardened (§6.2, §6.3, §18.2): a run paused on a budget
+limit persists its full conversation transcript — redacted (§5.2) before
+every write, the same guarantee `toolCallLog` already had — and `agent
+resume <runId> --extend-steps N` (also `--extend-wallclock-ms` /
+`--extend-tokens` / `--extend-cost-usd`) reconstructs the loop from that
+transcript and actually continues it, rather than only re-attaching and
+reporting status. `agent run` gained matching `--max-steps` /
+`--max-wallclock-ms` / `--max-tokens` / `--cost-ceiling-usd` budget
+overrides. OS sandbox Tier 1, OS keychain credential storage, and the VS
+Code extension remain the named Phase 2/3 follow-ups (`PROJECT_SPEC.md
 §21/§25`).
 
 ## Repository layout

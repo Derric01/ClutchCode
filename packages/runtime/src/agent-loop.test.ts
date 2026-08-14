@@ -275,3 +275,109 @@ describe("AgentLoop capability wiring (§4.2/§4.4/§4.5)", () => {
     }
   }, 30_000);
 });
+
+describe("AgentLoop resume + transcript redaction (§5.2/§6.2/§6.3)", () => {
+  const CANARY = "sk-ant-canaryLeakDoNotPersist1234567890";
+
+  it("persists a redacted transcript: the live conversation carries a secret a tool just produced, RunState.messages never does", async () => {
+    const fx = setupAgentLoopFixture("run00000020");
+    try {
+      const provider = new FakeProvider([toolCallTurn("c1", "shell", JSON.stringify({ cmd: `echo ${CANARY}` }))]);
+      const state = createRunState({
+        runId: fx.run.runId,
+        task: "print the canary",
+        provider: "fake",
+        model: "fake",
+        // Pauses right after the one tool call, well before verification would ever run.
+        budgets: { steps: 1, wallclockMs: 60_000, tokens: 1_000_000, costUsd: 0 }
+      });
+
+      const loop = new AgentLoop(state, {
+        provider,
+        tools: fx.tools,
+        toolContext: fx.toolContext,
+        run: fx.run,
+        toolchainCommands: fx.toolchainCommands,
+        evidenceDir: fx.evidenceDir
+      });
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("PAUSED");
+      // Sanity: the run actually executed the shell tool (otherwise this proves nothing).
+      expect(finalState.toolCallLog.some((t) => t.tool === "shell")).toBe(true);
+
+      expect(JSON.stringify(finalState.messages)).not.toContain(CANARY);
+      expect(JSON.stringify(finalState.messages)).toContain("«REDACTED:");
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("resume() continues a run reloaded from a JSON round-trip (simulating a real disk reload) and reaches DONE", async () => {
+    const fx = setupAgentLoopFixture("run00000021");
+    try {
+      const provider = new FakeProvider([
+        toolCallTurn("c1", "shell", JSON.stringify({ cmd: `echo ${CANARY}` })),
+        toolCallTurn("c2", "edit_file", FIX_EDIT),
+        textTurn("Fixed, after printing the canary.")
+      ]);
+      const state = createRunState({
+        runId: fx.run.runId,
+        task: "print the canary, then fix add()",
+        provider: "fake",
+        model: "fake",
+        budgets: { steps: 1, wallclockMs: 60_000, tokens: 1_000_000, costUsd: 0 }
+      });
+
+      const firstLoop = new AgentLoop(state, {
+        provider,
+        tools: fx.tools,
+        toolContext: fx.toolContext,
+        run: fx.run,
+        toolchainCommands: fx.toolchainCommands,
+        evidenceDir: fx.evidenceDir
+      });
+      const pausedState = await firstLoop.run();
+      expect(pausedState.status).toBe("PAUSED");
+
+      // Simulate a real crash/restart: serialize to JSON and back, exactly what RunStateStore does.
+      const reloaded = JSON.parse(JSON.stringify(pausedState)) as typeof pausedState;
+      expect(JSON.stringify(reloaded)).not.toContain(CANARY);
+      reloaded.budgets.steps += 10; // the extension a caller must apply before resuming (§6.3 "ask to extend/stop")
+
+      const resumedLoop = new AgentLoop(
+        reloaded,
+        { provider, tools: fx.tools, toolContext: fx.toolContext, run: fx.run, toolchainCommands: fx.toolchainCommands, evidenceDir: fx.evidenceDir },
+        { yesMode: true }
+      );
+      const finalState = await resumedLoop.resume();
+
+      expect(finalState.status).toBe("DONE");
+      expect(fs.readFileSync(path.join(fx.repoPath, "math.js"), "utf8")).toContain("return a + b;");
+      // The pre-resume secret still never surfaces in the persisted transcript.
+      expect(JSON.stringify(finalState.messages)).not.toContain(CANARY);
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("resume() rejects a run that isn't PAUSED", async () => {
+    const fx = setupAgentLoopFixture("run00000022");
+    try {
+      const provider = new FakeProvider([textTurn("noop")]);
+      const state = createRunState({ runId: fx.run.runId, task: "t", provider: "fake", model: "fake" });
+      const loop = new AgentLoop(state, {
+        provider,
+        tools: fx.tools,
+        toolContext: fx.toolContext,
+        run: fx.run,
+        toolchainCommands: fx.toolchainCommands,
+        evidenceDir: fx.evidenceDir
+      });
+
+      await expect(loop.resume()).rejects.toThrow(/requires a PAUSED run/);
+    } finally {
+      fx.cleanup();
+    }
+  });
+});

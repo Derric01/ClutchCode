@@ -1,10 +1,48 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { execFileSync } from "node:child_process";
 
 export function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+export function sseChunk(obj: unknown): string {
+  return `data: ${JSON.stringify(obj)}\n\n`;
+}
+
+export interface ScriptedServer {
+  baseUrl: string;
+  callCount(): number;
+  close: () => Promise<void>;
+}
+
+/** A minimal local OpenAI-compatible SSE server: a different scripted response per successive POST (mirrors `@clutchcode/agent-api`'s test helper of the same name). */
+export function startScriptedServer(responses: string[][]): Promise<ScriptedServer> {
+  let call = 0;
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (d) => (body += d));
+      req.on("end", () => {
+        const chunks = responses[Math.min(call, responses.length - 1)]!;
+        call += 1;
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        for (const c of chunks) res.write(c);
+        res.end();
+      });
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address() as AddressInfo;
+      resolve({
+        baseUrl: `http://127.0.0.1:${addr.port}`,
+        callCount: () => call,
+        close: () => new Promise((r) => server.close(() => r()))
+      });
+    });
+  });
 }
 
 function git(cwd: string, args: string[]): void {
