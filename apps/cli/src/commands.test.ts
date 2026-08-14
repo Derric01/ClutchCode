@@ -6,6 +6,8 @@ import {
   cmdDoctor,
   cmdInit,
   cmdInspect,
+  cmdModelsList,
+  cmdModelsProbe,
   cmdProviders,
   cmdReject,
   cmdRun,
@@ -102,6 +104,54 @@ describe("CLI commands (pure functions, no process spawning)", () => {
     const parsed = JSON.parse(result.output) as { checks: Array<{ name: string; ok: boolean }> };
     const node = parsed.checks.find((c) => c.name === "node");
     expect(node?.ok).toBe(true);
+  });
+});
+
+describe("models probe/list (§4.9)", () => {
+  let repoPath: string;
+  let modelsDir: string;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    modelsDir = makeTempDir("clutchcode-cli-models-");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(modelsDir, { recursive: true, force: true });
+  });
+
+  it("probes a model with the fake provider and persists a profile", async () => {
+    const result = await cmdModelsProbe(
+      { repoPath, modelsDir, json: true },
+      { model: "test-model", providerKind: "fake", trials: 1 }
+    );
+    expect(result.exitCode).toBe(EXIT.SUCCESS);
+    const parsed = JSON.parse(result.output) as { cached: boolean; profile: { modelId: string } };
+    expect(parsed.cached).toBe(false);
+    expect(parsed.profile.modelId).toBe("test-model");
+  });
+
+  it("reuses a cached profile on a second call, and re-probes with --force", async () => {
+    const first = await cmdModelsProbe({ repoPath, modelsDir, json: true }, { model: "test-model", providerKind: "fake", trials: 1 });
+    const second = await cmdModelsProbe({ repoPath, modelsDir, json: true }, { model: "test-model", providerKind: "fake", trials: 1 });
+    expect((JSON.parse(second.output) as { cached: boolean }).cached).toBe(true);
+
+    const forced = await cmdModelsProbe(
+      { repoPath, modelsDir, json: true },
+      { model: "test-model", providerKind: "fake", trials: 1, force: true }
+    );
+    expect((JSON.parse(forced.output) as { cached: boolean }).cached).toBe(false);
+    expect(JSON.parse(first.output)).toBeTruthy(); // first was consumed, just asserting it didn't throw
+  });
+
+  it("list reports 'no probed models yet' before any probe, then the profile after", async () => {
+    const before = await cmdModelsList({ repoPath, modelsDir });
+    expect(before.output).toMatch(/no probed models yet/);
+
+    await cmdModelsProbe({ repoPath, modelsDir }, { model: "test-model", providerKind: "fake", trials: 1 });
+    const after = await cmdModelsList({ repoPath, modelsDir });
+    expect(after.output).toContain("test-model");
   });
 });
 

@@ -2,9 +2,12 @@ import { execFileSync } from "node:child_process";
 import {
   Agent,
   initRepo,
+  listModelProfiles,
   loadConfig,
   loadCredentialsFromEnv,
   markTrusted,
+  probeModel,
+  type CapabilityProfile,
   type ProviderKind,
   type RunState
 } from "@clutchcode/agent-api";
@@ -19,6 +22,8 @@ export interface CliContext {
   repoPath: string;
   stateDir?: string;
   json?: boolean;
+  /** Override for capability-profile storage (default: ~/.config/clutchcode/models); not repo-scoped. */
+  modelsDir?: string;
 }
 
 function summarizeRunState(state: RunState): Record<string, unknown> {
@@ -218,5 +223,58 @@ export async function cmdDoctor(ctx: CliContext): Promise<CommandResult> {
   if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify({ checks }, null, 2) };
   const lines = checks.map((c) => `${c.ok ? "✓" : "✗"} ${c.name}: ${c.detail}`);
   lines.push("", "At least one of a provider API key or a reachable local Ollama server is needed to run a real task.");
+  return { exitCode: EXIT.SUCCESS, output: lines.join("\n") };
+}
+
+export interface ModelsProbeOptions {
+  model: string;
+  providerKind: ProviderKind;
+  baseUrl?: string;
+  force?: boolean;
+  trials?: number;
+}
+
+function formatProfile(profile: CapabilityProfile): string {
+  const pct = (n: number) => `${Math.round(n * 100)}%`;
+  const lines = [
+    `model: ${profile.modelId}  (provider: ${profile.providerId})`,
+    `probed: ${profile.probedAt}  (${profile.trials} trial(s), ${profile.probeDurationMs}ms)`,
+    `diff-application accuracy: ${pct(profile.diffApplicationAccuracy)}  → edit format ${profile.diffApplicationAccuracy >= 0.75 ? "search/replace" : "whole-file (fallback)"}`,
+    `tool transport: ${profile.toolTransport}`,
+    `structured-output reliability: ${profile.structuredOutputReliability} (${pct(profile.structuredOutputScore)})`,
+    `instruction fidelity: ${profile.longPromptInstructionFidelity} (${pct(profile.instructionFidelity)})`,
+    `effective context: ~${profile.effectiveContext} tokens`,
+    `loop-check: ${profile.loopCheckPassed ? "passed" : "FAILED — repeats an already-finished action"}`
+  ];
+  if (profile.notes.length > 0) lines.push(`notes: ${profile.notes.join("; ")}`);
+  return lines.join("\n");
+}
+
+/** `agent models probe <model>` (§4.9): run/reuse the capability probe and persist the profile. */
+export async function cmdModelsProbe(ctx: CliContext, opts: ModelsProbeOptions): Promise<CommandResult> {
+  const result = await probeModel({
+    providerKind: opts.providerKind,
+    model: opts.model,
+    baseUrl: opts.baseUrl,
+    force: opts.force,
+    trials: opts.trials,
+    modelsDir: ctx.modelsDir
+  });
+  if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify(result) };
+  const header = result.cached ? `(cached profile from ${result.path}; pass --force to re-probe)\n\n` : "";
+  return { exitCode: EXIT.SUCCESS, output: `${header}${formatProfile(result.profile)}` };
+}
+
+/** `agent models list` (§4.9): every previously-probed model's profile. */
+export async function cmdModelsList(ctx: CliContext): Promise<CommandResult> {
+  const profiles = listModelProfiles(ctx.modelsDir);
+  if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify(profiles) };
+  if (profiles.length === 0) {
+    return { exitCode: EXIT.SUCCESS, output: "no probed models yet — run `clutchcode models probe <model>`" };
+  }
+  const lines = profiles.map(
+    (p) =>
+      `${p.modelId}\tprovider=${p.providerId}\tdiff_acc=${p.diffApplicationAccuracy.toFixed(2)}\ttransport=${p.toolTransport}\tctx=${p.effectiveContext}`
+  );
   return { exitCode: EXIT.SUCCESS, output: lines.join("\n") };
 }

@@ -14,3 +14,6 @@ export { initRepo } from "./scaffold.js";
 export type { InitResult } from "./scaffold.js";
 export { appendEvent, readEvents } from "./events.js";
 export { saveRunWorktree, loadRunWorktree } from "./worktree-store.js";
+export { probeModel, listModelProfiles } from "./capability.js";
+export type { ProbeModelOptions, ProbeModelResult } from "./capability.js";
+export type { CapabilityProfile } from "@clutchcode/capability";

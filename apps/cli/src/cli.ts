@@ -7,6 +7,8 @@ import {
   cmdDoctor,
   cmdInit,
   cmdInspect,
+  cmdModelsList,
+  cmdModelsProbe,
   cmdProviders,
   cmdReject,
   cmdResume,
@@ -45,6 +47,17 @@ function emit(result: CommandResult, json: boolean): never {
 
 function ctx(opts: GlobalOpts): CliContext {
   return { repoPath: opts.repo, json: opts.json, stateDir: opts.stateDir };
+}
+
+interface ModelsGlobalOpts {
+  json: boolean;
+  modelsDir?: string;
+}
+
+// `models *` subcommands are not repo-scoped (§4.9 profiles live under
+// ~/.config, keyed by model id, not by repo) — repoPath is unused by them.
+function modelsCtx(opts: ModelsGlobalOpts): CliContext {
+  return { repoPath: process.cwd(), json: opts.json, modelsDir: opts.modelsDir };
 }
 
 const program = new Command();
@@ -109,6 +122,42 @@ baseOptions(program.command("trust")).action(async (opts: GlobalOpts) => emit(aw
 baseOptions(program.command("providers")).action(async (opts: GlobalOpts) => emit(await cmdProviders(ctx(opts)), opts.json));
 
 baseOptions(program.command("doctor")).action(async (opts: GlobalOpts) => emit(await cmdDoctor(ctx(opts)), opts.json));
+
+const models = program.command("models").description("model capability profiles (§4.9)");
+
+models
+  .command("probe")
+  .description("run (or reuse) the capability probe for a model and persist its profile")
+  .argument("<model>", "model id to probe")
+  .option("--provider <kind>", "openai-compatible | anthropic | ollama", "ollama")
+  .option("--base-url <url>", "override the provider base URL")
+  .option("--force", "re-run the probe even if a cached profile exists", false)
+  .option("--trials <n>", "trials per scored check", (v) => parseInt(v, 10), 3)
+  .option("--json", "machine-readable JSON output", false)
+  .option("--models-dir <path>", "override the profile storage directory (default: ~/.config/clutchcode/models)")
+  .action(
+    async (
+      model: string,
+      opts: ModelsGlobalOpts & { provider: ProviderKind; baseUrl?: string; force: boolean; trials: number }
+    ) =>
+      emit(
+        await cmdModelsProbe(modelsCtx(opts), {
+          model,
+          providerKind: opts.provider,
+          baseUrl: opts.baseUrl,
+          force: opts.force,
+          trials: opts.trials
+        }),
+        opts.json
+      )
+  );
+
+models
+  .command("list")
+  .description("list every previously-probed model's capability profile")
+  .option("--json", "machine-readable JSON output", false)
+  .option("--models-dir <path>", "override the profile storage directory (default: ~/.config/clutchcode/models)")
+  .action(async (opts: ModelsGlobalOpts) => emit(await cmdModelsList(modelsCtx(opts)), opts.json));
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error(err instanceof Error ? err.message : String(err));
