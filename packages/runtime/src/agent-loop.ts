@@ -53,6 +53,8 @@ export interface AgentLoopDeps {
   run: RunWorktree;
   toolchainCommands: ToolchainCommands;
   evidenceDir: string;
+  /** Verification pipeline cwd — defaults to `run.worktreePath` when omitted. §13.4 monorepos: pinned to a subdir when `--scope` is set, so tests run against that subdir's own toolchain. */
+  verifyCwd?: string;
   /**
    * The adaptation layer's inputs (§4.2, §4.9): drives edit-format guidance
    * (§4.4) and context budgeting (§4.5). Defaults to `resolveCapability(null,
@@ -378,7 +380,7 @@ export class AgentLoop {
     this.setStatus("VERIFYING");
 
     const pipelineResult = runPipeline(this.deps.toolchainCommands, {
-      cwd: this.deps.run.worktreePath,
+      cwd: this.deps.verifyCwd ?? this.deps.run.worktreePath,
       evidenceDir: this.deps.evidenceDir
     });
     for (const stage of pipelineResult.stages) {

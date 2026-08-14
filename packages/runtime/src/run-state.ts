@@ -115,6 +115,8 @@ export interface RunState {
   baseUrl?: string;
   /** Whether the run was started with `--yes` (§14.7) — a resumed run preserves this unless the caller overrides it. */
   yesMode?: boolean;
+  /** Monorepo verification scope (§13.4 `--scope path/`), if one was set — a resumed run keeps pinning verification to the same subdir. */
+  scope?: string;
 
   status: RunStatus;
   stepIndex: number;
@@ -163,6 +165,7 @@ export interface CreateRunStateOptions {
   capabilityProfileId?: string;
   baseUrl?: string;
   yesMode?: boolean;
+  scope?: string;
   budgets?: Partial<Budgets>;
 }
 
@@ -184,6 +187,7 @@ export function createRunState(opts: CreateRunStateOptions): RunState {
     capabilityProfileId: opts.capabilityProfileId,
     baseUrl: opts.baseUrl,
     yesMode: opts.yesMode,
+    scope: opts.scope,
     status: "CREATED",
     stepIndex: 0,
     budgets: { ...DEFAULT_BUDGETS, ...opts.budgets },

@@ -39,7 +39,9 @@ export async function replayTranscript(transcript: RecordedTranscript): Promise<
     denylist: new Denylist(),
     redactor: new Redactor(),
     repoTrustMode: "trusted" as const,
-    networkAllowlist: []
+    networkAllowlist: [],
+    submodulePaths: [],
+    lfsPatterns: []
   };
 
   const provider = new FakeProvider(transcript.turns);

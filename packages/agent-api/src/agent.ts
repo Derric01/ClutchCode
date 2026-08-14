@@ -2,10 +2,26 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 
 import { Denylist, PolicyEngine, Redactor } from "@clutchcode/sandbox";
 import { nativeToolSet, type Tool, type ToolContext } from "@clutchcode/tools";
-import { createRunWorktree, diffAgainstBase, type RunWorktree } from "@clutchcode/git";
+import {
+  createRunWorktree,
+  diffAgainstBase,
+  diffStat,
+  githubCompareUrl,
+  isGitRepo,
+  listCheckpoints,
+  listLfsPatterns,
+  listSubmodules,
+  parseGitHubRemote,
+  pushBranch,
+  remoteUrl,
+  rollbackTo,
+  type CheckpointRecord,
+  type RunWorktree
+} from "@clutchcode/git";
 import { applyAgentsMdOverrides, detectToolchain, type ToolchainCommands } from "@clutchcode/verification";
 import { defaultModelsDir, loadCapabilityProfile, resolveCapability, type EffectiveCapability } from "@clutchcode/capability";
 import type { Provider } from "@clutchcode/providers";
@@ -37,6 +53,8 @@ export interface RunOptions {
   modelsDir?: string;
   /** Overrides the default budgets (§6.3) for this run; unset fields keep the config/default value. `agent.toml`'s `policy.costCeilingUsd` still applies unless overridden here. */
   budgets?: Partial<Budgets>;
+  /** §13.4 monorepos: pin the verification (toolchain detection + pipeline cwd) scope to this subdir, relative to the repo root. */
+  scope?: string;
   onEvent?: (event: RuntimeEvent) => void;
 }
 
@@ -62,6 +80,62 @@ export interface ResumeOptions {
 export interface ApproveOptions {
   squash?: boolean;
   message?: string;
+}
+
+export interface PrOptions {
+  /** Default: "origin". */
+  remote?: string;
+  /** Default: whatever branch `repoPath` had checked out when the run started (`RunWorktree.baseBranch`). */
+  base?: string;
+}
+
+export interface PrResult {
+  branch: string;
+  remote: string;
+  /** How the PR was (or wasn't) actually opened, beyond the push, which always happens. */
+  method: "gh" | "compare-url" | "manual";
+  /** The PR URL (`gh`) or a real GitHub compare URL (`compare-url`) — absent for `manual`. */
+  url?: string;
+}
+
+function isGhAvailable(): boolean {
+  try {
+    execFileSync("gh", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** §13.5: "a body summarizing the task, diff stats, and verification results." */
+function buildPrBody(state: RunState, run: RunWorktree): string {
+  const stat = diffStat(run).trim();
+  const lastVerify = state.verificationResults.at(-1);
+  const verifyLine = lastVerify
+    ? `Verification: ${lastVerify.allGreen ? "green" : `red (first failure: ${lastVerify.firstFailureStage})`}, ${lastVerify.cheatFlagCount} cheat flag(s) (§14).`
+    : "Verification: not run yet.";
+  return [
+    `Task: ${state.task}`,
+    "",
+    verifyLine,
+    "",
+    "Diff stat:",
+    "```",
+    stat || "(no changes)",
+    "```",
+    "",
+    "_Opened by ClutchCode's `agent pr` — pushes are never automatic (§13.5)._"
+  ].join("\n");
+}
+
+/** The non-`gh` half of `agent pr`: a real GitHub compare URL when the remote is recognizably GitHub, else just a confirmation that the branch was pushed. Split out from `pr()` so it's testable without a `gh` install or a real network push. */
+function resolveFallbackPrResult(repoPath: string, remote: string, base: string, branch: string): PrResult {
+  const href = remoteUrl(repoPath, remote);
+  const ghRef = href ? parseGitHubRemote(href) : null;
+  if (ghRef) {
+    return { branch, remote, method: "compare-url", url: githubCompareUrl(ghRef, base, branch) };
+  }
+  return { branch, remote, method: "manual" };
 }
 
 function defaultStateDir(): string {
@@ -91,6 +165,7 @@ interface RunDeps {
   capability: EffectiveCapability;
   credentials: Credentials;
   config: AgentConfig;
+  verifyCwd: string;
 }
 
 /**
@@ -119,11 +194,27 @@ export class Agent {
    * (credential loading, toolchain detection, the capability profile
    * lookup, and the §5.2 redactor setup all happen exactly once).
    */
-  private buildRunDeps(model: string, providerKind: ProviderKind, run: RunWorktree, opts: { baseUrl?: string; modelsDir?: string }): RunDeps {
+  private buildRunDeps(
+    model: string,
+    providerKind: ProviderKind,
+    run: RunWorktree,
+    opts: { baseUrl?: string; modelsDir?: string; scope?: string }
+  ): RunDeps {
     const config = loadConfig(this.repoPath);
     const credentials = loadCredentialsFromEnv();
 
-    let toolchainCommands: ToolchainCommands = detectToolchain(run.worktreePath);
+    // §13.4 monorepos: "the agent's ... verification scope can be pinned to
+    // a subdir (--scope path/); test selection uses the subdir's toolchain."
+    // Deliberately scoped to *verification* only (toolchain detection +
+    // pipeline cwd) — fs read/write stays repo-wide, since a scoped
+    // package in a real monorepo routinely needs to read siblings it
+    // depends on; restricting reads to the scope dir would break that.
+    const verifyCwd = opts.scope ? path.join(run.worktreePath, opts.scope) : run.worktreePath;
+    if (opts.scope && !fs.existsSync(verifyCwd)) {
+      throw new Error(`--scope "${opts.scope}" does not exist in the worktree (resolved to ${verifyCwd})`);
+    }
+
+    let toolchainCommands: ToolchainCommands = detectToolchain(verifyCwd);
     const agentsMdPath = path.join(run.worktreePath, "AGENTS.md");
     if (fs.existsSync(agentsMdPath)) {
       toolchainCommands = applyAgentsMdOverrides(toolchainCommands, fs.readFileSync(agentsMdPath, "utf8"));
@@ -144,7 +235,10 @@ export class Agent {
       denylist: new Denylist(),
       redactor,
       repoTrustMode: isTrustedRepo(config, this.repoPath) ? ("trusted" as const) : ("untrusted" as const),
-      networkAllowlist: []
+      networkAllowlist: [],
+      // §13.4: read once per run from repo metadata, not shelled out to per tool call.
+      submodulePaths: listSubmodules(run.worktreePath),
+      lfsPatterns: listLfsPatterns(run.worktreePath)
     };
 
     const provider = buildProvider({ kind: providerKind, baseUrl: opts.baseUrl, credentials });
@@ -157,16 +251,30 @@ export class Agent {
     const capabilityProfile = loadCapabilityProfile(model, modelsDir);
     const capability = resolveCapability(capabilityProfile, provider.capabilityDefaults);
 
-    return { provider, tools, toolContext, toolchainCommands, evidenceDir, capability, credentials, config };
+    return { provider, tools, toolContext, toolchainCommands, evidenceDir, capability, credentials, config, verifyCwd };
   }
 
   async run(opts: RunOptions): Promise<RunState> {
+    if (!isGitRepo(this.repoPath)) {
+      // §13.4 "not a git repo at all": worktree isolation needs a git repo
+      // to branch/worktree from. `SnapshotBackup` (this package) exists as
+      // the spec's named fallback primitive for that case, but wiring a
+      // full parallel non-git AgentLoop execution path (checkpoint/diff/
+      // rollback/approve all re-based on snapshots instead of git) is a
+      // distinctly larger, separate piece of work this pass doesn't
+      // attempt — so this fails loudly and actionably instead of half-
+      // supporting it via a confusing git error three calls deep.
+      throw new Error(
+        `${this.repoPath} is not a git repository — ClutchCode needs one for worktree isolation (§13.1). Run "git init" (or "clutchcode init" to scaffold config too) and try again.`
+      );
+    }
+
     const runId = opts.runId ?? newRunId();
 
     const run = createRunWorktree({ repoPath: this.repoPath, stateDir: this.stateDir, runId, slug: slugify(opts.task) });
     saveRunWorktree(this.stateDir, run);
 
-    const deps = this.buildRunDeps(opts.model, opts.providerKind, run, { baseUrl: opts.baseUrl, modelsDir: opts.modelsDir });
+    const deps = this.buildRunDeps(opts.model, opts.providerKind, run, { baseUrl: opts.baseUrl, modelsDir: opts.modelsDir, scope: opts.scope });
 
     const state = createRunState({
       runId,
@@ -176,6 +284,7 @@ export class Agent {
       capabilityProfileId: deps.capability.probed ? opts.model : undefined,
       baseUrl: opts.baseUrl,
       yesMode: opts.yesMode,
+      scope: opts.scope,
       budgets: {
         ...(deps.config.policy?.costCeilingUsd !== undefined ? { costUsd: deps.config.policy.costCeilingUsd } : {}),
         ...opts.budgets
@@ -187,7 +296,16 @@ export class Agent {
 
     const loop = new AgentLoop(
       state,
-      { provider: deps.provider, tools: deps.tools, toolContext: deps.toolContext, run, toolchainCommands: deps.toolchainCommands, evidenceDir: deps.evidenceDir, capability: deps.capability },
+      {
+        provider: deps.provider,
+        tools: deps.tools,
+        toolContext: deps.toolContext,
+        run,
+        toolchainCommands: deps.toolchainCommands,
+        evidenceDir: deps.evidenceDir,
+        capability: deps.capability,
+        verifyCwd: deps.verifyCwd
+      },
       {
         yesMode: opts.yesMode,
         onEvent: (event) => {
@@ -222,6 +340,77 @@ export class Agent {
     const updated = rejectRun(state, run);
     this.store.save(updated);
     return updated;
+  }
+
+  /** `agent checkpoints <runId>` (§13.3): every checkpoint commit made so far, oldest first. */
+  checkpoints(runId: string): CheckpointRecord[] {
+    const run = this.requireRunWorktree(runId);
+    return listCheckpoints(run);
+  }
+
+  /**
+   * `agent rollback <runId> <sha>` (§13.3): resets the worktree to an
+   * earlier checkpoint, including removing untracked files created after
+   * it. Accepts a checkpoint's full or abbreviated sha (`git log --oneline`
+   * width) — resolved against `checkpoints()` first so a typo'd/foreign
+   * sha fails with a clear error instead of `git reset --hard` silently
+   * doing something the caller didn't mean.
+   */
+  rollback(runId: string, sha: string): RunState {
+    const state = this.requireState(runId);
+    const run = this.requireRunWorktree(runId);
+    const match = listCheckpoints(run).find((c) => c.sha === sha || c.sha.startsWith(sha));
+    if (!match) {
+      throw new Error(`no checkpoint matching "${sha}" for run ${runId}; see \`agent checkpoints ${runId}\` for valid values`);
+    }
+    rollbackTo(run, match.sha);
+    this.store.save(state); // bumps updatedAt; rollback changes worktree content, not run status
+    return state;
+  }
+
+  /**
+   * `agent pr <runId>` (§13.5): pushes the run's branch and opens a PR —
+   * "never auto-pushes without explicit command," and this command *is*
+   * that explicit command. Unlike `approve`, this does not merge locally
+   * or remove the worktree: the branch is meant to live under review.
+   * Opens the PR via the `gh` CLI when it's on PATH and authenticated;
+   * otherwise falls back to a real GitHub compare URL when the remote is
+   * recognizably GitHub, or just confirms the push.
+   */
+  async pr(runId: string, opts: PrOptions = {}): Promise<PrResult> {
+    const state = this.requireState(runId);
+    const run = this.requireRunWorktree(runId);
+    if (!fs.existsSync(run.worktreePath)) {
+      throw new Error(`worktree for run ${runId} no longer exists at ${run.worktreePath}; nothing to open a PR for`);
+    }
+
+    const remote = opts.remote ?? "origin";
+    const base = opts.base ?? run.baseBranch;
+    if (!base) {
+      throw new Error(`run ${runId} has no known base branch (started from a detached HEAD) — pass an explicit base`);
+    }
+
+    pushBranch(run, remote);
+
+    if (isGhAvailable()) {
+      try {
+        const title = `clutchcode: ${state.task}`;
+        const body = buildPrBody(state, run);
+        const out = execFileSync("gh", ["pr", "create", "--head", run.branch, "--base", base, "--title", title, "--body", body], {
+          cwd: run.repoPath,
+          encoding: "utf8"
+        }).trim();
+        const url = out.split("\n").pop();
+        return { branch: run.branch, remote, method: "gh", url };
+      } catch {
+        // `gh` exists but the create failed (not authenticated, PR already
+        // exists, etc.) — the push already succeeded either way, so fall
+        // through to the compare-url/manual result rather than throwing
+        // away that success.
+      }
+    }
+
+    return resolveFallbackPrResult(run.repoPath, remote, base, run.branch);
   }
 
   status(): RunState | null {
@@ -276,11 +465,20 @@ export class Agent {
     if (opts.extendTokens) state.budgets.tokens += opts.extendTokens;
     if (opts.extendCostUsd) state.budgets.costUsd += opts.extendCostUsd;
 
-    const deps = this.buildRunDeps(state.model, state.provider as ProviderKind, run, { baseUrl: state.baseUrl, modelsDir: opts.modelsDir });
+    const deps = this.buildRunDeps(state.model, state.provider as ProviderKind, run, { baseUrl: state.baseUrl, modelsDir: opts.modelsDir, scope: state.scope });
 
     const loop = new AgentLoop(
       state,
-      { provider: deps.provider, tools: deps.tools, toolContext: deps.toolContext, run, toolchainCommands: deps.toolchainCommands, evidenceDir: deps.evidenceDir, capability: deps.capability },
+      {
+        provider: deps.provider,
+        tools: deps.tools,
+        toolContext: deps.toolContext,
+        run,
+        toolchainCommands: deps.toolchainCommands,
+        evidenceDir: deps.evidenceDir,
+        capability: deps.capability,
+        verifyCwd: deps.verifyCwd
+      },
       {
         yesMode: opts.yesMode ?? state.yesMode,
         onEvent: (event) => {

@@ -24,6 +24,8 @@ export interface PolicyRequest {
   insideWorkspace?: boolean;
   /** READ: is the path on the §5.3 denylist? */
   denylisted?: boolean;
+  /** WRITE: is the path inside a git submodule (§13.4)? Forces ASK — a submodule is a separate repo, so this write needs its own, separate commit. */
+  submodule?: boolean;
   /** NETWORK: is the host on the configured allowlist? */
   networkAllowlisted?: boolean;
 }

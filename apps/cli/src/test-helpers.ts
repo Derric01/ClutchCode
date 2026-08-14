@@ -60,3 +60,11 @@ export function makeSampleRepo(): string {
   git(dir, ["commit", "-q", "-m", "initial commit"]);
   return dir;
 }
+
+/** Adds a local bare repo as `origin`, for `agent pr` tests that need a real (but offline) remote. */
+export function addBareOrigin(repoPath: string): string {
+  const bareDir = makeTempDir("clutchcode-cli-bare-remote-");
+  git(repoPath, ["init", "-q", "--bare", "-b", "main", bareDir]);
+  git(repoPath, ["remote", "add", "origin", bareDir]);
+  return bareDir;
+}

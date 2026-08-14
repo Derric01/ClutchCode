@@ -96,20 +96,27 @@ export interface RunCommandOptions {
   maxWallclockMs?: number;
   maxTokens?: number;
   costCeilingUsd?: number;
+  /** §13.4 monorepos: pin verification (toolchain + pipeline cwd) to this subdir. */
+  scope?: string;
 }
 
 export async function cmdRun(ctx: CliContext, opts: RunCommandOptions): Promise<CommandResult> {
   const agent = new Agent(ctx.repoPath, ctx.stateDir);
-  const state = await agent.run({
-    task: opts.task,
-    providerKind: opts.providerKind,
-    model: opts.model,
-    baseUrl: opts.baseUrl,
-    yesMode: opts.yes,
-    modelsDir: ctx.modelsDir,
-    budgets: definedBudgets({ steps: opts.maxSteps, wallclockMs: opts.maxWallclockMs, tokens: opts.maxTokens, costUsd: opts.costCeilingUsd })
-  });
-  return { exitCode: exitCodeForRunStatus(state.status), output: formatRunState(state, ctx.json) };
+  try {
+    const state = await agent.run({
+      task: opts.task,
+      providerKind: opts.providerKind,
+      model: opts.model,
+      baseUrl: opts.baseUrl,
+      yesMode: opts.yes,
+      modelsDir: ctx.modelsDir,
+      scope: opts.scope,
+      budgets: definedBudgets({ steps: opts.maxSteps, wallclockMs: opts.maxWallclockMs, tokens: opts.maxTokens, costUsd: opts.costCeilingUsd })
+    });
+    return { exitCode: exitCodeForRunStatus(state.status), output: formatRunState(state, ctx.json) };
+  } catch (e) {
+    return { exitCode: EXIT.CONFIG_ERROR, output: String((e as Error).message) };
+  }
 }
 
 export async function cmdStatus(ctx: CliContext): Promise<CommandResult> {
@@ -193,6 +200,51 @@ export async function cmdResume(ctx: CliContext, runId: string, opts: ResumeComm
       modelsDir: ctx.modelsDir
     });
     return { exitCode: exitCodeForRunStatus(state.status), output: formatRunState(state, ctx.json) };
+  } catch (e) {
+    return { exitCode: EXIT.CONFIG_ERROR, output: String((e as Error).message) };
+  }
+}
+
+/** `agent checkpoints <runId>` (§13.3): every checkpoint commit made so far, oldest first. */
+export async function cmdCheckpoints(ctx: CliContext, runId: string): Promise<CommandResult> {
+  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  try {
+    const checkpoints = agent.checkpoints(runId);
+    if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify(checkpoints) };
+    if (checkpoints.length === 0) return { exitCode: EXIT.SUCCESS, output: "no checkpoints yet" };
+    return { exitCode: EXIT.SUCCESS, output: checkpoints.map((c) => `${c.sha.slice(0, 10)}  ${c.message}`).join("\n") };
+  } catch (e) {
+    return { exitCode: EXIT.CONFIG_ERROR, output: String((e as Error).message) };
+  }
+}
+
+/** `agent rollback <runId> <sha>` (§13.3): resets the worktree to an earlier checkpoint, including removing untracked files created after it. */
+export async function cmdRollback(ctx: CliContext, runId: string, sha: string): Promise<CommandResult> {
+  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  try {
+    const state = agent.rollback(runId, sha);
+    return { exitCode: EXIT.SUCCESS, output: formatRunState(state, ctx.json) };
+  } catch (e) {
+    return { exitCode: EXIT.CONFIG_ERROR, output: String((e as Error).message) };
+  }
+}
+
+export interface PrCommandOptions {
+  remote?: string;
+  base?: string;
+}
+
+/** `agent pr <runId>` (§13.5): pushes the run's branch and opens a PR (via `gh` if available). Never runs without this explicit command. */
+export async function cmdPr(ctx: CliContext, runId: string, opts: PrCommandOptions = {}): Promise<CommandResult> {
+  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  try {
+    const result = await agent.pr(runId, opts);
+    if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify(result) };
+    const lines = [`pushed ${result.branch} to ${result.remote}`];
+    if (result.method === "gh") lines.push(`PR opened: ${result.url}`);
+    else if (result.method === "compare-url") lines.push(`open a PR: ${result.url}`);
+    else lines.push("install/authenticate the `gh` CLI to open a PR automatically, or open one manually on your git host.");
+    return { exitCode: EXIT.SUCCESS, output: lines.join("\n") };
   } catch (e) {
     return { exitCode: EXIT.CONFIG_ERROR, output: String((e as Error).message) };
   }

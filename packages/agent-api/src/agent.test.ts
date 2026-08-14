@@ -1,8 +1,9 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { saveCapabilityProfile, type CapabilityProfile } from "@clutchcode/capability";
 import { Agent } from "./agent.js";
-import { makeSampleRepo, makeTempDir, sseChunk, startScriptedServer, type ScriptedServer } from "./test-helpers.js";
+import { addBareOrigin, makeMonorepo, makeSampleRepo, makeTempDir, sseChunk, startScriptedServer, type ScriptedServer } from "./test-helpers.js";
 import { initRepo } from "./scaffold.js";
 import { markTrusted } from "./config.js";
 
@@ -190,6 +191,132 @@ describe("Agent.resume (§6.2, §6.3, §18.2)", () => {
   it("throws a clear error for an unknown run id", async () => {
     const agent = new Agent(repoPath, stateDir);
     await expect(agent.resume("does-not-exist")).rejects.toThrow(/no such run/);
+  });
+});
+
+describe("Agent.checkpoints / Agent.rollback (§13.3)", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let server: ScriptedServer;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+    markTrusted(repoPath);
+  });
+
+  afterEach(async () => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    await server?.close();
+  });
+
+  it("checkpoints() lists the checkpoint verification created, and rollback() restores it", async () => {
+    server = await startScriptedServer([
+      [
+        sseChunk({
+          choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "write_file", arguments: JSON.stringify({ path: "feature.txt", body: "v1\n" }) } }] } }]
+        }),
+        sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+        "data: [DONE]\n\n"
+      ],
+      [sseChunk({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }), "data: [DONE]\n\n"]
+    ]);
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "add a feature", providerKind: "openai-compatible", model: "gpt-test", baseUrl: server.baseUrl });
+    expect(state.status).toBe("AWAITING_APPROVAL"); // no --yes, worktree still around to inspect
+
+    const checkpoints = agent.checkpoints(state.runId);
+    expect(checkpoints.length).toBeGreaterThan(0);
+
+    // Round-trips through an abbreviated sha, matching real `git log --oneline` width.
+    const rolledBack = agent.rollback(state.runId, checkpoints[0]!.sha.slice(0, 7));
+    expect(rolledBack.runId).toBe(state.runId);
+  }, 30_000);
+
+  it("rollback() rejects a sha that isn't one of the run's checkpoints", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "investigate", providerKind: "fake", model: "n/a" });
+    expect(() => agent.rollback(state.runId, "deadbeef")).toThrow(/no checkpoint matching/);
+  }, 30_000);
+});
+
+describe("Agent.pr (§13.5)", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let bareRemote: string;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+    bareRemote = addBareOrigin(repoPath);
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    fs.rmSync(bareRemote, { recursive: true, force: true });
+  });
+
+  it("pushes the run's branch to origin and falls back to a manual result when gh/GitHub aren't available", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "investigate", providerKind: "fake", model: "n/a" });
+    expect(state.status).toBe("AWAITING_APPROVAL");
+
+    const result = await agent.pr(state.runId);
+
+    expect(result.method).toBe("manual"); // no `gh` in this test environment; the bare local path isn't GitHub
+    expect(result.remote).toBe("origin");
+    const branches = execFileSync("git", ["branch", "--list", result.branch], { cwd: bareRemote, encoding: "utf8" });
+    expect(branches.trim()).not.toBe("");
+  }, 30_000);
+
+  it("throws a clear error for an unknown run id", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    await expect(agent.pr("does-not-exist")).rejects.toThrow(/no such run/);
+  });
+});
+
+describe("Agent.run scope (§13.4 monorepos)", () => {
+  let repoPath: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    repoPath = makeMonorepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("pins verification to the scoped subdir, so a failing root toolchain doesn't block a passing scoped one", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "investigate", providerKind: "fake", model: "n/a", yesMode: true, scope: "packages/foo" });
+
+    expect(state.status).toBe("DONE");
+    expect(state.verificationResults[0]!.allGreen).toBe(true);
+    expect(state.scope).toBe("packages/foo");
+  }, 30_000);
+
+  it("rejects a scope that doesn't exist in the worktree", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    await expect(agent.run({ task: "investigate", providerKind: "fake", model: "n/a", scope: "packages/nope" })).rejects.toThrow(/does not exist/);
+  }, 30_000);
+});
+
+describe("Agent.run requires a git repo (§13.4)", () => {
+  it("fails loudly and actionably instead of a raw git error, three calls deep", async () => {
+    const dir = makeTempDir("clutchcode-agentapi-nongit-");
+    const stateDir = makeTempDir("clutchcode-agentapi-state-");
+    try {
+      const agent = new Agent(dir, stateDir);
+      await expect(agent.run({ task: "investigate", providerKind: "fake", model: "n/a" })).rejects.toThrow(/not a git repository/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 });
 

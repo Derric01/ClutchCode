@@ -1,23 +1,27 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import { markTrusted } from "@clutchcode/agent-api";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   cmdApprove,
+  cmdCheckpoints,
   cmdDiff,
   cmdDoctor,
   cmdInit,
   cmdInspect,
   cmdModelsList,
   cmdModelsProbe,
+  cmdPr,
   cmdProviders,
   cmdReject,
   cmdResume,
+  cmdRollback,
   cmdRun,
   cmdStatus,
   cmdTrust
 } from "./commands.js";
 import { EXIT, exitCodeForRunStatus } from "./exit-codes.js";
-import { makeSampleRepo, makeTempDir, sseChunk, startScriptedServer, type ScriptedServer } from "./test-helpers.js";
+import { addBareOrigin, makeSampleRepo, makeTempDir, sseChunk, startScriptedServer, type ScriptedServer } from "./test-helpers.js";
 
 describe("CLI commands (pure functions, no process spawning)", () => {
   let repoPath: string;
@@ -166,6 +170,124 @@ describe("resume (§6.2, §6.3)", () => {
     expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
     expect(result.output).toMatch(/no such run/);
   });
+});
+
+describe("checkpoints / rollback (§13.3)", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let server: ScriptedServer;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-cli-state-");
+    markTrusted(repoPath);
+  });
+
+  afterEach(async () => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    await server?.close();
+  });
+
+  it("checkpoints lists what the run committed, rollback restores an earlier one", async () => {
+    server = await startScriptedServer([
+      [
+        sseChunk({
+          choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "write_file", arguments: JSON.stringify({ path: "f.txt", body: "v1\n" }) } }] } }]
+        }),
+        sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+        "data: [DONE]\n\n"
+      ],
+      [sseChunk({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }), "data: [DONE]\n\n"]
+    ]);
+    const runResult = await cmdRun(
+      { repoPath, stateDir, json: true },
+      { task: "add a feature", providerKind: "openai-compatible", model: "gpt-test", baseUrl: server.baseUrl }
+    );
+    const runId = (JSON.parse(runResult.output) as { runId: string }).runId;
+
+    const checkpoints = await cmdCheckpoints({ repoPath, stateDir, json: true }, runId);
+    expect(checkpoints.exitCode).toBe(EXIT.SUCCESS);
+    const parsed = JSON.parse(checkpoints.output) as Array<{ sha: string; message: string }>;
+    expect(parsed.length).toBeGreaterThan(0);
+
+    const rolledBack = await cmdRollback({ repoPath, stateDir, json: true }, runId, parsed[0]!.sha.slice(0, 7));
+    expect(rolledBack.exitCode).toBe(EXIT.SUCCESS);
+  }, 30_000);
+
+  it("rollback reports a config error for an unknown checkpoint", async () => {
+    const runResult = await cmdRun({ repoPath, stateDir, json: true }, { task: "investigate", providerKind: "fake", model: "n/a" });
+    const runId = (JSON.parse(runResult.output) as { runId: string }).runId;
+
+    const result = await cmdRollback({ repoPath, stateDir }, runId, "deadbeef");
+    expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect(result.output).toMatch(/no checkpoint matching/);
+  }, 30_000);
+
+  it("checkpoints reports 'no checkpoints yet' for a run that made no edits", async () => {
+    const runResult = await cmdRun({ repoPath, stateDir, json: true }, { task: "investigate", providerKind: "fake", model: "n/a" });
+    const runId = (JSON.parse(runResult.output) as { runId: string }).runId;
+
+    const result = await cmdCheckpoints({ repoPath, stateDir }, runId);
+    expect(result.output).toBe("no checkpoints yet");
+  }, 30_000);
+});
+
+describe("pr (§13.5)", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let bareRemote: string;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-cli-state-");
+    bareRemote = addBareOrigin(repoPath);
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    fs.rmSync(bareRemote, { recursive: true, force: true });
+  });
+
+  it("pushes the branch and reports the outcome even without gh/GitHub available", async () => {
+    const runResult = await cmdRun({ repoPath, stateDir, json: true }, { task: "investigate", providerKind: "fake", model: "n/a" });
+    const runId = (JSON.parse(runResult.output) as { runId: string }).runId;
+
+    const result = await cmdPr({ repoPath, stateDir, json: true }, runId);
+    expect(result.exitCode).toBe(EXIT.SUCCESS);
+    const parsed = JSON.parse(result.output) as { branch: string; method: string };
+    expect(parsed.method).toBe("manual");
+    const branches = execFileSync("git", ["branch", "--list", parsed.branch], { cwd: bareRemote, encoding: "utf8" });
+    expect(branches.trim()).not.toBe("");
+  }, 30_000);
+
+  it("reports a config error for an unknown run id", async () => {
+    const result = await cmdPr({ repoPath, stateDir }, "does-not-exist");
+    expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect(result.output).toMatch(/no such run/);
+  });
+});
+
+describe("run --scope (§13.4 monorepos)", () => {
+  let repoPath: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    stateDir = makeTempDir("clutchcode-cli-state-");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("reports a config error for a scope that doesn't exist in the worktree", async () => {
+    repoPath = makeSampleRepo();
+    const result = await cmdRun({ repoPath, stateDir }, { task: "investigate", providerKind: "fake", model: "n/a", scope: "packages/nope" });
+    expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect(result.output).toMatch(/does not exist/);
+  }, 30_000);
 });
 
 describe("models probe/list (§4.9)", () => {

@@ -3,15 +3,18 @@ import { Command } from "commander";
 import type { ProviderKind } from "@clutchcode/agent-api";
 import {
   cmdApprove,
+  cmdCheckpoints,
   cmdDiff,
   cmdDoctor,
   cmdInit,
   cmdInspect,
   cmdModelsList,
   cmdModelsProbe,
+  cmdPr,
   cmdProviders,
   cmdReject,
   cmdResume,
+  cmdRollback,
   cmdRun,
   cmdStatus,
   cmdTrust,
@@ -84,6 +87,7 @@ baseOptions(program.command("run"))
   .option("--max-wallclock-ms <n>", "override the wall-clock budget (default: 20 min)", (v) => parseInt(v, 10))
   .option("--max-tokens <n>", "override the token budget (default: 200000)", (v) => parseInt(v, 10))
   .option("--cost-ceiling-usd <n>", "override the cost ceiling (overrides agent.toml's policy.costCeilingUsd)", (v) => parseFloat(v))
+  .option("--scope <path>", "monorepo: pin verification (toolchain + pipeline cwd) to this subdir (§13.4)")
   .action(
     async (
       task: string,
@@ -96,6 +100,7 @@ baseOptions(program.command("run"))
         maxWallclockMs?: number;
         maxTokens?: number;
         costCeilingUsd?: number;
+        scope?: string;
       }
     ) =>
       emit(
@@ -108,7 +113,8 @@ baseOptions(program.command("run"))
           maxSteps: opts.maxSteps,
           maxWallclockMs: opts.maxWallclockMs,
           maxTokens: opts.maxTokens,
-          costCeilingUsd: opts.costCeilingUsd
+          costCeilingUsd: opts.costCeilingUsd,
+          scope: opts.scope
         }),
         opts.json
       )
@@ -170,6 +176,23 @@ baseOptions(program.command("resume"))
         }),
         opts.json
       )
+  );
+
+baseOptions(program.command("checkpoints"))
+  .argument("<runId>")
+  .action(async (runId: string, opts: GlobalOpts) => emit(await cmdCheckpoints(ctx(opts), runId), opts.json));
+
+baseOptions(program.command("rollback"))
+  .argument("<runId>")
+  .argument("<sha>", "a checkpoint sha (or prefix) from `agent checkpoints <runId>`")
+  .action(async (runId: string, sha: string, opts: GlobalOpts) => emit(await cmdRollback(ctx(opts), runId, sha), opts.json));
+
+baseOptions(program.command("pr"))
+  .argument("<runId>")
+  .option("--remote <name>", "git remote to push to", "origin")
+  .option("--base <branch>", "PR base branch (default: the branch checked out when the run started)")
+  .action(async (runId: string, opts: GlobalOpts & { remote: string; base?: string }) =>
+    emit(await cmdPr(ctx(opts), runId, { remote: opts.remote, base: opts.base }), opts.json)
   );
 
 baseOptions(program.command("trust")).action(async (opts: GlobalOpts) => emit(await cmdTrust(ctx(opts)), opts.json));

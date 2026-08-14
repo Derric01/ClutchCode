@@ -18,6 +18,8 @@ export function makeTestContext(workspaceRoot: string, overrides: Partial<ToolCo
     redactor: new Redactor(),
     repoTrustMode: "trusted",
     networkAllowlist: [],
+    submodulePaths: [],
+    lfsPatterns: [],
     ...overrides
   };
 }

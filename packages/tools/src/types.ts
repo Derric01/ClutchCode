@@ -55,6 +55,10 @@ export interface ToolContext {
   networkAllowlist: string[];
   /** Cooperative cancellation (§6.6). */
   signal?: AbortSignal;
+  /** Submodule paths relative to `workspaceRoot`, from `.gitmodules` (§13.4) — empty when the repo has none (or isn't git at all). */
+  submodulePaths: string[];
+  /** `.gitattributes` glob patterns tagged `filter=lfs` (§13.4) — empty when the repo has no LFS config. */
+  lfsPatterns: string[];
 }
 
 export interface TruncatedOutput {

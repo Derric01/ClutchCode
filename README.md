@@ -45,6 +45,25 @@ overrides. OS sandbox Tier 1, OS keychain credential storage, and the VS
 Code extension remain the named Phase 2/3 follow-ups (`PROJECT_SPEC.md
 §21/§25`).
 
+**Phase 5's git edge cases (§13.4/§13.5) are done.** Submodule writes now
+ask for explicit approval instead of silently landing in the run's own
+commits; LFS-tracked writes/edits are flagged (`lfsTracked`) rather than
+ignored; `read_file` recognizes LFS pointer stubs and refuses real binary
+content instead of returning mojibake; `agent run --scope path/` pins
+verification to a monorepo subdir; `agent checkpoints`/`agent rollback`
+expose the checkpoint history that already existed at the git layer but
+had no CLI surface; `agent pr` pushes a run's branch and opens a PR via
+`gh` (falling back to a real GitHub compare URL, or just confirming the
+push) — the delivery path alongside `agent approve`, without merging
+locally. A real bug also got fixed along the way: `approve --squash`'s
+final commit was bypassing the user's pre-commit hooks the same way
+internal checkpoints correctly do — §13.4 says hooks should run on the
+final approved commit, and now they do. Deliberately not attempted: full
+non-git (snapshot-backed) `AgentLoop` execution — `agent run` now fails
+with a clear "run git init" error instead of a confusing git error three
+calls deep, but a parallel non-git execution path is a distinctly larger
+project than this pass's scope.
+
 ## Repository layout
 
 ```

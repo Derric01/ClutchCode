@@ -32,6 +32,8 @@ export interface RunWorktree {
   worktreePath: string;
   repoPath: string;
   dirtyTreeResult: DirtyTreeResult;
+  /** The branch checked out in `repoPath` when the run started, best-effort (§13.5 `agent pr`'s PR base) — undefined if `repoPath` was in detached-HEAD state. */
+  baseBranch?: string;
 }
 
 function slugify(s: string): string {
@@ -56,9 +58,12 @@ export function createRunWorktree(opts: CreateRunOptions): RunWorktree {
   const worktreePath = path.join(opts.stateDir, "wt", opts.runId);
   fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
 
+  // Best-effort: empty (not thrown) on detached HEAD — a PR base is then left to the caller.
+  const baseBranch = git(["symbolic-ref", "--short", "HEAD"], { cwd: opts.repoPath, allowFailure: true }).trim() || undefined;
+
   git(["worktree", "add", worktreePath, "-b", branch, base], { cwd: opts.repoPath });
 
-  return { runId: opts.runId, branch, baseCommit: base, worktreePath, repoPath: opts.repoPath, dirtyTreeResult: dirtyResult };
+  return { runId: opts.runId, branch, baseCommit: base, worktreePath, repoPath: opts.repoPath, dirtyTreeResult: dirtyResult, baseBranch };
 }
 
 /** `agent diff`: worktree vs base (§13.2). */
@@ -148,9 +153,16 @@ export function approveRun(run: RunWorktree, opts: ApproveOptions = {}): { merge
     // instead of an error.
     const staged = git(["diff", "--cached", "--name-only"], { cwd: run.repoPath, allowFailure: true });
     if (staged.trim().length > 0) {
-      git(["commit", "--no-verify", "-m", opts.message ?? `clutchcode: squash merge ${run.branch}`], { cwd: run.repoPath });
+      // No `--no-verify` here (unlike `checkpoint()`): §13.4 "Commit hooks"
+      // — the user's pre-commit hooks are bypassed for internal
+      // checkpoints but MUST run on this, the final approved commit. If a
+      // hook rejects it, `git()` throws and the approval fails loudly
+      // rather than silently landing unverified content.
+      git(["commit", "-m", opts.message ?? `clutchcode: squash merge ${run.branch}`], { cwd: run.repoPath });
     }
   } else {
+    // `git merge` (unlike `git commit`) runs pre-merge-commit/commit-msg
+    // hooks by default — already correct, no `--no-verify` here either.
     git(["merge", "--no-ff", run.branch, "-m", opts.message ?? `clutchcode: merge ${run.branch}`], { cwd: run.repoPath });
   }
 
