@@ -74,7 +74,8 @@ export function setupAgentLoopFixture(runId = "run00000001"): AgentLoopTestFixtu
     repoTrustMode: "trusted",
     networkAllowlist: [],
     submodulePaths: [],
-    lfsPatterns: []
+    lfsPatterns: [],
+    sandbox: { backend: "none", reason: "test fixture" }
   };
 
   return {

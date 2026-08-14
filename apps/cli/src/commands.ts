@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   Agent,
+  detectSandboxBackend,
   initRepo,
   listModelProfiles,
   loadConfig,
@@ -300,12 +301,14 @@ async function checkOllama(): Promise<DoctorCheck> {
 /** `agent doctor` (§4.10, §18.2): real, honest checks — never fabricated. No GPU/VRAM probing in this MVP pass. */
 export async function cmdDoctor(ctx: CliContext): Promise<CommandResult> {
   const creds = loadCredentialsFromEnv();
+  const sandbox = detectSandboxBackend();
   const checks: DoctorCheck[] = [
     { name: "node", ok: true, detail: process.version },
     checkBinary("git", ["--version"]),
     checkBinary("rg", ["--version"]),
     { name: "ANTHROPIC_API_KEY", ok: Boolean(creds.anthropicApiKey), detail: creds.anthropicApiKey ? "set" : "not set" },
     { name: "OPENAI_API_KEY", ok: Boolean(creds.openaiApiKey), detail: creds.openaiApiKey ? "set" : "not set" },
+    { name: "sandbox (§12.5/§12.6)", ok: sandbox.backend !== "none", detail: `${sandbox.backend} — ${sandbox.reason}` },
     await checkOllama()
   ];
 

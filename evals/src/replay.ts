@@ -41,7 +41,8 @@ export async function replayTranscript(transcript: RecordedTranscript): Promise<
     repoTrustMode: "trusted" as const,
     networkAllowlist: [],
     submodulePaths: [],
-    lfsPatterns: []
+    lfsPatterns: [],
+    sandbox: { backend: "none" as const, reason: "eval replay fixture" }
   };
 
   const provider = new FakeProvider(transcript.turns);

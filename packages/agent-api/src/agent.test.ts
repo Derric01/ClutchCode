@@ -1,11 +1,13 @@
 import fs from "node:fs";
+import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { detectBwrapOnPath } from "@clutchcode/sandbox";
 import { saveCapabilityProfile, type CapabilityProfile } from "@clutchcode/capability";
 import { Agent } from "./agent.js";
 import { addBareOrigin, makeMonorepo, makeSampleRepo, makeTempDir, sseChunk, startScriptedServer, type ScriptedServer } from "./test-helpers.js";
 import { initRepo } from "./scaffold.js";
-import { markTrusted } from "./config.js";
+import { markTrusted, saveConfig, loadConfig } from "./config.js";
 
 describe("Agent (agent-api boundary, wired end-to-end with a real worktree)", () => {
   let repoPath: string;
@@ -318,6 +320,88 @@ describe("Agent.run requires a git repo (§13.4)", () => {
       fs.rmSync(stateDir, { recursive: true, force: true });
     }
   });
+});
+
+describe("Agent sandbox Tier 1 (§12.5/§12.6) — real confinement, not just plumbing", () => {
+  // This proves the *security property*, not just that fields get passed
+  // around: a file outside the workspace is unreadable to the sandboxed
+  // shell under Tier 1, and (deliberately, to show the contrast) readable
+  // under the `policy.sandboxTier = "tier0"` escape hatch, which has no OS-
+  // level confinement — only the policy engine, which doesn't gate a raw
+  // `cat` of an absolute path the way it gates tool calls.
+  const hasBwrap = detectBwrapOnPath();
+  const maybeIt = hasBwrap ? it : it.skip;
+
+  let repoPath: string;
+  let stateDir: string;
+  let leakPath: string;
+  let server: ScriptedServer;
+
+  function catLeakScript(): string[][] {
+    return [
+      [
+        sseChunk({
+          choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "shell", arguments: JSON.stringify({ cmd: `cat ${leakPath}` }) } }] } }]
+        }),
+        sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+        "data: [DONE]\n\n"
+      ]
+    ];
+  }
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+    markTrusted(repoPath);
+    leakPath = path.join(makeTempDir("clutchcode-agentapi-leak-"), "outside-secret.txt");
+    fs.writeFileSync(leakPath, "leaked outside workspace content marker", "utf8");
+  });
+
+  afterEach(async () => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    fs.rmSync(path.dirname(leakPath), { recursive: true, force: true });
+    await server?.close();
+  });
+
+  maybeIt("Tier 1 (default): a file outside the workspace is unreadable to the sandboxed shell", async () => {
+    server = await startScriptedServer(catLeakScript());
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({
+      task: "investigate",
+      providerKind: "openai-compatible",
+      model: "gpt-test",
+      baseUrl: server.baseUrl,
+      budgets: { steps: 1 }
+    });
+
+    expect(state.status).toBe("PAUSED");
+    expect(JSON.stringify(state.messages)).not.toContain("leaked outside workspace content marker");
+    expect(JSON.stringify(state.toolCallLog)).toBeTruthy(); // sanity: the shell call actually happened
+  }, 30_000);
+
+  maybeIt("policy.sandboxTier = \"tier0\" is a real escape hatch: without OS confinement, the same file IS readable", async () => {
+    const config = loadConfig(repoPath);
+    saveConfig(repoPath, { ...config, policy: { ...config.policy, sandboxTier: "tier0" } });
+    // Commit it — otherwise the default dirty-tree handling (§13.4) stashes
+    // this uncommitted agent.toml away (`--include-untracked`) before the
+    // run even starts, and the run would never see the override at all.
+    execFileSync("git", ["add", "agent.toml"], { cwd: repoPath });
+    execFileSync("git", ["commit", "-q", "-m", "tier0 override"], { cwd: repoPath });
+
+    server = await startScriptedServer(catLeakScript());
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({
+      task: "investigate",
+      providerKind: "openai-compatible",
+      model: "gpt-test",
+      baseUrl: server.baseUrl,
+      budgets: { steps: 1 }
+    });
+
+    expect(state.status).toBe("PAUSED");
+    expect(JSON.stringify(state.messages)).toContain("leaked outside workspace content marker");
+  }, 30_000);
 });
 
 describe("initRepo", () => {

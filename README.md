@@ -41,9 +41,8 @@ resume <runId> --extend-steps N` (also `--extend-wallclock-ms` /
 transcript and actually continues it, rather than only re-attaching and
 reporting status. `agent run` gained matching `--max-steps` /
 `--max-wallclock-ms` / `--max-tokens` / `--cost-ceiling-usd` budget
-overrides. OS sandbox Tier 1, OS keychain credential storage, and the VS
-Code extension remain the named Phase 2/3 follow-ups (`PROJECT_SPEC.md
-§21/§25`).
+overrides. OS keychain credential storage and the VS Code extension remain
+the named Phase 2/3 follow-ups (`PROJECT_SPEC.md §21/§25`).
 
 **Phase 5's git edge cases (§13.4/§13.5) are done.** Submodule writes now
 ask for explicit approval instead of silently landing in the run's own
@@ -63,6 +62,26 @@ non-git (snapshot-backed) `AgentLoop` execution — `agent run` now fails
 with a clear "run git init" error instead of a confusing git error three
 calls deep, but a parallel non-git execution path is a distinctly larger
 project than this pass's scope.
+
+**Phase 3's OS sandbox Tier 1 (§12.5/§12.6) is done on Linux, written (not
+runtime-verified) on macOS.** `shell` now runs under real OS confinement
+by default when available: Linux via bubblewrap namespaces (fs bound to
+the workspace + standard system dirs read-only, network and pid
+namespaces unshared, a synthetic empty `$HOME`), macOS via a generated
+Seatbelt (`sandbox-exec`) profile in the same shape. This isn't just
+wired — it's proven: a test suite writes a file outside the workspace and
+asserts a sandboxed `cat` of it fails, asserts a network fetch inside the
+sandbox is unreachable, and asserts the real CLI binary's own `npm test`
+run still passes confined. The macOS path is authored against the
+documented SBPL grammar and the same shape other sandboxed dev tools use,
+but has never run against a real `sandbox-exec` — no macOS host exists in
+this environment, so that's flagged rather than claimed. `agent.toml`'s
+`policy.sandboxTier = "tier0"` is the documented escape hatch when Tier 1
+breaks a legitimate workflow; `agent doctor` reports which backend is
+active. Not yet layered in: Landlock/seccomp on top of bwrap, and a
+Windows backend (WSL2 is the spec's own recommended path there). OS
+keychain credential storage and the VS Code extension remain the last
+named Phase 2/3 follow-ups.
 
 ## Repository layout
 

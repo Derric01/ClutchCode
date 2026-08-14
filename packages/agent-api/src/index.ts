@@ -6,6 +6,9 @@ export type { RunOptions, ResumeOptions, ApproveOptions, PrOptions, PrResult } f
 export type { RunState, RunStatus, RuntimeEvent, ToolCallLogEntry, VerificationResultSummary, Budgets } from "@clutchcode/runtime";
 // Re-exported for the same reason, but from @clutchcode/git (§20 boundary rule extends to every internal package, not just runtime).
 export type { CheckpointRecord } from "@clutchcode/git";
+// Re-exported for the same reason, but from @clutchcode/sandbox — `agent doctor` reports the resolved Tier 1 backend (§12.5/§12.6).
+export { detectSandboxBackend } from "@clutchcode/sandbox";
+export type { SandboxBackend, SandboxCapability } from "@clutchcode/sandbox";
 export { loadConfig, saveConfig, isTrustedRepo, markTrusted, configPath, DEFAULT_CONFIG } from "./config.js";
 export type { AgentConfig, ProviderConfig } from "./config.js";
 export { loadCredentialsFromEnv } from "./credentials.js";

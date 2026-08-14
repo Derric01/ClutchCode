@@ -4,7 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 
-import { Denylist, PolicyEngine, Redactor } from "@clutchcode/sandbox";
+import { Denylist, PolicyEngine, Redactor, detectSandboxBackend } from "@clutchcode/sandbox";
 import { nativeToolSet, type Tool, type ToolContext } from "@clutchcode/tools";
 import {
   createRunWorktree,
@@ -228,6 +228,15 @@ export class Agent {
     for (const secret of [credentials.anthropicApiKey, credentials.openaiApiKey]) {
       if (secret) redactor.registerSecret(secret);
     }
+    // §12.6: Tier 1 (bwrap/Seatbelt) is used automatically when available;
+    // `policy.sandboxTier = "tier0"` in agent.toml is the documented
+    // escape hatch (§12.2 "Override: agent config policy ...") for a setup
+    // where Tier 1's confinement breaks a legitimate workflow.
+    const sandbox =
+      config.policy?.sandboxTier === "tier0"
+        ? { backend: "none" as const, reason: "policy.sandboxTier = \"tier0\" in agent.toml" }
+        : detectSandboxBackend();
+
     const toolContext: ToolContext = {
       workspaceRoot: run.worktreePath,
       evidenceDir,
@@ -238,7 +247,8 @@ export class Agent {
       networkAllowlist: [],
       // §13.4: read once per run from repo metadata, not shelled out to per tool call.
       submodulePaths: listSubmodules(run.worktreePath),
-      lfsPatterns: listLfsPatterns(run.worktreePath)
+      lfsPatterns: listLfsPatterns(run.worktreePath),
+      sandbox
     };
 
     const provider = buildProvider({ kind: providerKind, baseUrl: opts.baseUrl, credentials });

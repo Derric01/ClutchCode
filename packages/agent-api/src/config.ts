@@ -22,6 +22,8 @@ export interface AgentConfig {
   trustedRepos: string[];
   policy?: {
     costCeilingUsd?: number;
+    /** §12.6: "auto" (default) uses OS sandbox Tier 1 (bwrap/Seatbelt) when available; "tier0" opts out and runs with the policy engine only — an escape hatch for a setup Tier 1's confinement breaks. */
+    sandboxTier?: "auto" | "tier0";
   };
 }
 

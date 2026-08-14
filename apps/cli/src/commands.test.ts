@@ -105,6 +105,14 @@ describe("CLI commands (pure functions, no process spawning)", () => {
     expect(result.output).not.toContain("sk-");
   });
 
+  it("doctor reports the real, detected sandbox backend (bubblewrap is installed in this dev container)", async () => {
+    const result = await cmdDoctor({ repoPath, json: true });
+    const parsed = JSON.parse(result.output) as { checks: Array<{ name: string; ok: boolean; detail: string }> };
+    const sandbox = parsed.checks.find((c) => c.name.startsWith("sandbox"));
+    expect(sandbox?.ok).toBe(true);
+    expect(sandbox?.detail).toMatch(/^bwrap/);
+  });
+
   it("doctor runs real, non-fabricated checks", async () => {
     const result = await cmdDoctor({ repoPath, json: true });
     const parsed = JSON.parse(result.output) as { checks: Array<{ name: string; ok: boolean }> };
