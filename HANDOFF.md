@@ -7,8 +7,8 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-17
 **Branch:** `claude/handoff-prompt-continuation-c2cxh9`
-**Latest commit:** `78723dc` — "feat: OS keychain credential storage — §5.1 tier 1 (Linux verified, macOS/Windows written)"
-**Test suite:** 444/444 passing, 64 test files, clean `tsc -b`, clean `eslint .`
+**Latest commit:** `28536a3` — "feat: encrypted credential file store — §5.1 tier 2 (all three tiers now done)"
+**Test suite:** 467/467 passing, 65 test files, clean `tsc -b`, clean `eslint .`
 
 No PR has been opened for this branch's work yet — none was requested.
 
@@ -92,26 +92,32 @@ run-picker instead of typing a run id, resume/rollback/pr in the
 extension UI (the CLI has them; the extension covers §18.5's core
 run/diff/approve/reject loop).
 
-### OS keychain credential storage (§5.1 tier 1)
-`loadCredentials()` implements the real precedence chain (OS keychain
-first, env vars as the fallback) and backs every real call site
+### Credential storage — §5.1, all three tiers done
+`loadCredentials()` implements the real precedence chain (OS keychain →
+encrypted file store → env vars) and backs every real call site
 (`Agent.run`, the capability probe, `agent providers`, `agent doctor`).
-**Linux: runtime-verified** against a real freedesktop Secret Service —
-`secret-tool`/`libsecret`/`gnome-keyring` were installed into this
-environment specifically for this; a throwaway D-Bus session + keyring
-per test run proves store/get/clear and that a keychain-stored credential
-genuinely wins over the same-named env var. **macOS (`security` CLI) and
-Windows (DPAPI via PowerShell): written, not runtime-verified** — same
-disclosed-gap pattern as Seatbelt, argv/script shape directly asserted in
-tests via pure builder functions. `agent providers set-key
+**Tier 1, OS keychain — Linux: runtime-verified** against a real
+freedesktop Secret Service — `secret-tool`/`libsecret`/`gnome-keyring`
+were installed into this environment specifically for this; a throwaway
+D-Bus session + keyring per test run proves store/get/clear and that a
+keychain-stored credential genuinely wins over the same-named env var.
+**macOS (`security` CLI) and Windows (DPAPI via PowerShell): written, not
+runtime-verified** — same disclosed-gap pattern as Seatbelt, argv/script
+shape directly asserted in tests via pure builder functions. **Tier 2,
+encrypted file store** (`~/.config/clutchcode/credentials.age`, used only
+when tier 1 reports no keychain backend at all — headless Linux, some
+Profile-D servers): AES-256-GCM via Node's built-in `crypto`, keyed by a
+locally generated, permission-protected "machine key" file plus an
+optional passphrase (scrypt). Documented scoping decision: not
+byte-compatible `age`-format (that would need a from-scratch
+reimplementation of age's wire format to matter) — a real, correct,
+dependency-free AEAD doing the same job instead. Needs no OS binary, so
+unlike tier 1 it's uniformly verified everywhere: round-trip, wrong
+passphrase and tampered-ciphertext failing closed, two different machine
+keys never cross-reading each other's values. `agent providers set-key
 <anthropic|openai-compatible>` reads the key from stdin (never argv/
-history); `agent providers unset-key <provider>` removes it. **Tier 2**
-(`~/.config/clutchcode/credentials.age`, encrypted file store) **is not
-implemented** — named explicitly as a gap in `credentials.ts`'s module
-doc comment, not silently skipped. It's the one rung of §5.1's
-three-tier ladder still missing; a real key-derivation/encryption design
-deserves its own pass rather than being rushed alongside the OS-keychain
-tier.
+history) and routes to whichever tier is actually available; `agent
+providers unset-key <provider>` removes it from the same place.
 
 ### Docs: "MVP" removed everywhere
 The spec used "MVP" to label Phase 1 scope throughout — renamed to
@@ -133,7 +139,6 @@ loose "MVP" estimate.
 
 | Item | Spec ref | Rough effort | Notes |
 |---|---|---|---|
-| Tier 2 encrypted credential file store | §5.1 | small–medium | `~/.config/clutchcode/credentials.age`; needs a real key-derivation design (machine-bound secret + optional passphrase), not just "encrypt with a hardcoded key." |
 | Windows sandbox Tier 1 | §12.5/§12.6, A11 | medium | WSL2-recommended is the spec's own documented fallback; a native restricted-token/AppContainer path is explicitly `[C:Low]` in the spec — confirm whether it's worth building vs. staying doc-only. |
 | Landlock/seccomp layered on bwrap | §12.6 | small–medium | Additive hardening on top of the already-verified Linux Tier 1; same real-verification bar applies (a Landlock-capable kernel is needed to prove it, not just write it). |
 | VS Code extension polish | §18.5 | medium | Native two-sided diff view (needs per-file before/after content, not just the unified diff text `agent diff` returns), a run-picker, resume/rollback/pr commands in the UI. |
@@ -173,6 +178,15 @@ loose "MVP" estimate.
   keychain lookup with nothing stored, no session bus, etc.) needs
   `stdio: ["ignore"|"pipe", "pipe", "ignore"]` explicitly, or its stderr
   text shows up uninvited in every test run and every real agent run.
+- **`detectKeychainBackend` reports a backend based on PATH alone, not
+  actual reachability.** On this dev container `secret-tool` is always on
+  PATH, so the backend is always `"secret-service"` even with no D-Bus
+  session running — it just fails at the `keychainGet`/`Set`/`Clear` call
+  a layer down. To actually exercise the tier-2 file-store fallback (or
+  test "no keychain at all" behavior), you have to force backend `"none"`
+  by passing an `env` with a `PATH` that genuinely has no `secret-tool` on
+  it — removing `DBUS_SESSION_BUS_ADDRESS` alone isn't enough, it only
+  gets you "keychain present but unreachable," a different code path.
 
 ## How to resume
 
