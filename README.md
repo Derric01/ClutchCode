@@ -43,13 +43,13 @@ reporting status. `agent run` gained matching `--max-steps` /
 `--max-wallclock-ms` / `--max-tokens` / `--cost-ceiling-usd` budget
 overrides.
 
-**§5.1's OS keychain credential storage is done.** `agent providers set-key
-<anthropic|openai-compatible>` reads a key from stdin — never an argument,
-never shell history — and stores it via the OS keychain, which now sits
-ahead of environment variables in the real precedence chain every run,
-probe, and CLI command actually uses. Linux is verified against a real,
-running freedesktop Secret Service (`secret-tool`/libsecret): a full
-suite spins up a throwaway D-Bus session + `gnome-keyring-daemon` and
+**§5.1's credential storage is done — all three tiers.** `agent providers
+set-key <anthropic|openai-compatible>` reads a key from stdin — never an
+argument, never shell history — and stores it, with the real precedence
+chain (keychain → encrypted file store → env vars) now backing every run,
+probe, and CLI command. **Tier 1, OS keychain:** Linux is verified against
+a real, running freedesktop Secret Service (`secret-tool`/libsecret): a
+full suite spins up a throwaway D-Bus session + `gnome-keyring-daemon` and
 proves store/get/clear round-trip and that a keychain-stored credential
 genuinely takes precedence over the same-named env var, not just that the
 plumbing compiles. macOS (`security` CLI) and Windows (DPAPI via
@@ -57,14 +57,23 @@ PowerShell — deliberately not `cmdkey`, which can't read a password back
 without a native helper) are written against documented, stable OS
 interfaces with the argv/script shape directly asserted in tests, but
 **not runtime-verified** — no macOS/Windows host exists in this
-environment, same disclosed gap as the Seatbelt sandbox profile. Every
-keychain call fails closed and silent (locked keyring, no session bus,
-missing binary — all just "not available," never a hard error or a hang),
-so a broken or absent keychain always falls through to env vars exactly
-like before this existed. Tier 2 (the `credentials.age` encrypted file
-store) remains the one still-unimplemented rung of §5.1's three-tier
-ladder — a real key-derivation/encryption design, named as its own
-follow-up rather than folded in half-done.
+environment, same disclosed gap as the Seatbelt sandbox profile. **Tier
+2, the encrypted file store** (`~/.config/clutchcode/credentials.age`,
+used only on machines with no keychain at all — headless Linux, some
+Profile-D servers): AES-256-GCM via Node's built-in `crypto`, keyed by a
+locally generated, permission-protected "machine key" file plus an
+optional passphrase — a deliberate scoping decision documented in
+`credential-file-store.ts`'s header (the `.age` extension follows the
+spec's named path, not literal byte-compatibility with the `age` tool,
+which would need a from-scratch reimplementation of its wire format to
+matter). Unlike Tier 1, this needs no OS binary and so is uniformly
+verified everywhere this repo builds: real round-trip tests, a wrong
+passphrase or a tampered auth tag failing closed instead of returning
+garbage, two different machine keys never seeing each other's values.
+Every tier fails closed and silent on any error (locked keyring, no
+session bus, missing binary, wrong passphrase — all just "not available,"
+never a hard error or a hang), so a broken or absent keychain always
+falls through cleanly to the next tier.
 
 **Phase 5's git edge cases (§13.4/§13.5) are done.** Submodule writes now
 ask for explicit approval instead of silently landing in the run's own

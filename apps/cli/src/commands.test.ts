@@ -201,6 +201,58 @@ describe("providers set-key/unset-key (§5.1 tier 1) — real Secret Service, no
   });
 });
 
+describe("providers set-key/unset-key (§5.1 tier 2) — encrypted file store, when no keychain exists at all", () => {
+  const NO_KEYCHAIN_ENV = { ...process.env, PATH: "/definitely/not/a/real/dir" } as NodeJS.ProcessEnv;
+
+  let repoPath: string;
+  let configDir: string;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    configDir = makeTempDir("clutchcode-cli-credfile-test-");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it("set-key falls back to the file store and providers reports it present, without leaking the value", async () => {
+    const stdin = Readable.from(["sk-ant-file-store-cli-test"]);
+    const setResult = await cmdProvidersSetKey({ repoPath, env: NO_KEYCHAIN_ENV, credentialFileStore: { configDir }, json: true }, "anthropic", stdin);
+    expect(setResult.exitCode).toBe(EXIT.SUCCESS);
+    expect(JSON.parse(setResult.output)).toEqual({ provider: "anthropic", backend: "file-store", ok: true });
+
+    const providers = await cmdProviders({ repoPath, env: NO_KEYCHAIN_ENV, credentialFileStore: { configDir }, json: true });
+    const parsed = JSON.parse(providers.output) as { detected: Array<{ kind: string; credentialPresent: boolean }> };
+    expect(parsed.detected.find((d) => d.kind === "anthropic")?.credentialPresent).toBe(true);
+    expect(providers.output).not.toContain("sk-ant-file-store-cli-test");
+
+    // And it's genuinely encrypted on disk, not just "not printed by the CLI".
+    const raw = fs.readFileSync(`${configDir}/credentials.age`, "utf8");
+    expect(raw).not.toContain("sk-ant-file-store-cli-test");
+  });
+
+  it("unset-key removes a file-store-stored key", async () => {
+    await cmdProvidersSetKey({ repoPath, env: NO_KEYCHAIN_ENV, credentialFileStore: { configDir } }, "openai-compatible", Readable.from(["sk-openai-to-be-removed"]));
+    const unsetResult = await cmdProvidersUnsetKey({ repoPath, env: NO_KEYCHAIN_ENV, credentialFileStore: { configDir }, json: true }, "openai-compatible");
+    expect(unsetResult.exitCode).toBe(EXIT.SUCCESS);
+    expect(JSON.parse(unsetResult.output)).toEqual({ provider: "openai-compatible", backend: "file-store", ok: true });
+
+    const providers = await cmdProviders({ repoPath, env: NO_KEYCHAIN_ENV, credentialFileStore: { configDir }, json: true });
+    const parsed = JSON.parse(providers.output) as { detected: Array<{ kind: string; credentialPresent: boolean }> };
+    expect(parsed.detected.find((d) => d.kind === "openai-compatible")?.credentialPresent).toBe(false);
+  });
+
+  it("doctor reports the file-store fallback (backend 'none') honestly when there's genuinely no keychain", async () => {
+    const result = await cmdDoctor({ repoPath, env: NO_KEYCHAIN_ENV, json: true });
+    const parsed = JSON.parse(result.output) as { checks: Array<{ name: string; ok: boolean; detail: string }> };
+    const keychain = parsed.checks.find((c) => c.name.startsWith("OS keychain"));
+    expect(keychain?.ok).toBe(false);
+    expect(keychain?.detail).toMatch(/^none/);
+  });
+});
+
 describe("resume (§6.2, §6.3)", () => {
   let repoPath: string;
   let stateDir: string;

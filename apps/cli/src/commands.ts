@@ -15,6 +15,7 @@ import {
   type Budgets,
   type CapabilityProfile,
   type CredentialKind,
+  type FileStoreOptions,
   type ProviderKind,
   type RunState
 } from "@clutchcode/agent-api";
@@ -34,6 +35,8 @@ export interface CliContext {
   modelsDir?: string;
   /** Override for `process.env` — real CLI usage never sets this; tests use it to point credential commands at a throwaway OS keychain instead of the real one. */
   env?: NodeJS.ProcessEnv;
+  /** Override for the §5.1 tier 2 encrypted file store's location (default: ~/.config/clutchcode); tests point it at a temp dir. */
+  credentialFileStore?: FileStoreOptions;
 }
 
 function summarizeRunState(state: RunState): Record<string, unknown> {
@@ -269,7 +272,7 @@ const CREDENTIAL_PROVIDERS: Record<string, CredentialKind> = { anthropic: "anthr
 
 export async function cmdProviders(ctx: CliContext): Promise<CommandResult> {
   const config = loadConfig(ctx.repoPath);
-  const creds = loadCredentials(ctx.env); // §5.1: OS keychain first, env vars as the fallback
+  const creds = loadCredentials(ctx.env, ctx.credentialFileStore); // §5.1: OS keychain, then the encrypted file store, then env vars
   const { backend, reason } = detectKeychainBackend(process.platform, ctx.env);
   const rows = [
     { kind: "anthropic", credentialPresent: Boolean(creds.anthropicApiKey) },
@@ -277,8 +280,9 @@ export async function cmdProviders(ctx: CliContext): Promise<CommandResult> {
     { kind: "ollama", credentialPresent: true } // local server, no API key
   ];
   if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify({ configured: config.providers, detected: rows, keychain: { backend, reason } }) };
+  const storageTier = backend === "none" ? "encrypted file store (~/.config/clutchcode/credentials.age)" : `OS keychain [${backend}]`;
   const lines = ["configured providers:", ...Object.entries(config.providers).map(([name, p]) => `  ${name}: ${p.kind}`)];
-  lines.push(`credential presence (§5.1 — OS keychain [${backend}] first, env vars as the fallback):`);
+  lines.push(`credential presence (§5.1 — ${storageTier} first, env vars as the fallback):`);
   for (const r of rows) lines.push(`  ${r.kind}: ${r.credentialPresent ? "present" : "not set"}`);
   lines.push(`OS keychain backend: ${backend} (${reason})`);
   lines.push("set a key with `agent providers set-key <anthropic|openai-compatible>` (reads the value from stdin, never argv/history)");
@@ -296,8 +300,9 @@ function readAllStdin(stdin: Readable): Promise<string> {
 }
 
 /**
- * `agent providers set-key <provider>` (§5.1 tier 1): stores an API key in
- * the OS keychain. Reads the value from stdin rather than an argument or
+ * `agent providers set-key <provider>` (§5.1 tiers 1/2): stores an API key
+ * in the OS keychain, or the encrypted file store when no keychain exists
+ * on this platform. Reads the value from stdin rather than an argument or
  * an interactive prompt — never lands in shell history or a process
  * listing, and stays scriptable (`echo -n "$KEY" | agent providers set-key anthropic`).
  */
@@ -308,16 +313,16 @@ export async function cmdProvidersSetKey(ctx: CliContext, provider: string, stdi
   const value = (await readAllStdin(stdin)).trim();
   if (!value) return { exitCode: EXIT.CONFIG_ERROR, output: "no key provided on stdin — pipe the key in, e.g. `echo -n \"$KEY\" | agent providers set-key anthropic`" };
 
-  const result = saveCredential(kind, value, ctx.env);
+  const result = saveCredential(kind, value, ctx.env, ctx.credentialFileStore);
   if (!result.ok) {
     return {
       exitCode: EXIT.CONFIG_ERROR,
-      output: `could not store the key in the OS keychain (backend: ${result.backend}) — set the ${provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"} environment variable instead (§5.1 tier 3)`
+      output: `could not store the key (tried: ${result.backend}) — set the ${provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"} environment variable instead (§5.1 tier 3)`
     };
   }
   return {
     exitCode: EXIT.SUCCESS,
-    output: ctx.json ? JSON.stringify({ provider, backend: result.backend, ok: true }) : `${provider}: key stored in the OS keychain (${result.backend})`
+    output: ctx.json ? JSON.stringify({ provider, backend: result.backend, ok: true }) : `${provider}: key stored (${result.backend})`
   };
 }
 
@@ -325,8 +330,8 @@ export async function cmdProvidersUnsetKey(ctx: CliContext, provider: string): P
   const kind = CREDENTIAL_PROVIDERS[provider];
   if (!kind) return { exitCode: EXIT.CONFIG_ERROR, output: `unknown provider "${provider}" — expected one of: ${Object.keys(CREDENTIAL_PROVIDERS).join(", ")}` };
 
-  const result = clearCredential(kind, ctx.env);
-  const humanLine = result.ok ? `${provider}: key removed from the OS keychain (${result.backend})` : `${provider}: nothing to remove (backend: ${result.backend})`;
+  const result = clearCredential(kind, ctx.env, ctx.credentialFileStore);
+  const humanLine = result.ok ? `${provider}: key removed (${result.backend})` : `${provider}: nothing to remove (backend: ${result.backend})`;
   return { exitCode: EXIT.SUCCESS, output: ctx.json ? JSON.stringify({ provider, backend: result.backend, ok: result.ok }) : humanLine };
 }
 
@@ -359,7 +364,7 @@ async function checkOllama(): Promise<DoctorCheck> {
 
 /** `agent doctor` (§4.10, §18.2): real, honest checks — never fabricated. No GPU/VRAM probing in this pass (tracked as a Phase 2 follow-up). */
 export async function cmdDoctor(ctx: CliContext): Promise<CommandResult> {
-  const creds = loadCredentials(ctx.env); // §5.1: OS keychain first, env vars as the fallback
+  const creds = loadCredentials(ctx.env, ctx.credentialFileStore); // §5.1: OS keychain, then the encrypted file store, then env vars
   const sandbox = detectSandboxBackend();
   const keychain = detectKeychainBackend(process.platform, ctx.env);
   const checks: DoctorCheck[] = [
