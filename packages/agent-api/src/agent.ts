@@ -37,7 +37,7 @@ import {
 } from "@clutchcode/runtime";
 
 import { loadConfig, isTrustedRepo, type AgentConfig } from "./config.js";
-import { loadCredentialsFromEnv, type Credentials } from "./credentials.js";
+import { loadCredentials, type Credentials } from "./credentials.js";
 import { buildProvider, type ProviderKind } from "./provider-factory.js";
 import { appendEvent, readEvents } from "./events.js";
 import { loadRunWorktree, saveRunWorktree } from "./worktree-store.js";
@@ -201,7 +201,7 @@ export class Agent {
     opts: { baseUrl?: string; modelsDir?: string; scope?: string }
   ): RunDeps {
     const config = loadConfig(this.repoPath);
-    const credentials = loadCredentialsFromEnv();
+    const credentials = loadCredentials(); // §5.1: OS keychain first, env vars as the fallback
 
     // §13.4 monorepos: "the agent's ... verification scope can be pinned to
     // a subdir (--scope path/); test selection uses the subdir's toolchain."

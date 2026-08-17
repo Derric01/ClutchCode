@@ -8,7 +8,7 @@ import {
   type CapabilityProfile
 } from "@clutchcode/capability";
 import { FakeProvider, textTurn, type Provider } from "@clutchcode/providers";
-import { loadCredentialsFromEnv } from "./credentials.js";
+import { loadCredentials } from "./credentials.js";
 import { buildProvider, type ProviderKind } from "./provider-factory.js";
 
 /**
@@ -53,7 +53,7 @@ function buildProbeProvider(opts: ProbeModelOptions): Provider {
       { id: "fake" }
     );
   }
-  const credentials = loadCredentialsFromEnv();
+  const credentials = loadCredentials(); // §5.1: OS keychain first, env vars as the fallback
   return buildProvider({ kind: opts.providerKind, baseUrl: opts.baseUrl, credentials });
 }
 

@@ -1,7 +1,8 @@
 import fs from "node:fs";
+import { Readable } from "node:stream";
 import { execFileSync } from "node:child_process";
-import { markTrusted } from "@clutchcode/agent-api";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { detectKeychainBackend, markTrusted } from "@clutchcode/agent-api";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   cmdApprove,
   cmdCheckpoints,
@@ -13,6 +14,8 @@ import {
   cmdModelsProbe,
   cmdPr,
   cmdProviders,
+  cmdProvidersSetKey,
+  cmdProvidersUnsetKey,
   cmdReject,
   cmdResume,
   cmdRollback,
@@ -21,7 +24,16 @@ import {
   cmdTrust
 } from "./commands.js";
 import { EXIT, exitCodeForRunStatus } from "./exit-codes.js";
-import { addBareOrigin, makeSampleRepo, makeTempDir, sseChunk, startScriptedServer, type ScriptedServer } from "./test-helpers.js";
+import {
+  addBareOrigin,
+  makeSampleRepo,
+  makeTempDir,
+  sseChunk,
+  startScriptedServer,
+  startThrowawaySecretService,
+  type ScriptedServer,
+  type ThrowawaySecretService
+} from "./test-helpers.js";
 
 describe("CLI commands (pure functions, no process spawning)", () => {
   let repoPath: string;
@@ -118,6 +130,74 @@ describe("CLI commands (pure functions, no process spawning)", () => {
     const parsed = JSON.parse(result.output) as { checks: Array<{ name: string; ok: boolean }> };
     const node = parsed.checks.find((c) => c.name === "node");
     expect(node?.ok).toBe(true);
+  });
+
+  it("doctor reports the OS keychain backend (§5.1) — secret-tool is installed in this dev container", async () => {
+    const result = await cmdDoctor({ repoPath, json: true });
+    const parsed = JSON.parse(result.output) as { checks: Array<{ name: string; ok: boolean; detail: string }> };
+    const keychain = parsed.checks.find((c) => c.name.startsWith("OS keychain"));
+    expect(keychain?.ok).toBe(true);
+    expect(keychain?.detail).toMatch(/^secret-service/);
+  });
+});
+
+describe("providers set-key/unset-key (§5.1 tier 1) — real Secret Service, not mocked", () => {
+  const hasSecretTool = detectKeychainBackend("linux").backend === "secret-service";
+  const maybeIt = hasSecretTool ? it : it.skip;
+
+  let repoPath: string;
+  let service: ThrowawaySecretService;
+
+  beforeAll(() => {
+    if (hasSecretTool) service = startThrowawaySecretService();
+  });
+
+  afterAll(() => {
+    service?.close();
+  });
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+  });
+
+  maybeIt("set-key stores a key read from stdin (never an argument), and providers then reports it present", async () => {
+    const stdin = Readable.from(["sk-ant-cli-integration-test"]);
+    const setResult = await cmdProvidersSetKey({ repoPath, env: service.env, json: true }, "anthropic", stdin);
+    expect(setResult.exitCode).toBe(EXIT.SUCCESS);
+    expect(JSON.parse(setResult.output)).toEqual({ provider: "anthropic", backend: "secret-service", ok: true });
+
+    const providers = await cmdProviders({ repoPath, env: service.env, json: true });
+    const parsed = JSON.parse(providers.output) as { detected: Array<{ kind: string; credentialPresent: boolean }> };
+    expect(parsed.detected.find((d) => d.kind === "anthropic")?.credentialPresent).toBe(true);
+    // The key value itself must never appear in providers' output — only presence.
+    expect(providers.output).not.toContain("sk-ant-cli-integration-test");
+  });
+
+  maybeIt("unset-key removes a previously stored key", async () => {
+    await cmdProvidersSetKey({ repoPath, env: service.env }, "openai-compatible", Readable.from(["sk-openai-to-be-removed"]));
+    const unsetResult = await cmdProvidersUnsetKey({ repoPath, env: service.env, json: true }, "openai-compatible");
+    expect(unsetResult.exitCode).toBe(EXIT.SUCCESS);
+    expect(JSON.parse(unsetResult.output)).toEqual({ provider: "openai-compatible", backend: "secret-service", ok: true });
+
+    const providers = await cmdProviders({ repoPath, env: service.env, json: true });
+    const parsed = JSON.parse(providers.output) as { detected: Array<{ kind: string; credentialPresent: boolean }> };
+    expect(parsed.detected.find((d) => d.kind === "openai-compatible")?.credentialPresent).toBe(false);
+  });
+
+  it("set-key rejects an unknown provider name without touching stdin", async () => {
+    const result = await cmdProvidersSetKey({ repoPath }, "not-a-real-provider", Readable.from([]));
+    expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect(result.output).toContain("unknown provider");
+  });
+
+  it("set-key rejects empty stdin instead of silently storing a blank key", async () => {
+    const result = await cmdProvidersSetKey({ repoPath, env: service?.env }, "anthropic", Readable.from(["   \n"]));
+    expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect(result.output).toContain("no key provided on stdin");
   });
 });
 

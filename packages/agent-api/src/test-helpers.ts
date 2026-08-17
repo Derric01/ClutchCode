@@ -96,3 +96,68 @@ export function addBareOrigin(repoPath: string): string {
   git(repoPath, ["remote", "add", "origin", bareDir]);
   return bareDir;
 }
+
+export interface ThrowawaySecretService {
+  /** Pass this as the `env` argument to any keychain-linux.ts function to reach the throwaway service. */
+  env: NodeJS.ProcessEnv;
+  close: () => void;
+}
+
+/**
+ * Spins up a real, throwaway freedesktop Secret Service — a fresh D-Bus
+ * session bus + `gnome-keyring-daemon`, rooted at a fresh temp `$HOME` —
+ * for tests that need `secret-tool` to have a real backend to talk to
+ * (the standard headless-testing trick for libsecret). Shared by
+ * `keychain-linux.test.ts` and `credentials.test.ts` so the same
+ * setup/teardown recipe isn't duplicated. Caller must check
+ * `detectSecretToolOnPath()` first and skip if it's false; this function
+ * assumes `secret-tool`/`dbus-daemon`/`gnome-keyring-daemon` are present.
+ */
+export function startThrowawaySecretService(): ThrowawaySecretService {
+  const homeDir = makeTempDir("clutchcode-keychain-test-");
+  fs.mkdirSync(path.join(homeDir, ".cache"), { recursive: true });
+  fs.mkdirSync(path.join(homeDir, ".local", "share", "keyrings"), { recursive: true });
+  const controlDir = path.join(homeDir, ".cache", "kr");
+  fs.mkdirSync(controlDir, { recursive: true, mode: 0o700 });
+
+  const dbusOut = execFileSync("dbus-daemon", ["--session", "--fork", "--print-address=1", "--print-pid=1"], { encoding: "utf8" });
+  const [address, pidLine] = dbusOut.trim().split("\n");
+  const dbusPid = Number(pidLine);
+
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: homeDir, DBUS_SESSION_BUS_ADDRESS: address };
+
+  const krOut = execFileSync("gnome-keyring-daemon", ["--unlock", "--components=secrets", `--control-directory=${controlDir}`], {
+    input: "\n",
+    encoding: "utf8",
+    env
+  });
+  const match = krOut.match(/GNOME_KEYRING_CONTROL=(\S+)/);
+  if (match) env.GNOME_KEYRING_CONTROL = match[1];
+
+  // `--` stops pgrep's own option parsing so the `--control-directory=...`
+  // pattern isn't mistaken for a pgrep flag.
+  const keyringPid = execFileSync("pgrep", ["-f", "--", `control-directory=${controlDir}`], { encoding: "utf8" })
+    .trim()
+    .split("\n")
+    .map(Number)
+    .find((n) => Number.isFinite(n));
+
+  return {
+    env,
+    close: () => {
+      if (keyringPid) {
+        try {
+          process.kill(keyringPid);
+        } catch {
+          /* already gone */
+        }
+      }
+      try {
+        process.kill(dbusPid);
+      } catch {
+        /* already gone */
+      }
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  };
+}

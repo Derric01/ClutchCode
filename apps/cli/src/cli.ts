@@ -12,6 +12,8 @@ import {
   cmdModelsProbe,
   cmdPr,
   cmdProviders,
+  cmdProvidersSetKey,
+  cmdProvidersUnsetKey,
   cmdReject,
   cmdResume,
   cmdRollback,
@@ -199,7 +201,18 @@ baseOptions(program.command("pr"))
 
 baseOptions(program.command("trust")).action(async (opts: GlobalOpts) => emit(await cmdTrust(ctx(opts)), opts.json));
 
-baseOptions(program.command("providers")).action(async (opts: GlobalOpts) => emit(await cmdProviders(ctx(opts)), opts.json));
+const providers = baseOptions(program.command("providers"));
+providers.action(async (opts: GlobalOpts) => emit(await cmdProviders(ctx(opts)), opts.json));
+
+baseOptions(providers.command("set-key"))
+  .description("store an API key in the OS keychain (§5.1) — reads the value from stdin, never argv/history")
+  .argument("<provider>", "anthropic | openai-compatible")
+  .action(async (provider: string, opts: GlobalOpts) => emit(await cmdProvidersSetKey(ctx(opts), provider, process.stdin), opts.json));
+
+baseOptions(providers.command("unset-key"))
+  .description("remove an API key from the OS keychain (§5.1)")
+  .argument("<provider>", "anthropic | openai-compatible")
+  .action(async (provider: string, opts: GlobalOpts) => emit(await cmdProvidersUnsetKey(ctx(opts), provider), opts.json));
 
 baseOptions(program.command("doctor")).action(async (opts: GlobalOpts) => emit(await cmdDoctor(ctx(opts)), opts.json));
 

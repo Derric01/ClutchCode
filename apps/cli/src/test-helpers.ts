@@ -68,3 +68,58 @@ export function addBareOrigin(repoPath: string): string {
   git(repoPath, ["remote", "add", "origin", bareDir]);
   return bareDir;
 }
+
+export interface ThrowawaySecretService {
+  env: NodeJS.ProcessEnv;
+  close: () => void;
+}
+
+/** A real, throwaway freedesktop Secret Service for `providers set-key`/`unset-key` tests (mirrors `@clutchcode/agent-api`'s test helper of the same name — see its doc comment for the mechanism). */
+export function startThrowawaySecretService(): ThrowawaySecretService {
+  const homeDir = makeTempDir("clutchcode-cli-keychain-test-");
+  fs.mkdirSync(path.join(homeDir, ".cache"), { recursive: true });
+  fs.mkdirSync(path.join(homeDir, ".local", "share", "keyrings"), { recursive: true });
+  const controlDir = path.join(homeDir, ".cache", "kr");
+  fs.mkdirSync(controlDir, { recursive: true, mode: 0o700 });
+
+  const dbusOut = execFileSync("dbus-daemon", ["--session", "--fork", "--print-address=1", "--print-pid=1"], { encoding: "utf8" });
+  const [address, pidLine] = dbusOut.trim().split("\n");
+  const dbusPid = Number(pidLine);
+
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: homeDir, DBUS_SESSION_BUS_ADDRESS: address };
+
+  const krOut = execFileSync("gnome-keyring-daemon", ["--unlock", "--components=secrets", `--control-directory=${controlDir}`], {
+    input: "\n",
+    encoding: "utf8",
+    env
+  });
+  const match = krOut.match(/GNOME_KEYRING_CONTROL=(\S+)/);
+  if (match) env.GNOME_KEYRING_CONTROL = match[1];
+
+  // `--` stops pgrep's own option parsing so the `--control-directory=...`
+  // pattern isn't mistaken for a pgrep flag.
+  const keyringPid = execFileSync("pgrep", ["-f", "--", `control-directory=${controlDir}`], { encoding: "utf8" })
+    .trim()
+    .split("\n")
+    .map(Number)
+    .find((n) => Number.isFinite(n));
+
+  return {
+    env,
+    close: () => {
+      if (keyringPid) {
+        try {
+          process.kill(keyringPid);
+        } catch {
+          /* already gone */
+        }
+      }
+      try {
+        process.kill(dbusPid);
+      } catch {
+        /* already gone */
+      }
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  };
+}

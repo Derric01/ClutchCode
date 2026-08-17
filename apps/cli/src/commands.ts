@@ -2,15 +2,19 @@ import type { Readable, Writable } from "node:stream";
 import { execFileSync } from "node:child_process";
 import {
   Agent,
+  clearCredential,
+  detectKeychainBackend,
   detectSandboxBackend,
   initRepo,
   listModelProfiles,
   loadConfig,
-  loadCredentialsFromEnv,
+  loadCredentials,
   markTrusted,
   probeModel,
+  saveCredential,
   type Budgets,
   type CapabilityProfile,
+  type CredentialKind,
   type ProviderKind,
   type RunState
 } from "@clutchcode/agent-api";
@@ -28,6 +32,8 @@ export interface CliContext {
   json?: boolean;
   /** Override for capability-profile storage (default: ~/.config/clutchcode/models); not repo-scoped. */
   modelsDir?: string;
+  /** Override for `process.env` — real CLI usage never sets this; tests use it to point credential commands at a throwaway OS keychain instead of the real one. */
+  env?: NodeJS.ProcessEnv;
 }
 
 function summarizeRunState(state: RunState): Record<string, unknown> {
@@ -258,19 +264,70 @@ export async function cmdTrust(ctx: CliContext): Promise<CommandResult> {
   return { exitCode: EXIT.SUCCESS, output: ctx.json ? JSON.stringify(config) : `trusted: ${ctx.repoPath}` };
 }
 
+/** Maps the CLI-facing provider name to the §5.1 keychain account it stores a key under. `ollama` has no key entry — it's a local server. */
+const CREDENTIAL_PROVIDERS: Record<string, CredentialKind> = { anthropic: "anthropicApiKey", "openai-compatible": "openaiApiKey" };
+
 export async function cmdProviders(ctx: CliContext): Promise<CommandResult> {
   const config = loadConfig(ctx.repoPath);
-  const creds = loadCredentialsFromEnv();
+  const creds = loadCredentials(ctx.env); // §5.1: OS keychain first, env vars as the fallback
+  const { backend, reason } = detectKeychainBackend(process.platform, ctx.env);
   const rows = [
     { kind: "anthropic", credentialPresent: Boolean(creds.anthropicApiKey) },
     { kind: "openai-compatible", credentialPresent: Boolean(creds.openaiApiKey) },
     { kind: "ollama", credentialPresent: true } // local server, no API key
   ];
-  if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify({ configured: config.providers, detected: rows }) };
+  if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify({ configured: config.providers, detected: rows, keychain: { backend, reason } }) };
   const lines = ["configured providers:", ...Object.entries(config.providers).map(([name, p]) => `  ${name}: ${p.kind}`)];
-  lines.push("credential presence (env vars, §5.1):");
+  lines.push(`credential presence (§5.1 — OS keychain [${backend}] first, env vars as the fallback):`);
   for (const r of rows) lines.push(`  ${r.kind}: ${r.credentialPresent ? "present" : "not set"}`);
+  lines.push(`OS keychain backend: ${backend} (${reason})`);
+  lines.push("set a key with `agent providers set-key <anthropic|openai-compatible>` (reads the value from stdin, never argv/history)");
   return { exitCode: EXIT.SUCCESS, output: lines.join("\n") };
+}
+
+function readAllStdin(stdin: Readable): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    stdin.setEncoding("utf8");
+    stdin.on("data", (chunk: string) => (data += chunk));
+    stdin.on("end", () => resolve(data));
+    stdin.on("error", reject);
+  });
+}
+
+/**
+ * `agent providers set-key <provider>` (§5.1 tier 1): stores an API key in
+ * the OS keychain. Reads the value from stdin rather than an argument or
+ * an interactive prompt — never lands in shell history or a process
+ * listing, and stays scriptable (`echo -n "$KEY" | agent providers set-key anthropic`).
+ */
+export async function cmdProvidersSetKey(ctx: CliContext, provider: string, stdin: Readable): Promise<CommandResult> {
+  const kind = CREDENTIAL_PROVIDERS[provider];
+  if (!kind) return { exitCode: EXIT.CONFIG_ERROR, output: `unknown provider "${provider}" — expected one of: ${Object.keys(CREDENTIAL_PROVIDERS).join(", ")}` };
+
+  const value = (await readAllStdin(stdin)).trim();
+  if (!value) return { exitCode: EXIT.CONFIG_ERROR, output: "no key provided on stdin — pipe the key in, e.g. `echo -n \"$KEY\" | agent providers set-key anthropic`" };
+
+  const result = saveCredential(kind, value, ctx.env);
+  if (!result.ok) {
+    return {
+      exitCode: EXIT.CONFIG_ERROR,
+      output: `could not store the key in the OS keychain (backend: ${result.backend}) — set the ${provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"} environment variable instead (§5.1 tier 3)`
+    };
+  }
+  return {
+    exitCode: EXIT.SUCCESS,
+    output: ctx.json ? JSON.stringify({ provider, backend: result.backend, ok: true }) : `${provider}: key stored in the OS keychain (${result.backend})`
+  };
+}
+
+export async function cmdProvidersUnsetKey(ctx: CliContext, provider: string): Promise<CommandResult> {
+  const kind = CREDENTIAL_PROVIDERS[provider];
+  if (!kind) return { exitCode: EXIT.CONFIG_ERROR, output: `unknown provider "${provider}" — expected one of: ${Object.keys(CREDENTIAL_PROVIDERS).join(", ")}` };
+
+  const result = clearCredential(kind, ctx.env);
+  const humanLine = result.ok ? `${provider}: key removed from the OS keychain (${result.backend})` : `${provider}: nothing to remove (backend: ${result.backend})`;
+  return { exitCode: EXIT.SUCCESS, output: ctx.json ? JSON.stringify({ provider, backend: result.backend, ok: result.ok }) : humanLine };
 }
 
 interface DoctorCheck {
@@ -302,14 +359,16 @@ async function checkOllama(): Promise<DoctorCheck> {
 
 /** `agent doctor` (§4.10, §18.2): real, honest checks — never fabricated. No GPU/VRAM probing in this pass (tracked as a Phase 2 follow-up). */
 export async function cmdDoctor(ctx: CliContext): Promise<CommandResult> {
-  const creds = loadCredentialsFromEnv();
+  const creds = loadCredentials(ctx.env); // §5.1: OS keychain first, env vars as the fallback
   const sandbox = detectSandboxBackend();
+  const keychain = detectKeychainBackend(process.platform, ctx.env);
   const checks: DoctorCheck[] = [
     { name: "node", ok: true, detail: process.version },
     checkBinary("git", ["--version"]),
     checkBinary("rg", ["--version"]),
-    { name: "ANTHROPIC_API_KEY", ok: Boolean(creds.anthropicApiKey), detail: creds.anthropicApiKey ? "set" : "not set" },
-    { name: "OPENAI_API_KEY", ok: Boolean(creds.openaiApiKey), detail: creds.openaiApiKey ? "set" : "not set" },
+    { name: "anthropic credential", ok: Boolean(creds.anthropicApiKey), detail: creds.anthropicApiKey ? "available (keychain or ANTHROPIC_API_KEY)" : "not set" },
+    { name: "openai-compatible credential", ok: Boolean(creds.openaiApiKey), detail: creds.openaiApiKey ? "available (keychain or OPENAI_API_KEY)" : "not set" },
+    { name: "OS keychain (§5.1)", ok: keychain.backend !== "none", detail: `${keychain.backend} — ${keychain.reason}` },
     { name: "sandbox (§12.5/§12.6)", ok: sandbox.backend !== "none", detail: `${sandbox.backend} — ${sandbox.reason}` },
     await checkOllama()
   ];
