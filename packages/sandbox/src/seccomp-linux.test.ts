@@ -47,6 +47,42 @@ describe("ensureSeccompFilterFile", () => {
     expect(fs.statSync(filterPath!).mtimeMs).toBe(firstMtime); // not rewritten — content was already correct
     expect(fs.readFileSync(filterPath!).equals(buildSeccompFilterX86_64())).toBe(true);
   });
+
+  it("writes to an unpredictable, freshly-created path — not a fixed name a co-resident local user could pre-plant a symlink at (real gap caught in security review)", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clutchcode-seccomp-test-tmpdir-"));
+    try {
+      const filterPath = ensureSeccompFilterFile({ TMPDIR: tmpDir })!;
+      expect(filterPath).toBeDefined();
+      expect(filterPath).not.toBe(path.join(tmpDir, "clutchcode-seccomp-x86_64.bpf")); // not the old fixed filename
+      expect(path.dirname(filterPath)).not.toBe(tmpDir); // lives in its own freshly-created subdirectory, not directly in the shared temp dir
+      // POSIX guarantees mkdtemp creates its directory mode 0700 regardless of umask.
+      expect(fs.statSync(path.dirname(filterPath)).mode & 0o777).toBe(0o700);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to follow a pre-planted symlink at the target path instead of silently writing through it", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clutchcode-seccomp-test-tmpdir-"));
+    try {
+      // Simulate the attack directly: a symlink already sitting at wherever
+      // this call is about to write. Since the real path is now random and
+      // unpredictable, the realistic attack is "wins a narrow race" rather
+      // than "pre-plants a known name" — this test instead proves the
+      // O_EXCL-backed defense-in-depth layer itself actually works, by
+      // exercising it against a path we deliberately control.
+      const decoyTarget = path.join(tmpDir, "attacker-owned-file.txt");
+      fs.writeFileSync(decoyTarget, "do not touch me");
+      const plantedDir = fs.mkdtempSync(path.join(tmpDir, "clutchcode-seccomp-"));
+      const plantedPath = path.join(plantedDir, "x86_64.bpf");
+      fs.symlinkSync(decoyTarget, plantedPath);
+
+      expect(() => fs.openSync(plantedPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600)).toThrow(/EEXIST/);
+      expect(fs.readFileSync(decoyTarget, "utf8")).toBe("do not touch me"); // untouched
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 /**

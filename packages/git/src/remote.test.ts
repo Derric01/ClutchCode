@@ -80,4 +80,13 @@ describe("remoteUrl + pushBranch (against a real local bare remote)", () => {
   it("createRunWorktree records the checked-out base branch", () => {
     expect(run.baseBranch).toBe("main");
   });
+
+  it("rejects a remote value shaped like a URL or a remote-helper spec instead of a plain configured name (real vulnerability caught in security review: an unvalidated remote could redirect a push off-host, or on some git configs run a local command via ext::)", () => {
+    expect(() => pushBranch(run, "ext::sh -c 'touch /tmp/should-not-run'")).toThrow(/invalid remote name/);
+    expect(() => pushBranch(run, "https://attacker.example/evil.git")).toThrow(/invalid remote name/);
+    expect(() => pushBranch(run, "git@attacker.example:evil/repo.git")).toThrow(/invalid remote name/);
+    expect(() => remoteUrl(repoPath, "ext::sh -c 'touch /tmp/should-not-run'")).toThrow(/invalid remote name/);
+    // A plain, legitimately-configured name is unaffected.
+    expect(() => remoteUrl(repoPath, "origin")).not.toThrow();
+  });
 });

@@ -51,6 +51,14 @@ describe("worktree isolation (§13.1)", () => {
     expect(fs.readFileSync(path.join(repoPath, "README.md"), "utf8")).toBe("hello\n");
   });
 
+  it("rejects a runId that would escape stateDir via path traversal (real vulnerability caught in security review — runId reaches here from untrusted JSON-RPC params with no prior validation)", () => {
+    expect(() => createRunWorktree({ repoPath, stateDir, runId: "../../../../../../tmp/pwned-worktree", slug: "task" })).toThrow(/invalid runId/);
+    expect(() => createRunWorktree({ repoPath, stateDir, runId: "../escape", slug: "task" })).toThrow(/invalid runId/);
+    expect(() => createRunWorktree({ repoPath, stateDir, runId: "with/slash", slug: "task" })).toThrow(/invalid runId/);
+    // A syntactically "safe" id (no literal ".." or "/") must still work normally.
+    expect(() => createRunWorktree({ repoPath, stateDir, runId: "run_ABC-123", slug: "task" })).not.toThrow();
+  });
+
   it("checkpoints and lists them in order, diffing worktree vs base", () => {
     fs.writeFileSync(path.join(run.worktreePath, "a.txt"), "first\n", "utf8");
     const c1 = checkpoint(run, "add a.txt");

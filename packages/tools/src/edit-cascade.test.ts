@@ -80,6 +80,25 @@ describe("applyEditBlock — strategy 4: explicit ... elision", () => {
       expect(result.content).toContain("return (a + b + c) * 2;");
     }
   });
+
+  it("matches a SEARCH block that starts with its own ellipsis line — a leading ellipsis (real bug caught in code review: this used to fail unconditionally)", () => {
+    const content = ["function big() {", "  const a = 1;", "  const b = 2;", "  const c = 3;", "  return a + b + c;", "}"].join(
+      "\n"
+    );
+    const search = ["...", "  return a + b + c;", "}"].join("\n");
+    const replace = ["...", "  return (a + b + c) * 2;", "}"].join("\n");
+
+    const result = applyEditBlock(content, { search, replace });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.strategy).toBe("ellipsis-elision");
+      // Everything before the first real anchor is preserved untouched.
+      expect(result.content).toContain("  const a = 1;");
+      expect(result.content).toContain("  const b = 2;");
+      expect(result.content).toContain("  const c = 3;");
+      expect(result.content).toContain("return (a + b + c) * 2;");
+    }
+  });
 });
 
 describe("applyEdits — sequential application", () => {

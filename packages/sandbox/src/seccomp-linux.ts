@@ -169,18 +169,55 @@ export function buildSeccompFilterX86_64(): Buffer {
 }
 
 /**
- * Writes the compiled filter to a stable path under the OS temp dir and
- * returns it, generating it once (content is fully deterministic, so a
- * byte-identical existing file is left alone rather than rewritten every
- * call). Returns `undefined` when `detectSeccompSupport()` says this
- * platform/arch isn't supported — callers should skip seccomp layering
- * entirely in that case, not fall back to a partial filter.
+ * Cache of a base-tmpdir → already-created filter path, so repeated calls
+ * within one process reuse the same file (content is fully deterministic —
+ * a byte-identical existing file is left alone rather than rewritten every
+ * call) without a *predictable* path being what makes that reuse possible.
+ * Real gap caught in security review: the previous implementation wrote to
+ * a fixed, predictable filename directly under the shared OS temp dir with
+ * `fs.writeFileSync`'s default flags (no `O_EXCL`) — on a host where
+ * another local principal can write to that same temp directory, they
+ * could pre-plant a symlink at that exact path and have it silently
+ * followed, either neutralizing the seccomp filter (pointing it at a
+ * trivial always-ALLOW program while callers believe hardening is active)
+ * or making this process's write corrupt an unrelated file the *victim*
+ * can write. A random, unpredictable directory this process creates fresh
+ * (`fs.mkdtempSync`, which POSIX guarantees mode 0700 regardless of
+ * umask) plus `O_EXCL` on the file itself (any existing path — symlink or
+ * not — is a hard failure, never followed) closes this for the common
+ * single-tenant-host deployment same as before, and narrows it
+ * substantially even on a shared multi-tenant host.
+ */
+const filterPathCache = new Map<string, string>();
+
+/**
+ * Writes the compiled filter to a securely-created path under the OS temp
+ * dir and returns it. Returns `undefined` when `detectSeccompSupport()`
+ * says this platform/arch isn't supported — callers should skip seccomp
+ * layering entirely in that case, not fall back to a partial filter.
  */
 export function ensureSeccompFilterFile(env: NodeJS.ProcessEnv = process.env): string | undefined {
   if (!detectSeccompSupport().supported) return undefined;
-  const filterPath = path.join(env.TMPDIR ?? os.tmpdir(), "clutchcode-seccomp-x86_64.bpf");
   const filter = buildSeccompFilterX86_64();
-  if (fs.existsSync(filterPath) && fs.readFileSync(filterPath).equals(filter)) return filterPath;
-  fs.writeFileSync(filterPath, filter);
+  const baseTmpDir = env.TMPDIR ?? os.tmpdir();
+
+  const cached = filterPathCache.get(baseTmpDir);
+  if (cached) {
+    try {
+      if (fs.readFileSync(cached).equals(filter)) return cached;
+    } catch {
+      // The cached file is gone (e.g. something cleaned the temp dir mid-run) — fall through and recreate below.
+    }
+  }
+
+  const dir = fs.mkdtempSync(path.join(baseTmpDir, "clutchcode-seccomp-"));
+  const filterPath = path.join(dir, "x86_64.bpf");
+  const fd = fs.openSync(filterPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+  try {
+    fs.writeSync(fd, filter);
+  } finally {
+    fs.closeSync(fd);
+  }
+  filterPathCache.set(baseTmpDir, filterPath);
   return filterPath;
 }

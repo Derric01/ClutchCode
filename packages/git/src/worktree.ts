@@ -46,7 +46,22 @@ function slugify(s: string): string {
   );
 }
 
+// A run id is only ever used as one path segment under `<stateDir>/wt/` —
+// never a directory separator, `..`, or anything else `path.join` would
+// normalize into escaping that prefix. Real vulnerability caught in
+// security review: `path.join(stateDir, "wt", runId)` happily collapses a
+// runId like `"../../../../tmp/pwned"` right out of the intended state
+// directory, and `runId` reaches here straight from JSON-RPC `run` params
+// with zero prior validation (`agent-methods.ts`'s `run` handler does
+// `p.runId ?? newRunId()` over a bare type assertion) — so an RPC caller
+// controlled where the "isolated" worktree actually landed on disk.
+const SAFE_RUN_ID_RE = /^[A-Za-z0-9_-]+$/;
+
 export function createRunWorktree(opts: CreateRunOptions): RunWorktree {
+  if (!SAFE_RUN_ID_RE.test(opts.runId)) {
+    throw new Error(`invalid runId "${opts.runId}" — must match ${SAFE_RUN_ID_RE} (no path separators or "..")`);
+  }
+
   const dirtyResult = handleDirtyTree(opts.repoPath, opts.dirtyTreeStrategy ?? "stash");
   const base =
     dirtyResult.strategyUsed === "temp-commit" && dirtyResult.tempCommitSha
@@ -55,7 +70,15 @@ export function createRunWorktree(opts: CreateRunOptions): RunWorktree {
 
   const shortId = opts.runId.slice(0, 8);
   const branch = `clutchcode/run-${shortId}-${slugify(opts.slug)}`;
-  const worktreePath = path.join(opts.stateDir, "wt", opts.runId);
+  const wtRoot = path.join(opts.stateDir, "wt");
+  const worktreePath = path.join(wtRoot, opts.runId);
+  // Defense in depth beyond the regex above, in case a future change to
+  // stateDir/runId handling (or a platform-specific path quirk) reopens a
+  // traversal some other way — this is the actual invariant that matters,
+  // checked directly rather than only inferred from input validation.
+  if (path.relative(wtRoot, worktreePath).startsWith("..")) {
+    throw new Error(`refusing to create a worktree outside ${wtRoot} (resolved to ${worktreePath})`);
+  }
   fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
 
   // Best-effort: empty (not thrown) on detached HEAD — a PR base is then left to the caller.

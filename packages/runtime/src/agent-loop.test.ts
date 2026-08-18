@@ -313,6 +313,33 @@ describe("AgentLoop resume + transcript redaction (§5.2/§6.2/§6.3)", () => {
     }
   }, 30_000);
 
+  it("redacts a secret in the model's own reply text before emitting the model.response event — not just state.messages (real bug caught in review: this event is a separately persisted artifact)", async () => {
+    const fx = setupAgentLoopFixture("run00000023");
+    try {
+      // The canary appears in the model's own free-text reply, not a tool-call
+      // argument — the existing redaction-canary coverage only injects it via
+      // tool args, which already went through a separate, correctly-scrubbed
+      // code path and would never have caught this gap.
+      const provider = new FakeProvider([textTurn(`I found the key: ${CANARY} while reading the file.`)]);
+      const state = createRunState({ runId: fx.run.runId, task: "investigate", workflowId: "review-only", provider: "fake", model: "fake" });
+
+      const events: RuntimeEvent[] = [];
+      const loop = new AgentLoop(
+        state,
+        { provider, tools: fx.tools, toolContext: fx.toolContext, run: fx.run, toolchainCommands: fx.toolchainCommands, evidenceDir: fx.evidenceDir },
+        { onEvent: (e) => events.push(e) }
+      );
+      await loop.run();
+
+      const responseEvents = events.filter((e): e is Extract<RuntimeEvent, { type: "model.response" }> => e.type === "model.response");
+      expect(responseEvents.length).toBeGreaterThan(0);
+      expect(JSON.stringify(responseEvents)).not.toContain(CANARY);
+      expect(JSON.stringify(responseEvents)).toContain("«REDACTED:");
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
   it("resume() continues a run reloaded from a JSON round-trip (simulating a real disk reload) and reaches DONE", async () => {
     const fx = setupAgentLoopFixture("run00000021");
     try {
