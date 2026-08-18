@@ -10,11 +10,10 @@ file is the time-stamped snapshot of where the project actually stands.
 **Latest commit:** `f3e14b8` — "feat: §8.1 user-declarative workflow layer — real JSON-Schema via ajv"
 **Test suite:** 588/588 passing, 69 test files, clean `tsc -b`, clean `eslint .`
 
-**PR:** open, not yet merged — check `git log`/GitHub for its number if
-this note is stale (created right after this snapshot). #7 merged
-cleanly; this branch was fast-forwarded to `main`'s merged tip before
-this session's §8.1 commit landed on it. Pattern
-established across #4/#5/#6/#7: one open PR per phase of work, never
+**PR:** [#8](https://github.com/Derric01/ClutchCode/pull/8) — open, not
+yet merged. #7 merged cleanly; this branch was fast-forwarded to `main`'s
+merged tip before this session's §8.1 commit landed on it. Pattern
+established across #4/#5/#6/#7/#8: one open PR per phase of work, never
 reused once merged, branch always restarted from `main`'s merged tip
 before new commits land on it.
 
