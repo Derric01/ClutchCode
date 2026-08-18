@@ -274,6 +274,45 @@ describe("diffFilesAgainstBase (§18.5 native two-sided diff view data layer)", 
     expect(files[0]!.after).toBe("hello\n");
   });
 
+  it("flags a renamed binary file as binary too — numstat combines the two paths into one string for a rename, which must not defeat the binary check", () => {
+    // The binary file must already be part of the *base* commit (not added
+    // mid-run) — diffFilesAgainstBase always diffs against run.baseCommit,
+    // so a file that never existed at base can only ever look "added",
+    // never "renamed", no matter what happens to it afterward.
+    const binRepoPath = makeTempRepo();
+    const binStateDir = makeTempDir("clutchcode-git-test-state-");
+    const original = Buffer.alloc(1000, 0);
+    original[0] = 0x00;
+    original[1] = 0xff;
+    fs.writeFileSync(path.join(binRepoPath, "logo.png"), original);
+    git(["add", "-A"], { cwd: binRepoPath });
+    git(["commit", "-q", "-m", "add binary"], { cwd: binRepoPath });
+
+    const binRun = createRunWorktree({ repoPath: binRepoPath, stateDir: binStateDir, runId: "run11111111", slug: "rename binary" });
+    try {
+      // A handful of changed bytes (not a full rewrite) keeps git's
+      // rename-similarity heuristic above its default threshold, so this
+      // is still detected as a rename — not an unrelated delete+add pair —
+      // while still having a real (binary) content diff to flag.
+      fs.renameSync(path.join(binRun.worktreePath, "logo.png"), path.join(binRun.worktreePath, "logo2.png"));
+      const changed = Buffer.from(original);
+      changed[500] = 0x42;
+      fs.writeFileSync(path.join(binRun.worktreePath, "logo2.png"), changed);
+
+      const files = diffFilesAgainstBase(binRun);
+      expect(files).toHaveLength(1);
+      expect(files[0]!.status).toBe("renamed");
+      expect(files[0]!.oldPath).toBe("logo.png");
+      expect(files[0]!.path).toBe("logo2.png");
+      expect(files[0]!.binary).toBe(true);
+      expect(files[0]!.before).toBeUndefined();
+      expect(files[0]!.after).toBeUndefined();
+    } finally {
+      fs.rmSync(binRepoPath, { recursive: true, force: true });
+      fs.rmSync(binStateDir, { recursive: true, force: true });
+    }
+  });
+
   it("flags a binary file and omits its before/after content instead of returning mojibake", () => {
     // A null byte is git's own signal for "treat as binary" — the same
     // thing that makes `git diff` print "Binary files differ" instead of a

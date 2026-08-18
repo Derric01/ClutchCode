@@ -256,6 +256,45 @@ scope: the dedicated `agent workflow` list/select/validate CLI command
 (§18.2 marks that command itself Phase 2) — selection is `--workflow
 <id>` or `--workflow-file <path>` and nothing more structured yet.
 
+**A code-review pass over this session's own work found and fixed three
+real bugs**, not stylistic nits — worth naming because the whole point of
+running one was to catch exactly this before it shipped silently:
+
+1. `diffFilesAgainstBase` (§18.5's native diff view) mis-detected a
+   *renamed* binary file as text: `git diff --numstat -M` combines a
+   rename's two paths into one string (`"old => new"`, or `"dir/{old =>
+   new}"` when they share a directory) instead of reporting them
+   separately, so matching that combined string against the individually-
+   parsed `path`/`oldPath` never worked — the binary flag silently stayed
+   `false` and real binary bytes would have been read as UTF-8 and shown
+   as mojibake in the VS Code diff view. Fixed by scoping the binary check
+   to one explicit pathspec per file (confirmed empirically: git only
+   combines rename paths when a diff spans more than the single path it's
+   asked about) instead of one bulk query across every changed file.
+2. `classifyFailure`'s `command-not-found` fallback pattern included a
+   bare `"no such file or directory"` — the exact phrase Node's own
+   generic `ENOENT` error uses for *any* missing file (a test fixture, a
+   generated asset), not just a missing shell command. A real, fixable
+   test failure would have been misclassified as "nothing a code edit can
+   fix, escalate" and would have marked a perfectly valid cached
+   toolchain command stale. Fixed by only trusting that phrase when the
+   surrounding output *isn't* Node's own `ENOENT`-labeled wording — a
+   shell's own exec-failure message for a genuinely missing command never
+   includes that label, only Node's generic file-not-found error does.
+3. `agent memory list/show/forget/correct` had no way to pass `--scope`
+   at all, but a scoped run (`agent run --scope path/`, §13.4) caches its
+   toolchain memory under `<repoPath>/<scope>`, not the bare repo path —
+   so a scoped run's memory was invisible to `agent memory list` and
+   `agent memory correct` silently wrote to the wrong cache entirely.
+   Fixed by threading `scope` through `@clutchcode/agent-api`'s four
+   memory functions and adding `--scope` to the CLI's `memory`
+   subcommands, sharing one `resolveMemoryCacheKeyPath` helper with
+   `Agent.run` itself so the two can never drift apart again.
+
+All three have tests that fail against the pre-fix code and pass after
+(verified by literally reverting the fix and re-running for the first
+one) — see `HANDOFF.md`'s "what's done" for the full breakdown.
+
 ## Repository layout
 
 ```

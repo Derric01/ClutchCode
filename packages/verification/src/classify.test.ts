@@ -68,6 +68,23 @@ describe("classifyFailure", () => {
     const result = stage({ stage: "test", exitCode: 127, stderr: "bash: cargo: command not found" });
     expect(classifyFailure(result)).toBe("command-not-found");
   });
+
+  it("a shell's own 'no such file or directory' exec-failure message still classifies as command-not-found", () => {
+    const result = stage({ stage: "test", exitCode: 1, stderr: "execvp: pytest: No such file or directory" });
+    expect(classifyFailure(result)).toBe("command-not-found");
+  });
+
+  it("does NOT misclassify a Node ENOENT for an ordinary missing file (a fixture, not a missing binary) as command-not-found", () => {
+    // A real, fixable bug — the test itself references a fixture at the wrong path —
+    // must NOT get the "stop calling tools, this can't be fixed by editing code" repair
+    // message, and must NOT mark a perfectly good cached toolchain command stale.
+    const result = stage({
+      stage: "test",
+      exitCode: 1,
+      stderr: "Error: ENOENT: no such file or directory, open '/repo/fixtures/data.json'\n    at Object.readFileSync"
+    });
+    expect(classifyFailure(result)).not.toBe("command-not-found");
+  });
 });
 
 describe("isFlaky", () => {

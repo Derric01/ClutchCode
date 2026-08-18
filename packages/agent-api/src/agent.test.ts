@@ -450,6 +450,45 @@ describe("Agent.run scope (§13.4 monorepos)", () => {
     const agent = new Agent(repoPath, stateDir);
     await expect(agent.run({ task: "investigate", providerKind: "fake", model: "n/a", scope: "packages/nope" })).rejects.toThrow(/does not exist/);
   }, 30_000);
+
+  it("a scoped run's toolchain memory is visible via listMemory/showMemoryFact only when given the same scope — not the bare repo path (real bug caught in review)", async () => {
+    const memoryDir = makeTempDir("clutchcode-agentapi-memory-");
+    try {
+      const agent = new Agent(repoPath, stateDir);
+      await agent.run({ task: "investigate", providerKind: "fake", model: "n/a", yesMode: true, scope: "packages/foo", memoryDir });
+
+      // The scoped cache genuinely has the fact...
+      const scoped = listMemory(repoPath, { configDir: memoryDir }, "packages/foo");
+      expect(scoped).toBeDefined();
+      expect(scoped!.facts.test?.value).toBeTruthy();
+      expect(showMemoryFact(repoPath, "test", { configDir: memoryDir }, "packages/foo")?.value).toBeTruthy();
+
+      // ...but is a genuinely different cache file than the unscoped lookup —
+      // this is the bug: before the fix, there was no way to pass a scope at
+      // all, so this call was the *only* one available and always came back
+      // empty for a scoped run.
+      expect(listMemory(repoPath, { configDir: memoryDir })).toBeUndefined();
+    } finally {
+      fs.rmSync(memoryDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("correctMemoryFact with a scope writes to the scoped cache a scoped run actually reads — not the unscoped one", async () => {
+    const memoryDir = makeTempDir("clutchcode-agentapi-memory-");
+    try {
+      correctMemoryFact(repoPath, "test", "echo scoped-correction-ran", { configDir: memoryDir }, "packages/foo");
+
+      const agent = new Agent(repoPath, stateDir);
+      const state = await agent.run({ task: "investigate", providerKind: "fake", model: "n/a", yesMode: true, scope: "packages/foo", memoryDir });
+
+      expect(state.status).toBe("DONE");
+      expect(state.verificationResults.at(-1)?.allGreen).toBe(true);
+      // Correcting without a scope must NOT have affected the scoped run at all.
+      expect(showMemoryFact(repoPath, "test", { configDir: memoryDir })).toBeUndefined();
+    } finally {
+      fs.rmSync(memoryDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
 
 describe("Agent.run workflow selection (§8.2)", () => {

@@ -44,6 +44,8 @@ export interface CliContext {
   credentialFileStore?: FileStoreOptions;
   /** Override for the §10.3 project-memory store's location (default: ~/.config/clutchcode/memory); tests point it at a temp dir. */
   memoryDir?: string;
+  /** §13.4 monorepos: the `agent memory` commands' own `--scope` — must match the subdir a scoped run used, or its cached facts are invisible/uncorrectable here (memory is cached per-scope, not just per-repo). */
+  scope?: string;
 }
 
 function summarizeRunState(state: RunState): Record<string, unknown> {
@@ -414,7 +416,7 @@ function parseMemoryFactKey(key: string): ToolchainFactKey | undefined {
 
 /** `agent memory list` (§10.3, §18.2): every remembered toolchain fact, with provenance and staleness. */
 export async function cmdMemoryList(ctx: CliContext): Promise<CommandResult> {
-  const memory = listMemory(ctx.repoPath, memoryOpts(ctx));
+  const memory = listMemory(ctx.repoPath, memoryOpts(ctx), ctx.scope);
   if (!memory) {
     return { exitCode: EXIT.SUCCESS, output: ctx.json ? "null" : "nothing remembered yet for this repo — run `agent run` once, or `agent memory correct <key> <value>` to seed a fact" };
   }
@@ -436,7 +438,7 @@ export async function cmdMemoryShow(ctx: CliContext, key: string): Promise<Comma
   const factKey = parseMemoryFactKey(key);
   if (!factKey) return { exitCode: EXIT.CONFIG_ERROR, output: `unknown fact "${key}" — expected one of: ${MEMORY_FACT_KEYS.join(", ")}` };
 
-  const fact = showMemoryFact(ctx.repoPath, factKey, memoryOpts(ctx));
+  const fact = showMemoryFact(ctx.repoPath, factKey, memoryOpts(ctx), ctx.scope);
   if (!fact) return { exitCode: EXIT.SUCCESS, output: ctx.json ? "null" : `${key}: nothing remembered yet` };
   if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify(fact) };
   const lines = [`${key}: ${fact.value}${fact.stale ? " [STALE]" : ""}`, `source: ${fact.source}`, `derived: ${fact.derivedAt}`];
@@ -449,7 +451,7 @@ export async function cmdMemoryForget(ctx: CliContext, key: string): Promise<Com
   const factKey = parseMemoryFactKey(key);
   if (!factKey) return { exitCode: EXIT.CONFIG_ERROR, output: `unknown fact "${key}" — expected one of: ${MEMORY_FACT_KEYS.join(", ")}` };
 
-  const removed = forgetMemoryFact(ctx.repoPath, factKey, memoryOpts(ctx));
+  const removed = forgetMemoryFact(ctx.repoPath, factKey, memoryOpts(ctx), ctx.scope);
   const humanLine = removed ? `${key}: forgotten — the next run will re-derive it` : `${key}: nothing to forget`;
   return { exitCode: EXIT.SUCCESS, output: ctx.json ? JSON.stringify({ key, removed }) : humanLine };
 }
@@ -460,7 +462,7 @@ export async function cmdMemoryCorrect(ctx: CliContext, key: string, value: stri
   if (!factKey) return { exitCode: EXIT.CONFIG_ERROR, output: `unknown fact "${key}" — expected one of: ${MEMORY_FACT_KEYS.join(", ")}` };
   if (!value.trim()) return { exitCode: EXIT.CONFIG_ERROR, output: "no value provided — usage: agent memory correct <key> <value>" };
 
-  correctMemoryFact(ctx.repoPath, factKey, value, memoryOpts(ctx));
+  correctMemoryFact(ctx.repoPath, factKey, value, memoryOpts(ctx), ctx.scope);
   return { exitCode: EXIT.SUCCESS, output: ctx.json ? JSON.stringify({ key, value }) : `${key}: corrected to "${value}"` };
 }
 
