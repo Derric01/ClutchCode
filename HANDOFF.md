@@ -5,10 +5,10 @@ session; update it before you stop. See `CLAUDE.md` for timeless working
 conventions (build/test/lint, testing philosophy, quality bar) — this
 file is the time-stamped snapshot of where the project actually stands.
 
-**Snapshot as of:** 2026-08-17
+**Snapshot as of:** 2026-08-18
 **Branch:** `claude/handoff-prompt-continuation-c2cxh9`
-**Latest commit:** `28536a3` — "feat: encrypted credential file store — §5.1 tier 2 (all three tiers now done)"
-**Test suite:** 467/467 passing, 65 test files, clean `tsc -b`, clean `eslint .`
+**Latest commit:** `333c889` — "feat: seccomp-bpf hardening layered under Linux bwrap (§12.6)"
+**Test suite:** 487/487 passing, 66 test files, clean `tsc -b`, clean `eslint .`
 
 No PR has been opened for this branch's work yet — none was requested.
 
@@ -70,8 +70,21 @@ documented SBPL grammar, structurally tested (balanced parens, expected
 clauses), but has never run against a real `sandbox-exec` — no macOS host
 exists in this environment. `agent.toml`'s `policy.sandboxTier = "tier0"`
 is the documented escape hatch; `agent doctor` reports the active backend.
-**Not yet layered in:** Landlock/seccomp on top of bwrap, a Windows Tier 1
-backend (WSL2 is the spec's own recommended path there).
+**Seccomp hardening (§12.6) is now layered under bwrap on x86_64 Linux:**
+a classic-BPF filter, hand-assembled in TypeScript (zero new runtime
+dependency), denies ~22 syscalls a dev workflow never needs but that are
+sandbox-escape/privilege-escalation primitives (`ptrace`, `mount`, `bpf`,
+`unshare`, `kexec_load`, kernel module load/unload, etc.) — proven
+end-to-end against the real kernel: a real bwrap-sandboxed process
+invokes each by number and gets EPERM, a control run without the filter
+proves the same syscall succeeds unfiltered. **Landlock is explicitly
+not attempted** — a wrong Landlock rule fails by silently granting *more*
+access, a worse mistake category than seccomp's fail-loud one, with no
+vetted library and no safe way to verify a hand-rolled one here.
+**arm64 seccomp isn't supported either** — different syscall numbers, no
+arm64 host to verify them against, reported honestly rather than guessed.
+**Not yet layered in:** Landlock itself, a Windows Tier 1 backend (WSL2
+is the spec's own recommended path there).
 
 ### Phase 4 — VS Code extension (§18.1/§18.5)
 New `@clutchcode/agent-rpc` package: the Agent API's second binding
@@ -140,7 +153,8 @@ loose "MVP" estimate.
 | Item | Spec ref | Rough effort | Notes |
 |---|---|---|---|
 | Windows sandbox Tier 1 | §12.5/§12.6, A11 | medium | WSL2-recommended is the spec's own documented fallback; a native restricted-token/AppContainer path is explicitly `[C:Low]` in the spec — confirm whether it's worth building vs. staying doc-only. |
-| Landlock/seccomp layered on bwrap | §12.6 | small–medium | Additive hardening on top of the already-verified Linux Tier 1; same real-verification bar applies (a Landlock-capable kernel is needed to prove it, not just write it). |
+| Landlock | §12.6 | medium–large, needs a plan first | Seccomp is done (see "what's done"); Landlock specifically needs either a native helper binary or a vetted raw-syscall binding — neither exists yet, and a hand-rolled one carries a worse failure mode (silently over-permissive, not fail-loud) than seccomp did. Don't attempt without a clear verification story first. |
+| arm64 seccomp | §12.6 | small, needs an arm64 host | The x86_64 filter is done and verified; arm64 has a different syscall number table with no way to verify it in this (x86_64) environment — needs either an arm64 host/CI runner or a very high-confidence authoritative source cross-checked the same way libseccomp's resolver was used for x86_64. |
 | VS Code extension polish | §18.5 | medium | Native two-sided diff view (needs per-file before/after content, not just the unified diff text `agent diff` returns), a run-picker, resume/rollback/pr commands in the UI. |
 | Full non-git `AgentLoop` execution path | — | large, separate project | Snapshot-backed (not worktree-backed) execution for non-git directories. `Agent.run` currently refuses cleanly with a "run git init" error instead of attempting this. |
 | Workflow engine — user-declarative workflows | §8, Phase 6 | medium | Built-in workflows (default/quickfix/review-only) already exist as typed TS; the JSON-Schema-validated user-declarative layer on top does not. |
@@ -187,6 +201,26 @@ loose "MVP" estimate.
   by passing an `env` with a `PATH` that genuinely has no `secret-tool` on
   it — removing `DBUS_SESSION_BUS_ADDRESS` alone isn't enough, it only
   gets you "keychain present but unreachable," a different code path.
+- **A raw child-process fd (`bwrap --seccomp FD`) is wired via Node's
+  `spawn(..., { stdio: [...] })` array, not any special child_process
+  API.** `fs.openSync()` the file, put the resulting fd number at the
+  array index matching the fd number you want in the child (index 3 →
+  fd 3), and reference that same number in argv (`--seccomp 3`). The
+  parent's copy of the fd can be closed immediately after `spawn()`
+  returns — the fork+exec already happened synchronously by then, so the
+  child has its own independent copy; no need to keep it open for the
+  child's whole lifetime.
+- **When recalling syscall numbers or any other kernel ABI constant for a
+  security-critical filter, don't rely on memory alone if a real
+  authoritative source is available.** `libseccomp`'s own resolver
+  (`python3 -c "import seccomp; print(seccomp.resolve_syscall(seccomp.Arch(), name))"`,
+  needs `apt-get install python3-seccomp` — note it installs against a
+  *specific* Python minor version, check `dpkg -L python3-seccomp` if
+  `import seccomp` fails on whichever `python3` is first on PATH) settled
+  every number in `seccomp-linux.ts` before it got hardcoded, rather than
+  trusting recall. Where no authoritative local source exists (arm64,
+  here), the honest move is to say so and not implement that path at all
+  — see the arm64-seccomp row in "what's left."
 
 ## How to resume
 
