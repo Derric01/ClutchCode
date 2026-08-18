@@ -225,12 +225,36 @@ then finishes by capturing the model's final reply into
 `ACTING → DONE` state-machine edge exists solely for this). An unknown
 `--workflow` value is rejected at the `Agent.run` boundary with a clear
 error naming the three valid ids, the same "fail loud, three calls up"
-style already used for "not a git repo." Deliberately out of scope, per
-§8.1/§18.2: the JSON-Schema-validated user-declarative layer for
-*customizing* the linear pipeline (built-ins today are fixed TS code
-paths, not data), and the dedicated `agent workflow` list/select/validate
-CLI command (§18.2 marks it Phase 2) — selection today is the `--workflow`
-flag and nothing more.
+style already used for "not a git repo."
+
+**§8.1's user-declarative layer is now built too** — `agent run
+--workflow-file <path.json>` runs a real, JSON-Schema-validated custom
+workflow (via `ajv`), not just the three built-in ids. The schema mirrors
+§8.2's own vocabulary: `{apiVersion: "clutchcode/v1", id, name, stages:
+[{id, uses: "plan"|"implement"|"verify"|"approve"|"commit", when?,
+params?}]}`. Deliberately *not* a general stage-pipeline interpreter (the
+spec's own "no arbitrary control flow" line, honored literally): a
+declaration only resolves to a `WorkflowPlan` if it matches one of the two
+shapes `AgentLoop` can actually execute — a "full" pipeline (`implement` +
+`verify`, `plan` optional with `params.mode: "auto"|"always"`) or a
+"readonly" one (`implement` alone with `params.readonly: true`, mirroring
+`review-only`) — anything else is rejected with a specific error rather
+than silently misinterpreted. This is genuinely more expressive than the
+three built-ins, not just a re-skin: `planMode: "always"` (force planning
+unconditionally) is only reachable through a custom declaration today —
+none of `default`/`quickfix`/`review-only` behave that way. `AgentLoop`
+itself was refactored to consume a resolved `WorkflowPlan`
+(`{planMode, readonly}`) instead of comparing `state.workflowId` against
+hardcoded strings, so it never needs to know whether a run is on a
+built-in or a custom workflow — proven by a test that hands `AgentLoop` a
+`workflowPlan` directly with no id it recognizes at all. The resolved plan
+is persisted on `RunState` itself (`state.workflowPlan`), not re-derived
+from the source file on every load — proven by a test that deletes the
+declaration file between pausing and resuming a run and shows `resume()`
+still honors the original plan correctly. Still deliberately out of
+scope: the dedicated `agent workflow` list/select/validate CLI command
+(§18.2 marks that command itself Phase 2) — selection is `--workflow
+<id>` or `--workflow-file <path>` and nothing more structured yet.
 
 ## Repository layout
 

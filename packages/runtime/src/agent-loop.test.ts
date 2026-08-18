@@ -492,3 +492,71 @@ describe("Workflow engine (§8.2: default / quickfix / review-only)", () => {
     }
   }, 30_000);
 });
+
+describe("Custom declarative workflows (§8.1) — AgentLoop driven by deps.workflowPlan, not a built-in id", () => {
+  // Deliberately unambiguous/short — the §6.7 heuristic would say "no plan needed."
+  // None of the three built-ins can force planning on regardless of the heuristic:
+  // default defers to it, quickfix/review-only always skip it. planMode: "always"
+  // (only reachable via a custom declarative workflow) is a genuinely new capability.
+  const SIMPLE_TASK = "fix add()";
+
+  it("planMode: 'always' forces PLANNING even for a task the heuristic would call simple", async () => {
+    const fx = setupAgentLoopFixture("run00000050");
+    try {
+      const provider = new FakeProvider([toolCallTurn("c1", "edit_file", FIX_EDIT), textTurn("Fixed.")]);
+      const state = createRunState({ runId: fx.run.runId, task: SIMPLE_TASK, workflowId: "always-plan-custom", provider: "fake", model: "fake" });
+
+      const events: RuntimeEvent[] = [];
+      const loop = new AgentLoop(
+        state,
+        {
+          provider,
+          tools: fx.tools,
+          toolContext: fx.toolContext,
+          run: fx.run,
+          toolchainCommands: fx.toolchainCommands,
+          evidenceDir: fx.evidenceDir,
+          workflowPlan: { planMode: "always", readonly: false }
+        },
+        { yesMode: true, onEvent: (e) => events.push(e) }
+      );
+      const finalState = await loop.run();
+
+      expect(finalState.plan).toHaveLength(1);
+      expect(events.some((e) => e.type === "state.transition" && e.to === "PLANNING")).toBe(true);
+      expect(finalState.status).toBe("DONE"); // still a real, complete run — forcing planning doesn't skip anything else
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("an unrecognized workflowId with no explicit workflowPlan falls back to the 'default' plan, defensively", async () => {
+    const fx = setupAgentLoopFixture("run00000051");
+    try {
+      // Same ambiguous task as the built-in workflow tests above — proves the fallback
+      // really is "default"'s heuristic-gated behavior, not "never" or "always".
+      const provider = new FakeProvider([toolCallTurn("c1", "edit_file", FIX_EDIT), textTurn("Fixed.")]);
+      const state = createRunState({
+        runId: fx.run.runId,
+        task: "refactor the math module across multiple files",
+        workflowId: "some-unrecognized-id",
+        provider: "fake",
+        model: "fake"
+      });
+
+      const loop = new AgentLoop(state, {
+        provider,
+        tools: fx.tools,
+        toolContext: fx.toolContext,
+        run: fx.run,
+        toolchainCommands: fx.toolchainCommands,
+        evidenceDir: fx.evidenceDir
+      });
+      await loop.run();
+
+      expect(state.plan).toHaveLength(1); // the heuristic still ran and triggered, exactly like "default" would
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+});

@@ -492,6 +492,88 @@ describe("Agent.run workflow selection (§8.2)", () => {
   }, 30_000);
 });
 
+describe("Agent.run workflowFile (§8.1 user-declarative workflows)", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let workflowFile: string;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+    workflowFile = path.join(stateDir, "always-plan.json");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  function writeReadonlyWorkflow(): void {
+    fs.writeFileSync(
+      workflowFile,
+      JSON.stringify({
+        apiVersion: "clutchcode/v1",
+        id: "custom-readonly",
+        name: "Custom Readonly",
+        stages: [{ id: "implement", uses: "implement", params: { readonly: true } }]
+      }),
+      "utf8"
+    );
+  }
+
+  it("runs a real custom workflow end to end: the declaration's own id becomes state.workflowId, and its plan is genuinely honored", async () => {
+    writeReadonlyWorkflow();
+    const agent = new Agent(repoPath, stateDir);
+    const before = fs.readFileSync(path.join(repoPath, "README.md"), "utf8");
+
+    const state = await agent.run({ task: "review the repo", providerKind: "fake", model: "n/a", yesMode: true, workflowFile });
+
+    expect(state.workflowId).toBe("custom-readonly"); // the declaration's id, not a built-in one
+    expect(state.workflowPlan).toEqual({ planMode: "never", readonly: true });
+    expect(state.status).toBe("DONE");
+    expect(state.verificationResults).toHaveLength(0); // readonly — no verify stage ran
+    expect(fs.readFileSync(path.join(repoPath, "README.md"), "utf8")).toBe(before);
+  }, 30_000);
+
+  it("rejects an invalid workflow file (§8.1 semantic rule violation) with a clear error", async () => {
+    fs.writeFileSync(workflowFile, JSON.stringify({ apiVersion: "clutchcode/v1", id: "no-verify", name: "No Verify", stages: [{ id: "implement", uses: "implement" }] }), "utf8");
+    const agent = new Agent(repoPath, stateDir);
+    await expect(agent.run({ task: "investigate", providerKind: "fake", model: "n/a", workflowFile })).rejects.toThrow(/needs a "verify" stage too/);
+  }, 30_000);
+
+  it("rejects workflowId and workflowFile given together", async () => {
+    writeReadonlyWorkflow();
+    const agent = new Agent(repoPath, stateDir);
+    await expect(agent.run({ task: "investigate", providerKind: "fake", model: "n/a", workflowId: "quickfix", workflowFile })).rejects.toThrow(
+      /mutually exclusive/
+    );
+  }, 30_000);
+
+  it("resume() correctly re-executes a custom workflow's plan even after its source file is deleted — the resolved plan is persisted, not re-read from disk", async () => {
+    writeReadonlyWorkflow();
+    const agent = new Agent(repoPath, stateDir);
+
+    const paused = await agent.run({
+      task: "review the repo",
+      providerKind: "fake",
+      model: "n/a",
+      workflowFile,
+      budgets: { steps: 0, wallclockMs: 60_000, tokens: 1_000_000, costUsd: 0 } // pauses before ever calling the model
+    });
+    expect(paused.status).toBe("PAUSED");
+    expect(paused.workflowId).toBe("custom-readonly");
+    expect(paused.workflowPlan).toEqual({ planMode: "never", readonly: true });
+
+    // The declaration file that produced this plan no longer exists — resume must not need it.
+    fs.rmSync(workflowFile);
+
+    const finalState = await agent.resume(paused.runId, { extendSteps: 5 });
+
+    expect(finalState.status).toBe("DONE");
+    expect(finalState.verificationResults).toHaveLength(0); // still readonly — the persisted plan, not a re-read (nonexistent) file, drove this
+  }, 30_000);
+});
+
 describe("Agent.run requires a git repo (§13.4)", () => {
   it("fails loudly and actionably instead of a raw git error, three calls deep", async () => {
     const dir = makeTempDir("clutchcode-agentapi-nongit-");

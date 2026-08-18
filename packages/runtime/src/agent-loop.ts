@@ -18,6 +18,7 @@ import { shouldPlan } from "./planning-heuristic.js";
 import { buildCheatReviewMessage, buildInitialMessages, buildRepairMessage, toolsToSchemas } from "./message-builder.js";
 import { compactHistory } from "./context-compaction.js";
 import { classifyToolError } from "./error-taxonomy.js";
+import { isBuiltinWorkflowId, resolveBuiltinWorkflowPlan, type WorkflowPlan } from "./workflow.js";
 
 /**
  * The agent orchestration loop (PROJECT_SPEC.md §6.1, §6.2):
@@ -73,6 +74,18 @@ export interface AgentLoopDeps {
    * package, same as it stays decoupled from credentials/keychain.
    */
   onVerificationFailure?: (stage: StageResult, failureClass: FailureClass) => void;
+  /**
+   * §8.1/§8.2: the resolved plan-mode/readonly toggles this run should
+   * execute — derived from `state.workflowId` when it's one of the three
+   * built-ins (`resolveBuiltinWorkflowPlan`), or from a validated
+   * user-authored declarative workflow file when it isn't
+   * (`@clutchcode/agent-api`'s job; this loop never reads a workflow file
+   * itself). Defaults to resolving `state.workflowId` as a built-in id
+   * (falling back to `"default"`'s plan when it isn't recognized) so every
+   * existing caller that only ever set `state.workflowId` keeps working
+   * unchanged.
+   */
+  workflowPlan?: WorkflowPlan;
 }
 
 export interface AgentLoopOptions {
@@ -97,13 +110,21 @@ export class AgentLoop {
    */
   private readonly historyTokenBudget: number;
   /**
-   * §8.2 `review-only`: the tool set the model actually sees and can call
-   * for this run — identical to `deps.tools` for every other workflow, but
-   * with `write_file`/`edit_file` removed for `review-only`. Filtered here,
-   * once, so both `toolsToSchemas` (what the model is told exists) and
-   * `runToolCall`'s dispatch (what can actually execute) read from the same
-   * source — a model that names an undeclared tool anyway still gets
-   * `unknown-tool`, not a real write.
+   * §8.1/§8.2: the resolved plan-mode/readonly toggles driving this run —
+   * either one of the three built-ins or a validated user-declarative
+   * workflow, already resolved to the same shape by the time it reaches
+   * here (see `AgentLoopDeps.workflowPlan`'s doc comment).
+   */
+  private readonly workflowPlan: WorkflowPlan;
+  /**
+   * §8.2 `readonly` workflows (built-in `review-only`, or any custom
+   * declarative workflow with `implement.params.readonly: true`): the tool
+   * set the model actually sees and can call for this run — identical to
+   * `deps.tools` otherwise, but with `write_file`/`edit_file` removed.
+   * Filtered here, once, so both `toolsToSchemas` (what the model is told
+   * exists) and `runToolCall`'s dispatch (what can actually execute) read
+   * from the same source — a model that names an undeclared tool anyway
+   * still gets `unknown-tool`, not a real write.
    */
   private readonly effectiveTools: Map<string, Tool<unknown, unknown>>;
   /** Assigned via `replaceMessages` at the end of the constructor (see below), not directly. */
@@ -124,10 +145,17 @@ export class AgentLoop {
     this.contextBudget = computeContextBudget(this.capability.effectiveContext);
     this.historyTokenBudget = this.contextBudget.conversationHistory + this.contextBudget.repoMapRetrieval + this.contextBudget.openFileWindows;
 
-    this.effectiveTools =
-      state.workflowId === "review-only"
-        ? new Map([...deps.tools].filter(([name]) => name !== "write_file" && name !== "edit_file"))
-        : deps.tools;
+    // `deps.workflowPlan` overrides for tests that construct a plan
+    // directly without going through a `RunState`/declaration file at all
+    // (see workflow-declaration tests below); real callers rely on
+    // `state.workflowPlan`, which `createRunState` always populates.
+    // `resolveBuiltinWorkflowPlan` is the final, defensive fallback for a
+    // hand-built or pre-§8.1 `RunState` missing the field entirely.
+    this.workflowPlan = deps.workflowPlan ?? state.workflowPlan ?? resolveBuiltinWorkflowPlan(isBuiltinWorkflowId(state.workflowId) ? state.workflowId : "default");
+
+    this.effectiveTools = this.workflowPlan.readonly
+      ? new Map([...deps.tools].filter(([name]) => name !== "write_file" && name !== "edit_file"))
+      : deps.tools;
 
     // `resume()` (§6.2, §18.2): a non-empty `state.messages` means this
     // RunState was loaded from a previous, paused run — pick its (already
@@ -186,18 +214,22 @@ export class AgentLoop {
   async run(): Promise<RunState> {
     this.setStatus("UNDERSTANDING");
 
-    // §8.2: `quickfix` skips planning unconditionally, even when the
-    // heuristic below would otherwise trigger it; `review-only` never
-    // plans either (there is nothing to plan an edit for). Only `default`
-    // (and any future/unrecognized workflowId, defensively) consults the
-    // heuristic at all.
+    // §8.1/§8.2: `planMode` drives this directly now — `"never"` (built-in
+    // `quickfix`, or a custom workflow with no `plan` stage) skips planning
+    // unconditionally even when the heuristic below would otherwise trigger
+    // it; `"always"` (only reachable via a custom declarative workflow
+    // today — none of the three built-ins force it) forces planning even
+    // for a task the heuristic would call simple; `"auto"` (built-in
+    // `default`, or a custom workflow with a plain `plan` stage) is the
+    // only mode that actually consults the heuristic. `readonly` workflows
+    // resolve to `"never"` too (nothing to plan an edit for).
     const plan =
-      this.state.workflowId !== "quickfix" &&
-      this.state.workflowId !== "review-only" &&
-      shouldPlan({
-        taskDescription: this.state.task,
-        lowInstructionFidelity: !this.deps.provider.supportsNativeTools
-      });
+      this.workflowPlan.planMode === "always" ||
+      (this.workflowPlan.planMode === "auto" &&
+        shouldPlan({
+          taskDescription: this.state.task,
+          lowInstructionFidelity: !this.deps.provider.supportsNativeTools
+        }));
     if (plan) {
       this.setStatus("PLANNING");
       // Phase 1: the planning *stage* exists (state, gating heuristic, storage
@@ -240,12 +272,13 @@ export class AgentLoop {
   private async actAndVerifyLoop(): Promise<RunState> {
     const outcome = await this.actLoop();
     if (outcome === "stopped") return this.finish();
-    // §8.2 `review-only`: "inspect → review → report" — there is no verify/
-    // approve/commit stage in this workflow (nothing was ever edited, since
+    // §8.2 `review-only` (built-in, or any custom `readonly` workflow):
+    // "inspect → review → report" — there is no verify/approve/commit
+    // stage in a readonly workflow (nothing was ever edited, since
     // `effectiveTools` withholds write_file/edit_file above). `resume()`
-    // funnels through here too, so a paused-then-resumed review-only run
+    // funnels through here too, so a paused-then-resumed readonly run
     // still finishes the same way.
-    if (this.state.workflowId === "review-only") return this.finishReviewOnly();
+    if (this.workflowPlan.readonly) return this.finishReviewOnly();
     return await this.verifyAndFinish();
   }
 

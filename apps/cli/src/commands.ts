@@ -117,8 +117,10 @@ export interface RunCommandOptions {
   costCeilingUsd?: number;
   /** §13.4 monorepos: pin verification (toolchain + pipeline cwd) to this subdir. */
   scope?: string;
-  /** §8.2: "default" | "quickfix" | "review-only"; default "default". */
+  /** §8.2: "default" | "quickfix" | "review-only"; default "default". Mutually exclusive with workflowFile. */
   workflowId?: string;
+  /** §8.1: path to a JSON-Schema-validated user-declarative workflow file. Mutually exclusive with workflowId. */
+  workflowFile?: string;
 }
 
 export async function cmdRun(ctx: CliContext, opts: RunCommandOptions): Promise<CommandResult> {
@@ -134,6 +136,7 @@ export async function cmdRun(ctx: CliContext, opts: RunCommandOptions): Promise<
       memoryDir: ctx.memoryDir,
       scope: opts.scope,
       workflowId: opts.workflowId,
+      workflowFile: opts.workflowFile,
       budgets: definedBudgets({ steps: opts.maxSteps, wallclockMs: opts.maxWallclockMs, tokens: opts.maxTokens, costUsd: opts.costCeilingUsd })
     });
     return { exitCode: exitCodeForRunStatus(state.status), output: formatRunState(state, ctx.json) };

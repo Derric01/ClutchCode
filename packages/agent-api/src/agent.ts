@@ -35,10 +35,14 @@ import {
   commitApprovedRun,
   createRunState,
   isBuiltinWorkflowId,
+  loadWorkflowDeclaration,
   rejectRun,
+  resolveBuiltinWorkflowPlan,
+  resolveWorkflowPlan,
   type Budgets,
   type RunState,
-  type RuntimeEvent
+  type RuntimeEvent,
+  type WorkflowPlan
 } from "@clutchcode/runtime";
 
 import { loadConfig, isTrustedRepo, type AgentConfig } from "./config.js";
@@ -54,8 +58,10 @@ export interface RunOptions {
   baseUrl?: string;
   yesMode?: boolean;
   runId?: string;
-  /** §8.2: one of `BUILTIN_WORKFLOW_IDS` ("default" | "quickfix" | "review-only"); default "default". */
+  /** §8.2: one of `BUILTIN_WORKFLOW_IDS` ("default" | "quickfix" | "review-only"); default "default". Mutually exclusive with `workflowFile`. */
   workflowId?: string;
+  /** §8.1: path to a JSON-Schema-validated user-declarative workflow file — see `@clutchcode/runtime`'s `loadWorkflowDeclaration`. Its own `id` becomes `state.workflowId`. Mutually exclusive with `workflowId`. */
+  workflowFile?: string;
   /** Capability-profile storage directory (§4.9); default: ~/.config/clutchcode/models — same default `agent models probe` writes to. */
   modelsDir?: string;
   /** Overrides the default budgets (§6.3) for this run; unset fields keep the config/default value. `agent.toml`'s `policy.costCeilingUsd` still applies unless overridden here. */
@@ -310,8 +316,29 @@ export class Agent {
       );
     }
 
-    if (opts.workflowId !== undefined && !isBuiltinWorkflowId(opts.workflowId)) {
-      throw new Error(`unknown workflow "${opts.workflowId}" — expected one of: ${BUILTIN_WORKFLOW_IDS.join(", ")} (§8.2)`);
+    if (opts.workflowId !== undefined && opts.workflowFile !== undefined) {
+      throw new Error(`"workflowId" and "workflowFile" are mutually exclusive — pick one (§8.1/§8.2)`);
+    }
+
+    // §8.1/§8.2: resolve whichever of the two was given (or neither, for
+    // "default") into a `resolvedWorkflowId` for `state.workflowId` and a
+    // `workflowPlan` for `AgentLoop`. `workflowPlan` stays undefined for
+    // the plain "default" case (no id, no file) — `AgentLoop`'s own
+    // constructor already resolves that from `state.workflowId` itself,
+    // so there's nothing extra to compute here.
+    let resolvedWorkflowId: string | undefined = opts.workflowId;
+    let workflowPlan: WorkflowPlan | undefined;
+    if (opts.workflowFile !== undefined) {
+      const declaration = loadWorkflowDeclaration(opts.workflowFile);
+      resolvedWorkflowId = declaration.id;
+      workflowPlan = resolveWorkflowPlan(declaration);
+    } else if (opts.workflowId !== undefined) {
+      if (!isBuiltinWorkflowId(opts.workflowId)) {
+        throw new Error(
+          `unknown workflow "${opts.workflowId}" — expected one of: ${BUILTIN_WORKFLOW_IDS.join(", ")} (§8.2), or pass workflowFile for a custom declarative workflow (§8.1)`
+        );
+      }
+      workflowPlan = resolveBuiltinWorkflowPlan(opts.workflowId);
     }
 
     const runId = opts.runId ?? newRunId();
@@ -324,7 +351,8 @@ export class Agent {
     const state = createRunState({
       runId,
       task: opts.task,
-      workflowId: opts.workflowId,
+      workflowId: resolvedWorkflowId,
+      workflowPlan,
       provider: opts.providerKind,
       model: opts.model,
       capabilityProfileId: deps.capability.probed ? opts.model : undefined,
@@ -352,6 +380,9 @@ export class Agent {
         capability: deps.capability,
         verifyCwd: deps.verifyCwd,
         onVerificationFailure: deps.onVerificationFailure
+        // No `workflowPlan` override here — `state.workflowPlan` (set by
+        // `createRunState` above) is already the resolved plan `AgentLoop`
+        // reads by default; passing it twice would just be redundant.
       },
       {
         yesMode: opts.yesMode,

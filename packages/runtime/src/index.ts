@@ -46,5 +46,8 @@ export type { AgentLoopDeps, AgentLoopOptions, RuntimeEvent } from "./agent-loop
 
 export { commitApprovedRun, rejectRun } from "./approve.js";
 
-export { BUILTIN_WORKFLOWS, BUILTIN_WORKFLOW_IDS, isBuiltinWorkflowId } from "./workflow.js";
-export type { BuiltinWorkflowId, WorkflowDescriptor } from "./workflow.js";
+export { BUILTIN_WORKFLOWS, BUILTIN_WORKFLOW_IDS, isBuiltinWorkflowId, resolveBuiltinWorkflowPlan } from "./workflow.js";
+export type { BuiltinWorkflowId, WorkflowDescriptor, WorkflowPlan } from "./workflow.js";
+
+export { WORKFLOW_DECLARATION_SCHEMA, loadWorkflowDeclaration, resolveWorkflowPlan, validateWorkflowDeclaration } from "./workflow-declaration.js";
+export type { BuiltinStageKind, WorkflowDeclaration, WorkflowStageDeclaration } from "./workflow-declaration.js";
