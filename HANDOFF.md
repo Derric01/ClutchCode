@@ -7,18 +7,17 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-18
 **Branch:** `claude/handoff-prompt-continuation-c2cxh9`
-**Latest commit:** `e647ea9` — "docs: update HANDOFF.md for §8.2 Workflow Engine completion"
-**Test suite:** 538/538 passing, 68 test files, clean `tsc -b`, clean `eslint .`
+**Latest commit:** `35e104f` — "feat: VS Code extension polish — native diff, run-picker, resume/rollback/pr (§18.5)"
+**Test suite:** 558/558 passing, 68 test files, clean `tsc -b`, clean `eslint .`
 
-**PR:** [#6](https://github.com/Derric01/ClutchCode/pull/6) — open, not yet
-merged. **#5 merged** (at its tip `528a22f`, the seccomp-hardening commit);
-two more features (§10.3 memory, §8.2 workflow engine) landed on this same
-branch *after* #5 merged, so per this project's own rule about a merged
-PR ("it cannot track new work, don't stack onto merged history — rebase
-unmerged commits onto the new base and open a fresh PR instead") the
-branch was rebased onto current `main` and #6 opened fresh for those 4
-commits. Same branch name throughout; no work was dropped, only PR
-numbers change.
+**PR:** #6 **merged.** This branch was reset to match `main` right after
+(a clean fast-forward — nothing stacked on top of merged history this
+time), then this session's newest commit (VS Code polish) was added on
+top of that fresh base. A new PR is opened for it; check `git log` /
+GitHub for its number if this note is stale by the time you're reading
+it — the pattern established across #4/#5/#6 is: one open PR per phase of
+work, never reused once merged, branch always restarted from `main`'s
+merged tip before new commits land on it.
 
 ---
 
@@ -197,6 +196,60 @@ schema filtering, review-only edit-attempt refusal + report capture), and
 `agent.test.ts`/`commands.test.ts` (real end-to-end through the Agent API
 and CLI boundaries, plus the unknown-id rejection).
 
+### VS Code extension polish (§18.5) — native diff, run-picker, resume/rollback/pr
+Three items from the extension's original "not yet built" list, all real
+and tested at the layer that can be:
+1. **Native two-sided diff view.** New `@clutchcode/git` function
+   `diffFilesAgainstBase(run, pathScope?)` returns per-file
+   `{path, status, before, after, binary}` — real before/after content, not
+   unified-diff text — a separate function from `diffAgainstBase` on
+   purpose (that one stays a single cheap `git diff` call for callers that
+   only ever wanted text, like `agent pr`'s body). It needed two real fixes
+   discovered by the tests themselves: `git diff <commit>` never reports an
+   untracked path *at all*, no matter what it's diffed against — a
+   brand-new file the model just wrote would silently vanish — fixed by
+   staging first (`git add -A`, the same thing `checkpoint()` already did
+   per step, not a new side effect); and rename detection (`-M`) isn't on
+   by default for `git diff` across git versions, so a rename would report
+   as an unrelated delete+add without it. Wired through
+   `Agent.diffFiles(runId)` and a new `diffFiles` RPC method the same way
+   `diff`/`diffStat` already were. `extension.ts` opens one real
+   `vscode.diff` editor per changed file (virtual documents served from a
+   `TextDocumentContentProvider`, keyed so the file's real extension still
+   drives syntax highlighting on both sides), replacing the single
+   unified-text document it used to open; binary files are skipped with a
+   note instead of shown as mojibake.
+2. **A run-picker.** New `pickRun()` in `runTask.ts` fetches the real run
+   list over RPC (`listRuns`, already existed, was unused by the
+   extension), filters it per command (e.g. only `PAUSED` runs offered to
+   `clutchcode.resume`), and hands the picking itself to `ui.pickRun` —
+   `extension.ts` implements that with a real `vscode.window.showQuickPick`
+   showing status + task per run; tests implement it with a scripted
+   choice. Replaces the old free-text "type a run id" input box on every
+   command.
+3. **resume/rollback/pr commands in the UI.** New `resumeTask`/
+   `rollbackTask`/`prTask` orchestration functions, following the same
+   split `runClutchCodeTask` already established (no `vscode` import,
+   tested against a real `Agent` behind a real `AgentRpcClient`).
+   `handlePostRunState` was pulled out of `runClutchCodeTask` so `resumeTask`
+   shares the exact same "show diff → ask approve/reject" logic a fresh run
+   uses, instead of a second copy of it. `resumeTask` without an explicit
+   step extension re-pauses immediately — that's `Agent.resume`'s own
+   documented no-op semantics (§6.3), already true of the CLI, not new
+   behavior invented here; the extension's resume command prompts for an
+   extension amount rather than guessing a default.
+
+`extension.ts` itself remains the one file in this package that's
+type-checked-but-not-runtime-verified (no real VS Code extension host in
+this environment) — unchanged honesty boundary from Phase 4, just a larger
+file behind it now. 10 new/rewritten tests in `runTask.test.ts` (all
+against a real `Agent` over real `PassThrough`-piped RPC, including a real
+scripted-tool-call edit for the diff-content and rollback tests) plus 5 new
+`presentation.test.ts` cases for the two new pure formatters
+(`formatDiffTabTitle`, `formatPrResult`), and 7 new `worktree.test.ts`
+cases for `diffFilesAgainstBase` itself (added/modified/deleted/renamed/
+binary/multi-file/pathScope).
+
 ### Docs: "MVP" removed everywhere
 The spec used "MVP" to label Phase 1 scope throughout — renamed to
 "Phase 1" (or a non-numeric label where it would collide with the
@@ -220,7 +273,7 @@ loose "MVP" estimate.
 | Windows sandbox Tier 1 | §12.5/§12.6, A11 | medium | WSL2-recommended is the spec's own documented fallback; a native restricted-token/AppContainer path is explicitly `[C:Low]` in the spec — confirm whether it's worth building vs. staying doc-only. |
 | Landlock | §12.6 | medium–large, needs a plan first | Seccomp is done (see "what's done"); Landlock specifically needs either a native helper binary or a vetted raw-syscall binding — neither exists yet, and a hand-rolled one carries a worse failure mode (silently over-permissive, not fail-loud) than seccomp did. Don't attempt without a clear verification story first. |
 | arm64 seccomp | §12.6 | small, needs an arm64 host | The x86_64 filter is done and verified; arm64 has a different syscall number table with no way to verify it in this (x86_64) environment — needs either an arm64 host/CI runner or a very high-confidence authoritative source cross-checked the same way libseccomp's resolver was used for x86_64. |
-| VS Code extension polish | §18.5 | medium | Native two-sided diff view (needs per-file before/after content, not just the unified diff text `agent diff` returns), a run-picker, resume/rollback/pr commands in the UI. |
+| VS Code multi-file "changes" view | §18.5, minor | small | The extension opens one real `vscode.diff` editor per changed file (done, see "what's done") rather than combining several into VS Code's newer `vscode.changes` command — deliberately skipped since that command isn't universally available across the `^1.85.0` engine range this extension targets. Revisit if the minimum supported VS Code version is ever raised. |
 | Full non-git `AgentLoop` execution path | — | large, separate project | Snapshot-backed (not worktree-backed) execution for non-git directories. `Agent.run` currently refuses cleanly with a "run git init" error instead of attempting this. |
 | Workflow engine — user-declarative layer | §8.1, Phase 6 | medium–large | The three built-ins now exist and are load-bearing (see "what's done") — what's still missing is the second authoring layer §8.1 describes: a JSON-Schema-validated declarative form for *customizing* the linear pipeline (ordered stages + per-stage enable/skip/params, no arbitrary control flow), plus the dedicated `agent workflow` list/select/validate CLI command (§18.2 marks that command itself Phase 2). Today a workflow is selected by id only (`--workflow <default\|quickfix\|review-only>`); there's no way to author a fourth one without editing `AgentLoop` source. |
 | PageRank repo map | §9, Phase 7 | medium | Tier 0 (ripgrep + on-demand tree-sitter) is what's live; the Aider-style PageRank map is Tier 1, triggered by measured retrieval-accuracy failures on large repos, not built preemptively. |
