@@ -12,3 +12,5 @@ export { detectBwrapOnPath, buildBwrapSpawn } from "./tier1-linux.js";
 export type { BwrapSpawnOptions } from "./tier1-linux.js";
 export { detectSandboxExecOnPath, buildSeatbeltProfile, buildSeatbeltSpawn } from "./tier1-macos.js";
 export type { SeatbeltSpawnOptions } from "./tier1-macos.js";
+export { detectSeccompSupport, buildSeccompFilterX86_64, ensureSeccompFilterFile, DENIED_SYSCALLS_X86_64 } from "./seccomp-linux.js";
+export type { SeccompDetection } from "./seccomp-linux.js";

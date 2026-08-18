@@ -1,10 +1,11 @@
 import { buildBwrapSpawn, detectBwrapOnPath } from "./tier1-linux.js";
 import { buildSeatbeltSpawn, detectSandboxExecOnPath } from "./tier1-macos.js";
+import { detectSeccompSupport, type SeccompDetection } from "./seccomp-linux.js";
 
 /**
  * Tier 1 OS sandbox dispatch (PROJECT_SPEC.md §12.5/§12.6): "Tier 1
  * (default where available): macOS → Seatbelt, Linux → bubblewrap
- * (+Landlock/seccomp, not yet layered in — see `tier1-linux.ts`),
+ * (+ seccomp on x86_64, Landlock not yet — see `seccomp-linux.ts`),
  * Windows → WSL2 recommended, else weak [C:Low]." `detectSandboxBackend`
  * decides which is actually available on this machine; `agent doctor`
  * (and this module's callers) surface `reason` when it isn't, rather than
@@ -16,12 +17,14 @@ export type SandboxBackend = "bwrap" | "seatbelt" | "none";
 export interface SandboxCapability {
   backend: SandboxBackend;
   reason: string;
+  /** Only meaningful when `backend === "bwrap"` — whether the seccomp-bpf hardening layer (§12.6) is available on this platform/arch. */
+  seccomp?: SeccompDetection;
 }
 
 export function detectSandboxBackend(platform: NodeJS.Platform = process.platform): SandboxCapability {
   if (platform === "linux") {
     return detectBwrapOnPath()
-      ? { backend: "bwrap", reason: "bubblewrap found on PATH" }
+      ? { backend: "bwrap", reason: "bubblewrap found on PATH", seccomp: detectSeccompSupport(platform) }
       : { backend: "none", reason: "bubblewrap (bwrap) not found on PATH — install it for OS-level confinement (§12.5); falling back to Tier 0 (policy engine only)" };
   }
   if (platform === "darwin") {
@@ -41,6 +44,8 @@ export interface ConfinedSpawnOptions {
   command: string;
   /** Presented as `$HOME` inside the sandbox — never the real one. Ignored when `backend` is `"none"`. */
   homeDir: string;
+  /** Layer the seccomp-bpf hardening filter (§12.6) under bwrap. Ignored for `"seatbelt"`/`"none"` backends — only meaningful when `backend === "bwrap"` and `detectSeccompSupport()` reports it available. */
+  enableSeccomp?: boolean;
 }
 
 /** Builds the actual argv to spawn: wrapped under OS confinement for `"bwrap"`/`"seatbelt"`, or a plain `/bin/sh -c` passthrough for `"none"` (Tier 0 — the policy engine + env scrubbing still apply; only the OS-level fs/net/pid confinement is absent). */

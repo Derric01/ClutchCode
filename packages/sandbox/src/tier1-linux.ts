@@ -12,9 +12,15 @@ import fs from "node:fs";
  * It deliberately does *not* unshare the user namespace (`--unshare-user`)
  * — that needs either a setuid `bwrap` or unprivileged-userns-clone
  * enabled on the host, neither of which this package can assume, and the
- * fs/net/pid isolation below doesn't depend on it. Landlock/seccomp
- * layering (§12.6) is a further-hardening follow-up, not yet wired here —
- * flagged, not silently skipped.
+ * fs/net/pid isolation below doesn't depend on it.
+ *
+ * §12.6's "Landlock + seccomp, layered under bwrap where available" is
+ * half-done: a seccomp-bpf filter is layered in via `--seccomp FD` (see
+ * `seccomp-linux.ts` for the filter itself, its x86_64-only scope, and
+ * why Landlock specifically is not attempted this pass) when the caller
+ * passes `seccompFd`. Building/opening that fd is the caller's job (real
+ * file I/O), not this pure argv-builder's — see `shell.ts` for the actual
+ * wiring.
  */
 
 /** Standard userland dirs bound read-only when present — enough for typical shell/npm/git/python invocations; anything living outside these + the workspace (e.g. a tool installed under `$HOME`) won't be visible, by design (§12.3: we don't expose the real `$HOME`). */
@@ -32,6 +38,14 @@ export interface BwrapSpawnOptions {
    * on the real host filesystem at this path.
    */
   homeDir: string;
+  /**
+   * Layer a seccomp-bpf filter under the namespace confinement (§12.6).
+   * This builder never touches the filesystem — it only decides whether
+   * to emit `--seccomp 3`; the caller is responsible for actually opening
+   * the compiled filter (`seccomp-linux.ts`'s `ensureSeccompFilterFile`)
+   * and placing it at stdio index 3 so it lands on fd 3 in the child.
+   */
+  enableSeccomp?: boolean;
 }
 
 export function detectBwrapOnPath(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -68,11 +82,12 @@ export function buildBwrapSpawn(opts: BwrapSpawnOptions): { bin: string; args: s
     "--unshare-uts",
     "--unshare-net", // §12.6: network default-deny at the OS level, not just the policy engine
     "--unshare-cgroup",
-    "--die-with-parent", // a killed/crashed parent (agent process) never leaves an orphaned sandboxed child running
-    "/bin/sh",
-    "-c",
-    opts.command
+    "--die-with-parent" // a killed/crashed parent (agent process) never leaves an orphaned sandboxed child running
   );
+
+  if (opts.enableSeccomp) args.push("--seccomp", "3"); // fd 3 — the caller wires the compiled filter to stdio index 3
+
+  args.push("/bin/sh", "-c", opts.command);
 
   return { bin: "bwrap", args };
 }

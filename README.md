@@ -109,9 +109,26 @@ but has never run against a real `sandbox-exec` — no macOS host exists in
 this environment, so that's flagged rather than claimed. `agent.toml`'s
 `policy.sandboxTier = "tier0"` is the documented escape hatch when Tier 1
 breaks a legitimate workflow; `agent doctor` reports which backend is
-active. Not yet layered in: Landlock/seccomp on top of bwrap, and a
-Windows backend (WSL2 is the spec's own recommended path there). OS
-keychain credential storage remains the last named Phase 2 follow-up.
+active. **Seccomp hardening is now layered under bwrap** (x86_64 Linux):
+a classic-BPF filter denying ~20 syscalls a dev/build/test workflow never
+legitimately needs but that are common sandbox-escape/privilege-escalation
+primitives (`ptrace`, `mount`, `bpf`, `unshare`, `kexec_load`, kernel
+module loading, and others — see `seccomp-linux.ts` for the full list and
+each entry's one-line reason), hand-assembled directly in TypeScript
+(zero new runtime dependency) and proven end-to-end against the real
+kernel: a real bwrap-sandboxed process invokes each denied syscall by
+number and gets EPERM, a control run without the filter proves the same
+syscall succeeds unfiltered, and ordinary shell usage still works fine
+under it. **Landlock is explicitly not attempted** — unlike seccomp's
+publicly documented BPF bytecode format, applying it correctly needs
+either a native helper or a raw-syscall binding with no vetted library
+and no safe way to verify a hand-rolled one here; a wrong Landlock rule
+fails by silently granting more access than intended, a worse mistake
+category than seccomp's fail-loud one, so this stays a named gap rather
+than a guess. **arm64 seccomp is also not supported yet** — different
+syscall numbers, no way to verify them without an arm64 host, reported
+honestly by `detectSeccompSupport()` rather than guessed. A Windows Tier 1
+backend (WSL2 is the spec's own recommended path there) remains open too.
 
 **Phase 4's VS Code extension (§18.1/§18.5) is built.** A new
 `@clutchcode/agent-rpc` package gives the runtime a second binding

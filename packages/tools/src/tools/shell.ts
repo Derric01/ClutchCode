@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { buildConfinedSpawn, isDestructiveCommand, scrubEnv } from "@clutchcode/sandbox";
+import { buildConfinedSpawn, ensureSeccompFilterFile, isDestructiveCommand, scrubEnv } from "@clutchcode/sandbox";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 import { fail, ok } from "../types.js";
 import { truncate } from "../truncate.js";
@@ -87,7 +87,22 @@ export const shellTool: Tool<ShellArgs, ShellData> = {
     // for that backend beyond staying consistent).
     const homeDir = path.join(ctx.evidenceDir, "..", "sandbox-home");
     if (ctx.sandbox.backend !== "none") fs.mkdirSync(homeDir, { recursive: true });
-    const { bin, args: spawnArgs } = buildConfinedSpawn(ctx.sandbox.backend, { workspaceRoot: ctx.workspaceRoot, cwd, command: args.cmd, homeDir });
+
+    // §12.6: layer the seccomp-bpf hardening filter under bwrap when this
+    // platform/arch supports it (x86_64 Linux only, see seccomp-linux.ts).
+    // The filter file is opened here — real file I/O, deliberately kept
+    // out of buildConfinedSpawn's pure argv-building — and handed to the
+    // child as fd 3 via `stdio`; `--seccomp 3` in the built argv is what
+    // tells bwrap to read it from there.
+    const seccompFilterPath = ctx.sandbox.backend === "bwrap" && ctx.sandbox.seccomp?.supported ? ensureSeccompFilterFile() : undefined;
+    const seccompFd = seccompFilterPath ? fs.openSync(seccompFilterPath, "r") : undefined;
+    const { bin, args: spawnArgs } = buildConfinedSpawn(ctx.sandbox.backend, {
+      workspaceRoot: ctx.workspaceRoot,
+      cwd,
+      command: args.cmd,
+      homeDir,
+      enableSeccomp: seccompFd !== undefined
+    });
 
     const env = scrubEnv(process.env);
     if (ctx.sandbox.backend !== "none") env.HOME = homeDir; // never the real $HOME under Tier 1 (§12.1/§12.3)
@@ -106,8 +121,22 @@ export const shellTool: Tool<ShellArgs, ShellData> = {
       const child = spawn(bin, spawnArgs, {
         cwd,
         env,
-        detached: true
+        detached: true,
+        stdio: seccompFd === undefined ? "pipe" : ["pipe", "pipe", "pipe", seccompFd]
       });
+
+      // `spawn()` performs the actual fork+exec synchronously before
+      // returning — the child already holds its own duplicated fd 3 by
+      // this point, independent of the parent's copy, so it's safe (and
+      // the tidy thing to do) to close the parent's copy right away
+      // rather than hold it open for the whole command's lifetime.
+      if (seccompFd !== undefined) {
+        try {
+          fs.closeSync(seccompFd);
+        } catch {
+          /* already closed */
+        }
+      }
 
       let stdout = "";
       let stderr = "";

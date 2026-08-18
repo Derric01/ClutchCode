@@ -375,6 +375,9 @@ export async function cmdDoctor(ctx: CliContext): Promise<CommandResult> {
     { name: "openai-compatible credential", ok: Boolean(creds.openaiApiKey), detail: creds.openaiApiKey ? "available (keychain or OPENAI_API_KEY)" : "not set" },
     { name: "OS keychain (§5.1)", ok: keychain.backend !== "none", detail: `${keychain.backend} — ${keychain.reason}` },
     { name: "sandbox (§12.5/§12.6)", ok: sandbox.backend !== "none", detail: `${sandbox.backend} — ${sandbox.reason}` },
+    ...(sandbox.backend === "bwrap"
+      ? [{ name: "seccomp hardening (§12.6)", ok: sandbox.seccomp?.supported ?? false, detail: sandbox.seccomp?.reason ?? "not evaluated" }]
+      : []),
     await checkOllama()
   ];
 

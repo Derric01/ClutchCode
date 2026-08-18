@@ -125,6 +125,14 @@ describe("CLI commands (pure functions, no process spawning)", () => {
     expect(sandbox?.detail).toMatch(/^bwrap/);
   });
 
+  it("doctor reports seccomp hardening (§12.6) as supported on this x86_64 Linux container", async () => {
+    const result = await cmdDoctor({ repoPath, json: true });
+    const parsed = JSON.parse(result.output) as { checks: Array<{ name: string; ok: boolean; detail: string }> };
+    const seccomp = parsed.checks.find((c) => c.name.startsWith("seccomp"));
+    expect(seccomp?.ok).toBe(true);
+    expect(seccomp?.detail).toContain("x86_64");
+  });
+
   it("doctor runs real, non-fabricated checks", async () => {
     const result = await cmdDoctor({ repoPath, json: true });
     const parsed = JSON.parse(result.output) as { checks: Array<{ name: string; ok: boolean }> };

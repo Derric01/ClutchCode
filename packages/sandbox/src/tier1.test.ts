@@ -2,9 +2,15 @@ import { describe, expect, it } from "vitest";
 import { buildConfinedSpawn, detectSandboxBackend } from "./tier1.js";
 
 describe("detectSandboxBackend", () => {
-  it("picks bwrap on linux when it's on PATH (true in this dev container)", () => {
+  it("picks bwrap on linux when it's on PATH (true in this dev container), and reports seccomp support alongside it", () => {
     const cap = detectSandboxBackend("linux");
     expect(cap.backend).toBe("bwrap");
+    expect(cap.seccomp?.supported).toBe(true); // this container is x86_64
+  });
+
+  it("does not report seccomp for non-bwrap backends", () => {
+    expect(detectSandboxBackend("darwin").seccomp).toBeUndefined();
+    expect(detectSandboxBackend("win32").seccomp).toBeUndefined();
   });
 
   it("falls back to none on darwin when sandbox-exec isn't found (true in this Linux test environment)", () => {
@@ -34,5 +40,10 @@ describe("buildConfinedSpawn", () => {
 
   it("falls back to a plain /bin/sh -c passthrough for 'none' (Tier 0 — policy engine + env scrub still apply upstream)", () => {
     expect(buildConfinedSpawn("none", opts)).toEqual({ bin: "/bin/sh", args: ["-c", "echo hi"] });
+  });
+
+  it("threads enableSeccomp through to bwrap's argv (§12.6)", () => {
+    expect(buildConfinedSpawn("bwrap", opts).args).not.toContain("--seccomp");
+    expect(buildConfinedSpawn("bwrap", { ...opts, enableSeccomp: true }).args).toContain("--seccomp");
   });
 });

@@ -40,6 +40,20 @@ describe("buildBwrapSpawn", () => {
     expect(args).toContain("/usr");
     expect(args).not.toContain("/this/path/does/not/exist");
   });
+
+  it("omits --seccomp entirely when enableSeccomp isn't set (§12.6 opt-in, no surprise behavior change)", () => {
+    const { args } = buildBwrapSpawn({ workspaceRoot: "/tmp/ws", cwd: "/tmp/ws", command: "true", homeDir: "/home/x" });
+    expect(args).not.toContain("--seccomp");
+  });
+
+  it("adds --seccomp 3 when enableSeccomp is set (the fd itself is wired and proven end to end in seccomp-linux.test.ts)", () => {
+    const { args } = buildBwrapSpawn({ workspaceRoot: "/tmp/ws", cwd: "/tmp/ws", command: "true", homeDir: "/home/x", enableSeccomp: true });
+    const idx = args.indexOf("--seccomp");
+    expect(idx).toBeGreaterThan(-1);
+    expect(args[idx + 1]).toBe("3");
+    // Still ends with the command — --seccomp must land before the positional /bin/sh -c args, not after.
+    expect(args.slice(-3)).toEqual(["/bin/sh", "-c", "true"]);
+  });
 });
 
 describe("buildBwrapSpawn — real confinement, run against the actual bwrap binary", () => {
