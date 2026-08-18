@@ -28,9 +28,11 @@ import { defaultModelsDir, loadCapabilityProfile, resolveCapability, type Effect
 import type { Provider } from "@clutchcode/providers";
 import {
   AgentLoop,
+  BUILTIN_WORKFLOW_IDS,
   RunStateStore,
   commitApprovedRun,
   createRunState,
+  isBuiltinWorkflowId,
   rejectRun,
   type Budgets,
   type RunState,
@@ -50,6 +52,8 @@ export interface RunOptions {
   baseUrl?: string;
   yesMode?: boolean;
   runId?: string;
+  /** §8.2: one of `BUILTIN_WORKFLOW_IDS` ("default" | "quickfix" | "review-only"); default "default". */
+  workflowId?: string;
   /** Capability-profile storage directory (§4.9); default: ~/.config/clutchcode/models — same default `agent models probe` writes to. */
   modelsDir?: string;
   /** Overrides the default budgets (§6.3) for this run; unset fields keep the config/default value. `agent.toml`'s `policy.costCeilingUsd` still applies unless overridden here. */
@@ -304,6 +308,10 @@ export class Agent {
       );
     }
 
+    if (opts.workflowId !== undefined && !isBuiltinWorkflowId(opts.workflowId)) {
+      throw new Error(`unknown workflow "${opts.workflowId}" — expected one of: ${BUILTIN_WORKFLOW_IDS.join(", ")} (§8.2)`);
+    }
+
     const runId = opts.runId ?? newRunId();
 
     const run = createRunWorktree({ repoPath: this.repoPath, stateDir: this.stateDir, runId, slug: slugify(opts.task) });
@@ -314,6 +322,7 @@ export class Agent {
     const state = createRunState({
       runId,
       task: opts.task,
+      workflowId: opts.workflowId,
       provider: opts.providerKind,
       model: opts.model,
       capabilityProfileId: deps.capability.probed ? opts.model : undefined,

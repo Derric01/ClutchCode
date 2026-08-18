@@ -54,4 +54,20 @@ describe("RunState state machine", () => {
     expect(canTransition("PAUSED", "ACTING")).toBe(true);
     expect(canTransition("PAUSED", "VERIFYING")).toBe(true);
   });
+
+  it("ACTING -> DONE is legal (§8.2 review-only finishes here, skipping verify/approve/commit)", () => {
+    const state = createRunState({ runId: "r1", task: "t", workflowId: "review-only", provider: "fake", model: "fake" });
+    transition(state, "UNDERSTANDING");
+    transition(state, "INSPECTING");
+    transition(state, "ACTING");
+    transition(state, "DONE");
+    expect(state.status).toBe("DONE");
+  });
+
+  it("defaults workflowId to \"default\" and accepts an explicit id", () => {
+    const defaulted = createRunState({ runId: "r1", task: "t", provider: "fake", model: "fake" });
+    expect(defaulted.workflowId).toBe("default");
+    const explicit = createRunState({ runId: "r2", task: "t", workflowId: "quickfix", provider: "fake", model: "fake" });
+    expect(explicit.workflowId).toBe("quickfix");
+  });
 });

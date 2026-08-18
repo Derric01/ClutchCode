@@ -406,6 +406,46 @@ describe("Agent.run scope (§13.4 monorepos)", () => {
   }, 30_000);
 });
 
+describe("Agent.run workflow selection (§8.2)", () => {
+  let repoPath: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("defaults to the \"default\" workflow when --workflow is omitted", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "investigate the repo", providerKind: "fake", model: "n/a", yesMode: true });
+    expect(state.workflowId).toBe("default");
+  }, 30_000);
+
+  it("review-only runs end to end through the real Agent API boundary: DONE, no edits, no verification", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    const before = fs.readFileSync(path.join(repoPath, "README.md"), "utf8");
+
+    const state = await agent.run({ task: "review the repo", providerKind: "fake", model: "n/a", yesMode: true, workflowId: "review-only" });
+
+    expect(state.status).toBe("DONE");
+    expect(state.workflowId).toBe("review-only");
+    expect(state.verificationResults).toHaveLength(0);
+    expect(fs.readFileSync(path.join(repoPath, "README.md"), "utf8")).toBe(before);
+  }, 30_000);
+
+  it("rejects an unknown workflow id with a clear error instead of a confusing downstream failure", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    await expect(agent.run({ task: "investigate", providerKind: "fake", model: "n/a", workflowId: "does-not-exist" })).rejects.toThrow(
+      /unknown workflow "does-not-exist"/
+    );
+  }, 30_000);
+});
+
 describe("Agent.run requires a git repo (§13.4)", () => {
   it("fails loudly and actionably instead of a raw git error, three calls deep", async () => {
     const dir = makeTempDir("clutchcode-agentapi-nongit-");

@@ -4,6 +4,8 @@ export type { RunOptions, ResumeOptions, ApproveOptions, PrOptions, PrResult } f
 // Re-exported so `apps/*` never need to depend on @clutchcode/runtime
 // directly (§20 boundary rule: apps depend only on agent-api).
 export type { RunState, RunStatus, RuntimeEvent, ToolCallLogEntry, VerificationResultSummary, Budgets } from "@clutchcode/runtime";
+export { BUILTIN_WORKFLOWS, BUILTIN_WORKFLOW_IDS, isBuiltinWorkflowId } from "@clutchcode/runtime";
+export type { BuiltinWorkflowId, WorkflowDescriptor } from "@clutchcode/runtime";
 // Re-exported for the same reason, but from @clutchcode/git (§20 boundary rule extends to every internal package, not just runtime).
 export type { CheckpointRecord } from "@clutchcode/git";
 // Re-exported for the same reason, but from @clutchcode/sandbox — `agent doctor` reports the resolved Tier 1 backend (§12.5/§12.6).

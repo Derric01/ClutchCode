@@ -381,3 +381,114 @@ describe("AgentLoop resume + transcript redaction (§5.2/§6.2/§6.3)", () => {
     }
   });
 });
+
+describe("Workflow engine (§8.2: default / quickfix / review-only)", () => {
+  // Trips the planning heuristic's AMBIGUITY_MARKERS ("refactor", "across", "multiple") —
+  // same task description used for both scenarios below so the only variable is workflowId.
+  const AMBIGUOUS_TASK = "refactor the math module across multiple files";
+
+  it("default: the planning heuristic still triggers PLANNING for an ambiguous task (unchanged baseline)", async () => {
+    const fx = setupAgentLoopFixture("run00000040");
+    try {
+      const provider = new FakeProvider([toolCallTurn("c1", "edit_file", FIX_EDIT), textTurn("Fixed.")]);
+      const state = createRunState({ runId: fx.run.runId, task: AMBIGUOUS_TASK, provider: "fake", model: "fake" });
+
+      const events: RuntimeEvent[] = [];
+      const loop = new AgentLoop(
+        state,
+        { provider, tools: fx.tools, toolContext: fx.toolContext, run: fx.run, toolchainCommands: fx.toolchainCommands, evidenceDir: fx.evidenceDir },
+        { yesMode: true, onEvent: (e) => events.push(e) }
+      );
+      const finalState = await loop.run();
+
+      expect(finalState.workflowId).toBe("default");
+      expect(finalState.plan).toHaveLength(1);
+      expect(events.some((e) => e.type === "state.transition" && e.to === "PLANNING")).toBe(true);
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("quickfix: skips planning unconditionally, even for the exact same ambiguous task", async () => {
+    const fx = setupAgentLoopFixture("run00000041");
+    try {
+      const provider = new FakeProvider([toolCallTurn("c1", "edit_file", FIX_EDIT), textTurn("Fixed.")]);
+      const state = createRunState({ runId: fx.run.runId, task: AMBIGUOUS_TASK, workflowId: "quickfix", provider: "fake", model: "fake" });
+
+      const events: RuntimeEvent[] = [];
+      const loop = new AgentLoop(
+        state,
+        { provider, tools: fx.tools, toolContext: fx.toolContext, run: fx.run, toolchainCommands: fx.toolchainCommands, evidenceDir: fx.evidenceDir },
+        { yesMode: true, onEvent: (e) => events.push(e) }
+      );
+      const finalState = await loop.run();
+
+      expect(finalState.plan).toHaveLength(0);
+      expect(events.some((e) => e.type === "state.transition" && e.to === "PLANNING")).toBe(false);
+      // Skipping planning doesn't skip anything else — quickfix still reaches the same DONE outcome.
+      expect(finalState.status).toBe("DONE");
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("review-only: withholds write_file/edit_file from the schema the model actually sees", async () => {
+    const fx = setupAgentLoopFixture("run00000042");
+    try {
+      const provider = new FakeProvider([textTurn("No issues found in math.js.")]);
+      const state = createRunState({ runId: fx.run.runId, task: "review the repo", workflowId: "review-only", provider: "fake", model: "fake" });
+
+      const loop = new AgentLoop(state, {
+        provider,
+        tools: fx.tools,
+        toolContext: fx.toolContext,
+        run: fx.run,
+        toolchainCommands: fx.toolchainCommands,
+        evidenceDir: fx.evidenceDir
+      });
+      await loop.run();
+
+      const toolNames = provider.requestLog[0]!.tools?.map((t) => t.name) ?? [];
+      expect(toolNames).not.toContain("write_file");
+      expect(toolNames).not.toContain("edit_file");
+      expect(toolNames).toContain("read_file"); // still allowed to inspect
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("review-only: an edit attempt is refused as unknown-tool (defense in depth, not just a hidden schema), and the run still finishes as a report with no verify/approve/commit", async () => {
+    const fx = setupAgentLoopFixture("run00000043");
+    try {
+      // The model tries to edit anyway — proves the block is enforced at dispatch, not just by omission from the schema.
+      const provider = new FakeProvider([
+        toolCallTurn("c1", "edit_file", FIX_EDIT),
+        textTurn("math.js's add() subtracts instead of adding; recommend swapping the operator.")
+      ]);
+      const state = createRunState({ runId: fx.run.runId, task: "review add()", workflowId: "review-only", provider: "fake", model: "fake" });
+
+      const events: RuntimeEvent[] = [];
+      const loop = new AgentLoop(
+        state,
+        { provider, tools: fx.tools, toolContext: fx.toolContext, run: fx.run, toolchainCommands: fx.toolchainCommands, evidenceDir: fx.evidenceDir },
+        { yesMode: true, onEvent: (e) => events.push(e) }
+      );
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("DONE");
+      // Never touched the working tree — the attempted edit was refused, not executed.
+      expect(fs.readFileSync(path.join(fx.repoPath, "math.js"), "utf8")).toContain("return a - b;");
+      expect(finalState.toolCallLog.some((t) => t.tool === "edit_file" && !t.ok && t.errorCode === "unknown-tool")).toBe(true);
+      // No verify/approve/commit stage exists for this workflow.
+      expect(finalState.verificationResults).toHaveLength(0);
+      expect(
+        events.some((e) => e.type === "state.transition" && (e.to === "VERIFYING" || e.to === "AWAITING_APPROVAL" || e.to === "COMMITTING"))
+      ).toBe(false);
+      // The model's final reply is captured as the report.
+      expect(finalState.summaryCheckpoints).toHaveLength(1);
+      expect(finalState.summaryCheckpoints[0]).toContain("recommend swapping the operator");
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+});

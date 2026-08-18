@@ -96,6 +96,7 @@ baseOptions(program.command("run"))
   .option("--max-tokens <n>", "override the token budget (default: 200000)", (v) => parseInt(v, 10))
   .option("--cost-ceiling-usd <n>", "override the cost ceiling (overrides agent.toml's policy.costCeilingUsd)", (v) => parseFloat(v))
   .option("--scope <path>", "monorepo: pin verification (toolchain + pipeline cwd) to this subdir (§13.4)")
+  .option("--workflow <id>", "default | quickfix | review-only (§8.2)", "default")
   .action(
     async (
       task: string,
@@ -109,6 +110,7 @@ baseOptions(program.command("run"))
         maxTokens?: number;
         costCeilingUsd?: number;
         scope?: string;
+        workflow: string;
       }
     ) =>
       emit(
@@ -122,7 +124,8 @@ baseOptions(program.command("run"))
           maxWallclockMs: opts.maxWallclockMs,
           maxTokens: opts.maxTokens,
           costCeilingUsd: opts.costCeilingUsd,
-          scope: opts.scope
+          scope: opts.scope,
+          workflowId: opts.workflow
         }),
         opts.json
       )

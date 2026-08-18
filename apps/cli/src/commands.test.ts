@@ -515,6 +515,36 @@ describe("run --scope (§13.4 monorepos)", () => {
   }, 30_000);
 });
 
+describe("run --workflow (§8.2)", () => {
+  let repoPath: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-cli-state-");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("selects review-only through the real CLI command boundary", async () => {
+    const result = await cmdRun(
+      { repoPath, stateDir, json: true },
+      { task: "review the repo", providerKind: "fake", model: "n/a", yes: true, workflowId: "review-only" }
+    );
+    expect(result.exitCode).toBe(EXIT.SUCCESS);
+    expect(JSON.parse(result.output).status).toBe("DONE");
+  }, 30_000);
+
+  it("reports a config error for an unknown workflow id", async () => {
+    const result = await cmdRun({ repoPath, stateDir }, { task: "investigate", providerKind: "fake", model: "n/a", workflowId: "not-a-real-workflow" });
+    expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect(result.output).toMatch(/unknown workflow "not-a-real-workflow"/);
+  }, 30_000);
+});
+
 describe("models probe/list (§4.9)", () => {
   let repoPath: string;
   let modelsDir: string;

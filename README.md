@@ -182,6 +182,36 @@ afterward, not just at the unit level). Deliberately out of scope: the
 describes, and the long-term engineering tier (§10 — prior runs/decisions
 queryable via a history database) — both real, separate features.
 
+**§8's Workflow Engine is done for the three Phase 1 built-ins.**
+`RunState.workflowId` existed since early in the project but was inert —
+stored on every run, read by nothing. It's now load-bearing: `agent run
+--workflow <default|quickfix|review-only>` selects one of three real,
+behaviorally-distinct pipelines. `default` is the unchanged baseline
+(plan(opt) → implement → verify → approve → commit). `quickfix` skips the
+planning stage unconditionally — even for a task whose description would
+otherwise trip the §6.7 heuristic (ambiguity markers, length, low
+instruction fidelity), proven by running the identical ambiguous task
+description through both workflows and asserting `PLANNING` fires for one
+and not the other. `review-only` (inspect → review → report) is read-only
+end to end: `write_file`/`edit_file` are filtered out of both the tool
+schema sent to the model *and* the dispatch table `AgentLoop` actually
+executes against (the same `effectiveTools` map backs both), so a model
+that tries to edit anyway gets a genuine `unknown-tool` error, not a
+silent no-op — proven with a scripted turn that attempts exactly that
+attack and asserts the working tree is untouched afterward. The workflow
+then finishes by capturing the model's final reply into
+`RunState.summaryCheckpoints` as its report and transitioning straight to
+`DONE`, skipping verify/approve/commit entirely (a new, narrowly-scoped
+`ACTING → DONE` state-machine edge exists solely for this). An unknown
+`--workflow` value is rejected at the `Agent.run` boundary with a clear
+error naming the three valid ids, the same "fail loud, three calls up"
+style already used for "not a git repo." Deliberately out of scope, per
+§8.1/§18.2: the JSON-Schema-validated user-declarative layer for
+*customizing* the linear pipeline (built-ins today are fixed TS code
+paths, not data), and the dedicated `agent workflow` list/select/validate
+CLI command (§18.2 marks it Phase 2) — selection today is the `--workflow`
+flag and nothing more.
+
 ## Repository layout
 
 ```
