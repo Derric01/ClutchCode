@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { Readable } from "node:stream";
 import { execFileSync } from "node:child_process";
 import { detectKeychainBackend, markTrusted } from "@clutchcode/agent-api";
@@ -542,6 +543,60 @@ describe("run --workflow (§8.2)", () => {
     const result = await cmdRun({ repoPath, stateDir }, { task: "investigate", providerKind: "fake", model: "n/a", workflowId: "not-a-real-workflow" });
     expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
     expect(result.output).toMatch(/unknown workflow "not-a-real-workflow"/);
+  }, 30_000);
+});
+
+describe("run --workflow-file (§8.1 user-declarative workflows)", () => {
+  let repoPath: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-cli-state-");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("runs a real custom declarative workflow file through the CLI, and its own id ends up as the run's workflowId", async () => {
+    const workflowFile = path.join(stateDir, "always-plan.json");
+    fs.writeFileSync(
+      workflowFile,
+      JSON.stringify({
+        apiVersion: "clutchcode/v1",
+        id: "always-plan-cli",
+        name: "Always Plan (CLI test)",
+        stages: [
+          { id: "implement", uses: "implement" },
+          { id: "verify", uses: "verify" }
+        ]
+      }),
+      "utf8"
+    );
+
+    const result = await cmdRun({ repoPath, stateDir, json: true }, { task: "investigate", providerKind: "fake", model: "n/a", yes: true, workflowFile });
+    expect(result.exitCode).toBe(EXIT.SUCCESS);
+    expect(JSON.parse(result.output).status).toBe("DONE");
+  }, 30_000);
+
+  it("reports a config error for a malformed workflow file instead of a raw parse exception", async () => {
+    const workflowFile = path.join(stateDir, "broken.json");
+    fs.writeFileSync(workflowFile, "{ not json", "utf8");
+
+    const result = await cmdRun({ repoPath, stateDir }, { task: "investigate", providerKind: "fake", model: "n/a", workflowFile });
+    expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect(result.output).toMatch(/failed to read\/parse workflow file/);
+  }, 30_000);
+
+  it("reports a config error when both --workflow and --workflow-file are given", async () => {
+    const workflowFile = path.join(stateDir, "x.json");
+    fs.writeFileSync(workflowFile, JSON.stringify({ apiVersion: "clutchcode/v1", id: "x", name: "X", stages: [{ id: "implement", uses: "implement" }] }), "utf8");
+
+    const result = await cmdRun({ repoPath, stateDir }, { task: "investigate", providerKind: "fake", model: "n/a", workflowId: "quickfix", workflowFile });
+    expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect(result.output).toMatch(/mutually exclusive/);
   }, 30_000);
 });
 

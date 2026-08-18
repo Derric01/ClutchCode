@@ -17,7 +17,8 @@
     "@clutchcode/providers": "workspace:*",
     "@clutchcode/sandbox": "workspace:*",
     "@clutchcode/tools": "workspace:*",
-    "@clutchcode/verification": "workspace:*"
+    "@clutchcode/verification": "workspace:*",
+    "ajv": "^8.20.0"
   },
   "devDependencies": {
     "typescript": "^5.7.2"

@@ -96,7 +96,8 @@ baseOptions(program.command("run"))
   .option("--max-tokens <n>", "override the token budget (default: 200000)", (v) => parseInt(v, 10))
   .option("--cost-ceiling-usd <n>", "override the cost ceiling (overrides agent.toml's policy.costCeilingUsd)", (v) => parseFloat(v))
   .option("--scope <path>", "monorepo: pin verification (toolchain + pipeline cwd) to this subdir (§13.4)")
-  .option("--workflow <id>", "default | quickfix | review-only (§8.2)", "default")
+  .option("--workflow <id>", "default | quickfix | review-only (§8.2); default \"default\" if neither this nor --workflow-file is given")
+  .option("--workflow-file <path>", "a JSON-Schema-validated custom declarative workflow file (§8.1); mutually exclusive with --workflow")
   .action(
     async (
       task: string,
@@ -110,7 +111,8 @@ baseOptions(program.command("run"))
         maxTokens?: number;
         costCeilingUsd?: number;
         scope?: string;
-        workflow: string;
+        workflow?: string;
+        workflowFile?: string;
       }
     ) =>
       emit(
@@ -125,7 +127,8 @@ baseOptions(program.command("run"))
           maxTokens: opts.maxTokens,
           costCeilingUsd: opts.costCeilingUsd,
           scope: opts.scope,
-          workflowId: opts.workflow
+          workflowId: opts.workflow,
+          workflowFile: opts.workflowFile
         }),
         opts.json
       )

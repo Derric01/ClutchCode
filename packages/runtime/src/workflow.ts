@@ -50,3 +50,28 @@ export const BUILTIN_WORKFLOWS: Readonly<Record<BuiltinWorkflowId, WorkflowDescr
 export function isBuiltinWorkflowId(id: string): id is BuiltinWorkflowId {
   return (BUILTIN_WORKFLOW_IDS as readonly string[]).includes(id);
 }
+
+/**
+ * The actual, minimal thing `AgentLoop` needs from *any* workflow — built-in
+ * or user-declarative (§8.1) — to drive its existing control flow. Both
+ * `resolveBuiltinWorkflowPlan` below and `workflow-declaration.ts`'s
+ * `resolveWorkflowPlan` produce this same shape, so `AgentLoop` never needs
+ * to know which kind of workflow it's running.
+ */
+export interface WorkflowPlan {
+  /** "auto": the §6.7 heuristic decides (built-in `default`). "always": force planning unconditionally — only reachable via a custom declarative workflow today, none of the three built-ins do this. "never": force-skip planning unconditionally (built-in `quickfix`). */
+  planMode: "auto" | "always" | "never";
+  /** §8.2 `review-only`-style: write_file/edit_file withheld, run finishes with no verify/approve/commit. */
+  readonly: boolean;
+}
+
+export function resolveBuiltinWorkflowPlan(id: BuiltinWorkflowId): WorkflowPlan {
+  switch (id) {
+    case "default":
+      return { planMode: "auto", readonly: false };
+    case "quickfix":
+      return { planMode: "never", readonly: false };
+    case "review-only":
+      return { planMode: "never", readonly: true };
+  }
+}

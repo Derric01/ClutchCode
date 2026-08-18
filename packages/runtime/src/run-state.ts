@@ -1,4 +1,5 @@
 import type { NormalizedMessage } from "@clutchcode/providers";
+import { isBuiltinWorkflowId, resolveBuiltinWorkflowPlan, type WorkflowPlan } from "./workflow.js";
 
 /**
  * The persisted RunState and its state machine (PROJECT_SPEC.md §6.2).
@@ -113,6 +114,18 @@ export interface RunState {
   runId: string;
   task: string;
   workflowId: string;
+  /**
+   * §8.1/§8.2: the *resolved* plan-mode/readonly toggles for `workflowId`,
+   * computed once at `createRunState` time and persisted from then on —
+   * not re-derived from `workflowId` on every load. This is what makes
+   * `resume()` correct for a custom declarative workflow (§8.1): the
+   * workflow *file* that produced this plan might not exist by the time a
+   * paused run resumes (moved, deleted, edited into something else), but
+   * the resolved plan itself doesn't depend on the file continuing to
+   * exist — it round-trips through JSON exactly like `budgets`/`consumed`
+   * already do.
+   */
+  workflowPlan: WorkflowPlan;
   provider: string;
   model: string;
   capabilityProfileId?: string;
@@ -165,6 +178,8 @@ export interface CreateRunStateOptions {
   runId: string;
   task: string;
   workflowId?: string;
+  /** §8.1: the already-resolved plan for a custom declarative workflow — `workflowId` should be that declaration's own `id` when this is set. Omit for a built-in `workflowId` (or no `workflowId` at all); it's derived automatically. */
+  workflowPlan?: WorkflowPlan;
   provider: string;
   model: string;
   capabilityProfileId?: string;
@@ -183,10 +198,19 @@ const DEFAULT_BUDGETS: Budgets = {
 
 export function createRunState(opts: CreateRunStateOptions): RunState {
   const now = Date.now();
+  const workflowId = opts.workflowId ?? "default";
+  // §8.1: `opts.workflowPlan` (a custom declarative workflow, already
+  // resolved by the caller) wins when given; otherwise resolve `workflowId`
+  // as a built-in, falling back to "default"'s plan for anything this
+  // function doesn't recognize — the same defensive fallback `AgentLoop`
+  // itself used before this field existed, kept here too since a caller
+  // could still construct a `RunState` by hand with an arbitrary id.
+  const workflowPlan = opts.workflowPlan ?? resolveBuiltinWorkflowPlan(isBuiltinWorkflowId(workflowId) ? workflowId : "default");
   return {
     runId: opts.runId,
     task: opts.task,
-    workflowId: opts.workflowId ?? "default",
+    workflowId,
+    workflowPlan,
     provider: opts.provider,
     model: opts.model,
     capabilityProfileId: opts.capabilityProfileId,

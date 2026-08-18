@@ -70,4 +70,34 @@ describe("RunState state machine", () => {
     const explicit = createRunState({ runId: "r2", task: "t", workflowId: "quickfix", provider: "fake", model: "fake" });
     expect(explicit.workflowId).toBe("quickfix");
   });
+
+  it("resolves workflowPlan from a built-in workflowId, and defaults to \"default\"'s plan for an unrecognized one (§8.1)", () => {
+    expect(createRunState({ runId: "r1", task: "t", provider: "fake", model: "fake" }).workflowPlan).toEqual({ planMode: "auto", readonly: false });
+    expect(createRunState({ runId: "r2", task: "t", workflowId: "quickfix", provider: "fake", model: "fake" }).workflowPlan).toEqual({
+      planMode: "never",
+      readonly: false
+    });
+    expect(createRunState({ runId: "r3", task: "t", workflowId: "review-only", provider: "fake", model: "fake" }).workflowPlan).toEqual({
+      planMode: "never",
+      readonly: true
+    });
+    // An id createRunState doesn't recognize (e.g. a custom declarative workflow's
+    // own id, passed without its resolved plan by mistake) falls back to "default"'s
+    // plan defensively rather than throwing — the id itself is still recorded as-is.
+    const unrecognized = createRunState({ runId: "r4", task: "t", workflowId: "something-custom", provider: "fake", model: "fake" });
+    expect(unrecognized.workflowId).toBe("something-custom");
+    expect(unrecognized.workflowPlan).toEqual({ planMode: "auto", readonly: false });
+  });
+
+  it("an explicit workflowPlan wins over the workflowId-derived default (§8.1 custom declarative workflows)", () => {
+    const custom = createRunState({
+      runId: "r1",
+      task: "t",
+      workflowId: "always-plan-custom",
+      workflowPlan: { planMode: "always", readonly: false },
+      provider: "fake",
+      model: "fake"
+    });
+    expect(custom.workflowPlan).toEqual({ planMode: "always", readonly: false });
+  });
 });
