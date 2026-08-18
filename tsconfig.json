@@ -8,7 +8,9 @@
     { "path": "packages/capability" },
     { "path": "packages/runtime" },
     { "path": "packages/agent-api" },
+    { "path": "packages/agent-rpc" },
     { "path": "apps/cli" },
+    { "path": "apps/vscode" },
     { "path": "evals" }
   ]
 }

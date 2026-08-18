@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@clutchcode/agent-api": "workspace:*",
+    "@clutchcode/agent-rpc": "workspace:*",
     "commander": "^15.0.0"
   },
   "devDependencies": {

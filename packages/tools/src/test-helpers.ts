@@ -18,6 +18,9 @@ export function makeTestContext(workspaceRoot: string, overrides: Partial<ToolCo
     redactor: new Redactor(),
     repoTrustMode: "trusted",
     networkAllowlist: [],
+    submodulePaths: [],
+    lfsPatterns: [],
+    sandbox: { backend: "none", reason: "test fixture — Tier 1 not exercised by default, pass `sandbox` in overrides to test it" },
     ...overrides
   };
 }

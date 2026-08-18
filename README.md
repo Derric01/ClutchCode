@@ -15,8 +15,8 @@ licensing/reuse rules that govern this implementation.
 
 ## Status
 
-**Phase 1 (MVP) shipped; Phase 2 in progress.** Per `PROJECT_SPEC.md §21`,
-the MVP is: one agent, one default workflow, two provider adapters
+**Phase 1 shipped; Phase 2 in progress.** Per `PROJECT_SPEC.md §21`,
+Phase 1 is: one agent, one default workflow, two provider adapters
 (OpenAI-compatible + Ollama; Anthropic native shipped early too),
 SEARCH/REPLACE edits with fallback, git worktree isolation, deterministic
 verification with cheat detection, and a terminal CLI — all done. The
@@ -31,10 +31,130 @@ budget, and conversation history is compacted (turn-safe, never splitting
 a tool call from its result) once the effective-context budget is
 exceeded. Not yet enforced: dedicated repo-map/open-file-window budgets
 (§9, §4.5) — that subsystem doesn't exist before Phase 7, so their share
-is folded into the live history budget for now. OS sandbox Tier 1, OS
-keychain credential storage, the VS Code extension, and mid-run resume
-hardening remain the named Phase 2/3 follow-ups (`PROJECT_SPEC.md
-§21/§25`).
+is folded into the live history budget for now.
+
+`agent resume` is hardened (§6.2, §6.3, §18.2): a run paused on a budget
+limit persists its full conversation transcript — redacted (§5.2) before
+every write, the same guarantee `toolCallLog` already had — and `agent
+resume <runId> --extend-steps N` (also `--extend-wallclock-ms` /
+`--extend-tokens` / `--extend-cost-usd`) reconstructs the loop from that
+transcript and actually continues it, rather than only re-attaching and
+reporting status. `agent run` gained matching `--max-steps` /
+`--max-wallclock-ms` / `--max-tokens` / `--cost-ceiling-usd` budget
+overrides.
+
+**§5.1's credential storage is done — all three tiers.** `agent providers
+set-key <anthropic|openai-compatible>` reads a key from stdin — never an
+argument, never shell history — and stores it, with the real precedence
+chain (keychain → encrypted file store → env vars) now backing every run,
+probe, and CLI command. **Tier 1, OS keychain:** Linux is verified against
+a real, running freedesktop Secret Service (`secret-tool`/libsecret): a
+full suite spins up a throwaway D-Bus session + `gnome-keyring-daemon` and
+proves store/get/clear round-trip and that a keychain-stored credential
+genuinely takes precedence over the same-named env var, not just that the
+plumbing compiles. macOS (`security` CLI) and Windows (DPAPI via
+PowerShell — deliberately not `cmdkey`, which can't read a password back
+without a native helper) are written against documented, stable OS
+interfaces with the argv/script shape directly asserted in tests, but
+**not runtime-verified** — no macOS/Windows host exists in this
+environment, same disclosed gap as the Seatbelt sandbox profile. **Tier
+2, the encrypted file store** (`~/.config/clutchcode/credentials.age`,
+used only on machines with no keychain at all — headless Linux, some
+Profile-D servers): AES-256-GCM via Node's built-in `crypto`, keyed by a
+locally generated, permission-protected "machine key" file plus an
+optional passphrase — a deliberate scoping decision documented in
+`credential-file-store.ts`'s header (the `.age` extension follows the
+spec's named path, not literal byte-compatibility with the `age` tool,
+which would need a from-scratch reimplementation of its wire format to
+matter). Unlike Tier 1, this needs no OS binary and so is uniformly
+verified everywhere this repo builds: real round-trip tests, a wrong
+passphrase or a tampered auth tag failing closed instead of returning
+garbage, two different machine keys never seeing each other's values.
+Every tier fails closed and silent on any error (locked keyring, no
+session bus, missing binary, wrong passphrase — all just "not available,"
+never a hard error or a hang), so a broken or absent keychain always
+falls through cleanly to the next tier.
+
+**Phase 5's git edge cases (§13.4/§13.5) are done.** Submodule writes now
+ask for explicit approval instead of silently landing in the run's own
+commits; LFS-tracked writes/edits are flagged (`lfsTracked`) rather than
+ignored; `read_file` recognizes LFS pointer stubs and refuses real binary
+content instead of returning mojibake; `agent run --scope path/` pins
+verification to a monorepo subdir; `agent checkpoints`/`agent rollback`
+expose the checkpoint history that already existed at the git layer but
+had no CLI surface; `agent pr` pushes a run's branch and opens a PR via
+`gh` (falling back to a real GitHub compare URL, or just confirming the
+push) — the delivery path alongside `agent approve`, without merging
+locally. A real bug also got fixed along the way: `approve --squash`'s
+final commit was bypassing the user's pre-commit hooks the same way
+internal checkpoints correctly do — §13.4 says hooks should run on the
+final approved commit, and now they do. Deliberately not attempted: full
+non-git (snapshot-backed) `AgentLoop` execution — `agent run` now fails
+with a clear "run git init" error instead of a confusing git error three
+calls deep, but a parallel non-git execution path is a distinctly larger
+project than this pass's scope.
+
+**Phase 3's OS sandbox Tier 1 (§12.5/§12.6) is done on Linux, written (not
+runtime-verified) on macOS.** `shell` now runs under real OS confinement
+by default when available: Linux via bubblewrap namespaces (fs bound to
+the workspace + standard system dirs read-only, network and pid
+namespaces unshared, a synthetic empty `$HOME`), macOS via a generated
+Seatbelt (`sandbox-exec`) profile in the same shape. This isn't just
+wired — it's proven: a test suite writes a file outside the workspace and
+asserts a sandboxed `cat` of it fails, asserts a network fetch inside the
+sandbox is unreachable, and asserts the real CLI binary's own `npm test`
+run still passes confined. The macOS path is authored against the
+documented SBPL grammar and the same shape other sandboxed dev tools use,
+but has never run against a real `sandbox-exec` — no macOS host exists in
+this environment, so that's flagged rather than claimed. `agent.toml`'s
+`policy.sandboxTier = "tier0"` is the documented escape hatch when Tier 1
+breaks a legitimate workflow; `agent doctor` reports which backend is
+active. **Seccomp hardening is now layered under bwrap** (x86_64 Linux):
+a classic-BPF filter denying ~20 syscalls a dev/build/test workflow never
+legitimately needs but that are common sandbox-escape/privilege-escalation
+primitives (`ptrace`, `mount`, `bpf`, `unshare`, `kexec_load`, kernel
+module loading, and others — see `seccomp-linux.ts` for the full list and
+each entry's one-line reason), hand-assembled directly in TypeScript
+(zero new runtime dependency) and proven end-to-end against the real
+kernel: a real bwrap-sandboxed process invokes each denied syscall by
+number and gets EPERM, a control run without the filter proves the same
+syscall succeeds unfiltered, and ordinary shell usage still works fine
+under it. **Landlock is explicitly not attempted** — unlike seccomp's
+publicly documented BPF bytecode format, applying it correctly needs
+either a native helper or a raw-syscall binding with no vetted library
+and no safe way to verify a hand-rolled one here; a wrong Landlock rule
+fails by silently granting more access than intended, a worse mistake
+category than seccomp's fail-loud one, so this stays a named gap rather
+than a guess. **arm64 seccomp is also not supported yet** — different
+syscall numbers, no way to verify them without an arm64 host, reported
+honestly by `detectSeccompSupport()` rather than guessed. A Windows Tier 1
+backend (WSL2 is the spec's own recommended path there) remains open too.
+
+**Phase 4's VS Code extension (§18.1/§18.5) is built.** A new
+`@clutchcode/agent-rpc` package gives the runtime a second binding
+alongside the in-process one the CLI uses: LSP-style framed JSON-RPC 2.0
+over stdio (`Content-Length`-prefixed messages, a `FrameDecoder` that
+handles partial/chunked delivery), with `run/status/listRuns/diff/approve/
+reject/resume/inspect/checkpoints/rollback/pr` mapped onto real `Agent`
+methods and runtime events forwarded as `clutchcode/event` notifications.
+`clutchcode serve` runs it over real stdin/stdout. `apps/vscode` is a thin
+client of that boundary — per §18.1's "no separate reimplementation of
+agent logic," `runTask.ts`/`connection.ts`/`presentation.ts` hold all of
+the orchestration (run → stream → diff → approve/reject) and spawn logic
+with zero `vscode` import, and are proven with real round-trip tests: a
+real `Agent` behind a real `AgentRpcClient` over `PassThrough` streams, and
+a separate test that spawns the actual compiled `clutchcode serve` binary
+as a child process and drives a run through it end to end. `extension.ts`
+— the one file that calls `vscode.window`/`vscode.commands` — type-checks
+cleanly against the official `@types/vscode` but has **not** run inside a
+real VS Code extension host; there's no `vscode` runtime in this
+environment to verify it against, and the code says so in a header
+comment rather than claiming more than was checked (`apps/vscode/README.md`
+states the same boundary). Not yet built: a native two-sided diff view (a
+single read-only diff-highlighted document today, not `vscode.diff`), a
+run-picker instead of typing a run id, and resume/rollback/pr commands in
+the extension UI (the CLI has them; the extension covers §18.5's core
+run/diff/approve/reject loop).
 
 ## Repository layout
 
@@ -46,9 +166,11 @@ packages/
   git/            worktree isolation, checkpoints, diff
   verification/   pipeline, toolchain detect, cheat detection
   capability/     capability probe, profile persistence, context budgeter, edit-format selector
-  agent-api/      the Agent API boundary (in-process; stdio JSON-RPC later)
+  agent-api/      the Agent API boundary (in-process)
+  agent-rpc/      the Agent API's stdio JSON-RPC binding (LSP-style framing, ACP-shaped)
 apps/
-  cli/            `clutchcode` CLI (thin client of agent-api)
+  cli/            `clutchcode` CLI (thin client of agent-api; `serve` exposes agent-rpc)
+  vscode/         VS Code extension (thin client of agent-rpc over a spawned CLI)
 evals/            recorded-transcript replay harness against FakeProvider
 docs/             PRIOR_ART.md, adr/
 tests/            cross-package integration tests

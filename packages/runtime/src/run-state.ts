@@ -1,3 +1,5 @@
+import type { NormalizedMessage } from "@clutchcode/providers";
+
 /**
  * The persisted RunState and its state machine (PROJECT_SPEC.md §6.2).
  *
@@ -109,6 +111,12 @@ export interface RunState {
   provider: string;
   model: string;
   capabilityProfileId?: string;
+  /** Custom provider base URL, if one was used (§4.7) — persisted so a resumed run reconnects to the same endpoint. */
+  baseUrl?: string;
+  /** Whether the run was started with `--yes` (§14.7) — a resumed run preserves this unless the caller overrides it. */
+  yesMode?: boolean;
+  /** Monorepo verification scope (§13.4 `--scope path/`), if one was set — a resumed run keeps pinning verification to the same subdir. */
+  scope?: string;
 
   status: RunStatus;
   stepIndex: number;
@@ -124,6 +132,19 @@ export interface RunState {
   toolCallLog: ToolCallLogEntry[];
   verificationResults: VerificationResultSummary[];
   summaryCheckpoints: string[];
+
+  /**
+   * The persisted conversation transcript that makes `agent resume`
+   * possible (§6.2, §18.2). **Redacted** (§5.2) before every write — the
+   * live in-memory conversation a run actually sends to the model can
+   * legitimately contain secret values it just read (a file, a command's
+   * output); this persisted copy never does, the same guarantee already
+   * enforced for `toolCallLog.args`. A resumed run's replayed history
+   * therefore has secrets replaced with `«REDACTED:...»` markers — a
+   * deliberate boundary, not a bug: nothing unredacted survives a process
+   * restart.
+   */
+  messages: NormalizedMessage[];
 
   loopDetectorState: unknown;
   repairIterations: number;
@@ -142,6 +163,9 @@ export interface CreateRunStateOptions {
   provider: string;
   model: string;
   capabilityProfileId?: string;
+  baseUrl?: string;
+  yesMode?: boolean;
+  scope?: string;
   budgets?: Partial<Budgets>;
 }
 
@@ -161,6 +185,9 @@ export function createRunState(opts: CreateRunStateOptions): RunState {
     provider: opts.provider,
     model: opts.model,
     capabilityProfileId: opts.capabilityProfileId,
+    baseUrl: opts.baseUrl,
+    yesMode: opts.yesMode,
+    scope: opts.scope,
     status: "CREATED",
     stepIndex: 0,
     budgets: { ...DEFAULT_BUDGETS, ...opts.budgets },
@@ -170,6 +197,7 @@ export function createRunState(opts: CreateRunStateOptions): RunState {
     toolCallLog: [],
     verificationResults: [],
     summaryCheckpoints: [],
+    messages: [],
     loopDetectorState: undefined,
     repairIterations: 0,
     createdAt: now,

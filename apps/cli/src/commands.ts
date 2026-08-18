@@ -1,16 +1,25 @@
+import type { Readable, Writable } from "node:stream";
 import { execFileSync } from "node:child_process";
 import {
   Agent,
+  clearCredential,
+  detectKeychainBackend,
+  detectSandboxBackend,
   initRepo,
   listModelProfiles,
   loadConfig,
-  loadCredentialsFromEnv,
+  loadCredentials,
   markTrusted,
   probeModel,
+  saveCredential,
+  type Budgets,
   type CapabilityProfile,
+  type CredentialKind,
+  type FileStoreOptions,
   type ProviderKind,
   type RunState
 } from "@clutchcode/agent-api";
+import { serveAgentRpc, type AgentRpcServerHandle } from "@clutchcode/agent-rpc";
 import { exitCodeForRunStatus, EXIT } from "./exit-codes.js";
 
 export interface CommandResult {
@@ -24,6 +33,10 @@ export interface CliContext {
   json?: boolean;
   /** Override for capability-profile storage (default: ~/.config/clutchcode/models); not repo-scoped. */
   modelsDir?: string;
+  /** Override for `process.env` — real CLI usage never sets this; tests use it to point credential commands at a throwaway OS keychain instead of the real one. */
+  env?: NodeJS.ProcessEnv;
+  /** Override for the §5.1 tier 2 encrypted file store's location (default: ~/.config/clutchcode); tests point it at a temp dir. */
+  credentialFileStore?: FileStoreOptions;
 }
 
 function summarizeRunState(state: RunState): Record<string, unknown> {
@@ -67,25 +80,55 @@ export async function cmdInit(ctx: CliContext): Promise<CommandResult> {
   return { exitCode: EXIT.SUCCESS, output };
 }
 
+/**
+ * Builds `{ steps, wallclockMs, tokens, costUsd }` from only the fields the
+ * caller actually set. `Agent.run`/`Agent.resume` spread this straight over
+ * defaults/existing budgets (§6.3) — an object literal with an *explicit*
+ * `undefined` value for an unset flag would spread right over that default
+ * and silently zero it out, so unset flags must be omitted entirely, not
+ * included as `undefined`.
+ */
+function definedBudgets(opts: { steps?: number; wallclockMs?: number; tokens?: number; costUsd?: number }): Partial<Budgets> | undefined {
+  const budgets: Partial<Budgets> = {};
+  if (opts.steps !== undefined) budgets.steps = opts.steps;
+  if (opts.wallclockMs !== undefined) budgets.wallclockMs = opts.wallclockMs;
+  if (opts.tokens !== undefined) budgets.tokens = opts.tokens;
+  if (opts.costUsd !== undefined) budgets.costUsd = opts.costUsd;
+  return Object.keys(budgets).length > 0 ? budgets : undefined;
+}
+
 export interface RunCommandOptions {
   task: string;
   providerKind: ProviderKind;
   model: string;
   baseUrl?: string;
   yes?: boolean;
+  /** §6.3 budget overrides; unset fields keep the config/default value. */
+  maxSteps?: number;
+  maxWallclockMs?: number;
+  maxTokens?: number;
+  costCeilingUsd?: number;
+  /** §13.4 monorepos: pin verification (toolchain + pipeline cwd) to this subdir. */
+  scope?: string;
 }
 
 export async function cmdRun(ctx: CliContext, opts: RunCommandOptions): Promise<CommandResult> {
   const agent = new Agent(ctx.repoPath, ctx.stateDir);
-  const state = await agent.run({
-    task: opts.task,
-    providerKind: opts.providerKind,
-    model: opts.model,
-    baseUrl: opts.baseUrl,
-    yesMode: opts.yes,
-    modelsDir: ctx.modelsDir
-  });
-  return { exitCode: exitCodeForRunStatus(state.status), output: formatRunState(state, ctx.json) };
+  try {
+    const state = await agent.run({
+      task: opts.task,
+      providerKind: opts.providerKind,
+      model: opts.model,
+      baseUrl: opts.baseUrl,
+      yesMode: opts.yes,
+      modelsDir: ctx.modelsDir,
+      scope: opts.scope,
+      budgets: definedBudgets({ steps: opts.maxSteps, wallclockMs: opts.maxWallclockMs, tokens: opts.maxTokens, costUsd: opts.costCeilingUsd })
+    });
+    return { exitCode: exitCodeForRunStatus(state.status), output: formatRunState(state, ctx.json) };
+  } catch (e) {
+    return { exitCode: EXIT.CONFIG_ERROR, output: String((e as Error).message) };
+  }
 }
 
 export async function cmdStatus(ctx: CliContext): Promise<CommandResult> {
@@ -147,16 +190,73 @@ export async function cmdInspect(ctx: CliContext, runId: string): Promise<Comman
   }
 }
 
-export async function cmdResume(ctx: CliContext, runId: string): Promise<CommandResult> {
+export interface ResumeCommandOptions {
+  /** §6.3's "ask to extend/stop": how much to raise each budget before continuing a PAUSED run. A run that isn't PAUSED ignores these and is returned as-is. */
+  extendSteps?: number;
+  extendWallclockMs?: number;
+  extendTokens?: number;
+  extendCostUsd?: number;
+  /** Overrides the run's original `--yes` for this resume only. */
+  yes?: boolean;
+}
+
+export async function cmdResume(ctx: CliContext, runId: string, opts: ResumeCommandOptions = {}): Promise<CommandResult> {
   const agent = new Agent(ctx.repoPath, ctx.stateDir);
   try {
-    const state = agent.resume(runId);
-    return {
-      exitCode: EXIT.SUCCESS,
-      output: ctx.json
-        ? formatRunState(state, true)
-        : `${formatRunState(state)}\n\n(note: MVP resume re-attaches and reports state; continuing an in-flight loop is a Phase 2 hardening item, §18.2)`
-    };
+    const state = await agent.resume(runId, {
+      extendSteps: opts.extendSteps,
+      extendWallclockMs: opts.extendWallclockMs,
+      extendTokens: opts.extendTokens,
+      extendCostUsd: opts.extendCostUsd,
+      yesMode: opts.yes,
+      modelsDir: ctx.modelsDir
+    });
+    return { exitCode: exitCodeForRunStatus(state.status), output: formatRunState(state, ctx.json) };
+  } catch (e) {
+    return { exitCode: EXIT.CONFIG_ERROR, output: String((e as Error).message) };
+  }
+}
+
+/** `agent checkpoints <runId>` (§13.3): every checkpoint commit made so far, oldest first. */
+export async function cmdCheckpoints(ctx: CliContext, runId: string): Promise<CommandResult> {
+  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  try {
+    const checkpoints = agent.checkpoints(runId);
+    if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify(checkpoints) };
+    if (checkpoints.length === 0) return { exitCode: EXIT.SUCCESS, output: "no checkpoints yet" };
+    return { exitCode: EXIT.SUCCESS, output: checkpoints.map((c) => `${c.sha.slice(0, 10)}  ${c.message}`).join("\n") };
+  } catch (e) {
+    return { exitCode: EXIT.CONFIG_ERROR, output: String((e as Error).message) };
+  }
+}
+
+/** `agent rollback <runId> <sha>` (§13.3): resets the worktree to an earlier checkpoint, including removing untracked files created after it. */
+export async function cmdRollback(ctx: CliContext, runId: string, sha: string): Promise<CommandResult> {
+  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  try {
+    const state = agent.rollback(runId, sha);
+    return { exitCode: EXIT.SUCCESS, output: formatRunState(state, ctx.json) };
+  } catch (e) {
+    return { exitCode: EXIT.CONFIG_ERROR, output: String((e as Error).message) };
+  }
+}
+
+export interface PrCommandOptions {
+  remote?: string;
+  base?: string;
+}
+
+/** `agent pr <runId>` (§13.5): pushes the run's branch and opens a PR (via `gh` if available). Never runs without this explicit command. */
+export async function cmdPr(ctx: CliContext, runId: string, opts: PrCommandOptions = {}): Promise<CommandResult> {
+  const agent = new Agent(ctx.repoPath, ctx.stateDir);
+  try {
+    const result = await agent.pr(runId, opts);
+    if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify(result) };
+    const lines = [`pushed ${result.branch} to ${result.remote}`];
+    if (result.method === "gh") lines.push(`PR opened: ${result.url}`);
+    else if (result.method === "compare-url") lines.push(`open a PR: ${result.url}`);
+    else lines.push("install/authenticate the `gh` CLI to open a PR automatically, or open one manually on your git host.");
+    return { exitCode: EXIT.SUCCESS, output: lines.join("\n") };
   } catch (e) {
     return { exitCode: EXIT.CONFIG_ERROR, output: String((e as Error).message) };
   }
@@ -167,19 +267,72 @@ export async function cmdTrust(ctx: CliContext): Promise<CommandResult> {
   return { exitCode: EXIT.SUCCESS, output: ctx.json ? JSON.stringify(config) : `trusted: ${ctx.repoPath}` };
 }
 
+/** Maps the CLI-facing provider name to the §5.1 keychain account it stores a key under. `ollama` has no key entry — it's a local server. */
+const CREDENTIAL_PROVIDERS: Record<string, CredentialKind> = { anthropic: "anthropicApiKey", "openai-compatible": "openaiApiKey" };
+
 export async function cmdProviders(ctx: CliContext): Promise<CommandResult> {
   const config = loadConfig(ctx.repoPath);
-  const creds = loadCredentialsFromEnv();
+  const creds = loadCredentials(ctx.env, ctx.credentialFileStore); // §5.1: OS keychain, then the encrypted file store, then env vars
+  const { backend, reason } = detectKeychainBackend(process.platform, ctx.env);
   const rows = [
     { kind: "anthropic", credentialPresent: Boolean(creds.anthropicApiKey) },
     { kind: "openai-compatible", credentialPresent: Boolean(creds.openaiApiKey) },
     { kind: "ollama", credentialPresent: true } // local server, no API key
   ];
-  if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify({ configured: config.providers, detected: rows }) };
+  if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify({ configured: config.providers, detected: rows, keychain: { backend, reason } }) };
+  const storageTier = backend === "none" ? "encrypted file store (~/.config/clutchcode/credentials.age)" : `OS keychain [${backend}]`;
   const lines = ["configured providers:", ...Object.entries(config.providers).map(([name, p]) => `  ${name}: ${p.kind}`)];
-  lines.push("credential presence (env vars, §5.1):");
+  lines.push(`credential presence (§5.1 — ${storageTier} first, env vars as the fallback):`);
   for (const r of rows) lines.push(`  ${r.kind}: ${r.credentialPresent ? "present" : "not set"}`);
+  lines.push(`OS keychain backend: ${backend} (${reason})`);
+  lines.push("set a key with `agent providers set-key <anthropic|openai-compatible>` (reads the value from stdin, never argv/history)");
   return { exitCode: EXIT.SUCCESS, output: lines.join("\n") };
+}
+
+function readAllStdin(stdin: Readable): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    stdin.setEncoding("utf8");
+    stdin.on("data", (chunk: string) => (data += chunk));
+    stdin.on("end", () => resolve(data));
+    stdin.on("error", reject);
+  });
+}
+
+/**
+ * `agent providers set-key <provider>` (§5.1 tiers 1/2): stores an API key
+ * in the OS keychain, or the encrypted file store when no keychain exists
+ * on this platform. Reads the value from stdin rather than an argument or
+ * an interactive prompt — never lands in shell history or a process
+ * listing, and stays scriptable (`echo -n "$KEY" | agent providers set-key anthropic`).
+ */
+export async function cmdProvidersSetKey(ctx: CliContext, provider: string, stdin: Readable): Promise<CommandResult> {
+  const kind = CREDENTIAL_PROVIDERS[provider];
+  if (!kind) return { exitCode: EXIT.CONFIG_ERROR, output: `unknown provider "${provider}" — expected one of: ${Object.keys(CREDENTIAL_PROVIDERS).join(", ")}` };
+
+  const value = (await readAllStdin(stdin)).trim();
+  if (!value) return { exitCode: EXIT.CONFIG_ERROR, output: "no key provided on stdin — pipe the key in, e.g. `echo -n \"$KEY\" | agent providers set-key anthropic`" };
+
+  const result = saveCredential(kind, value, ctx.env, ctx.credentialFileStore);
+  if (!result.ok) {
+    return {
+      exitCode: EXIT.CONFIG_ERROR,
+      output: `could not store the key (tried: ${result.backend}) — set the ${provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"} environment variable instead (§5.1 tier 3)`
+    };
+  }
+  return {
+    exitCode: EXIT.SUCCESS,
+    output: ctx.json ? JSON.stringify({ provider, backend: result.backend, ok: true }) : `${provider}: key stored (${result.backend})`
+  };
+}
+
+export async function cmdProvidersUnsetKey(ctx: CliContext, provider: string): Promise<CommandResult> {
+  const kind = CREDENTIAL_PROVIDERS[provider];
+  if (!kind) return { exitCode: EXIT.CONFIG_ERROR, output: `unknown provider "${provider}" — expected one of: ${Object.keys(CREDENTIAL_PROVIDERS).join(", ")}` };
+
+  const result = clearCredential(kind, ctx.env, ctx.credentialFileStore);
+  const humanLine = result.ok ? `${provider}: key removed (${result.backend})` : `${provider}: nothing to remove (backend: ${result.backend})`;
+  return { exitCode: EXIT.SUCCESS, output: ctx.json ? JSON.stringify({ provider, backend: result.backend, ok: result.ok }) : humanLine };
 }
 
 interface DoctorCheck {
@@ -209,15 +362,22 @@ async function checkOllama(): Promise<DoctorCheck> {
   }
 }
 
-/** `agent doctor` (§4.10, §18.2): real, honest checks — never fabricated. No GPU/VRAM probing in this MVP pass. */
+/** `agent doctor` (§4.10, §18.2): real, honest checks — never fabricated. No GPU/VRAM probing in this pass (tracked as a Phase 2 follow-up). */
 export async function cmdDoctor(ctx: CliContext): Promise<CommandResult> {
-  const creds = loadCredentialsFromEnv();
+  const creds = loadCredentials(ctx.env, ctx.credentialFileStore); // §5.1: OS keychain, then the encrypted file store, then env vars
+  const sandbox = detectSandboxBackend();
+  const keychain = detectKeychainBackend(process.platform, ctx.env);
   const checks: DoctorCheck[] = [
     { name: "node", ok: true, detail: process.version },
     checkBinary("git", ["--version"]),
     checkBinary("rg", ["--version"]),
-    { name: "ANTHROPIC_API_KEY", ok: Boolean(creds.anthropicApiKey), detail: creds.anthropicApiKey ? "set" : "not set" },
-    { name: "OPENAI_API_KEY", ok: Boolean(creds.openaiApiKey), detail: creds.openaiApiKey ? "set" : "not set" },
+    { name: "anthropic credential", ok: Boolean(creds.anthropicApiKey), detail: creds.anthropicApiKey ? "available (keychain or ANTHROPIC_API_KEY)" : "not set" },
+    { name: "openai-compatible credential", ok: Boolean(creds.openaiApiKey), detail: creds.openaiApiKey ? "available (keychain or OPENAI_API_KEY)" : "not set" },
+    { name: "OS keychain (§5.1)", ok: keychain.backend !== "none", detail: `${keychain.backend} — ${keychain.reason}` },
+    { name: "sandbox (§12.5/§12.6)", ok: sandbox.backend !== "none", detail: `${sandbox.backend} — ${sandbox.reason}` },
+    ...(sandbox.backend === "bwrap"
+      ? [{ name: "seccomp hardening (§12.6)", ok: sandbox.seccomp?.supported ?? false, detail: sandbox.seccomp?.reason ?? "not evaluated" }]
+      : []),
     await checkOllama()
   ];
 
@@ -278,4 +438,18 @@ export async function cmdModelsList(ctx: CliContext): Promise<CommandResult> {
       `${p.modelId}\tprovider=${p.providerId}\tdiff_acc=${p.diffApplicationAccuracy.toFixed(2)}\ttransport=${p.toolTransport}\tctx=${p.effectiveContext}`
   );
   return { exitCode: EXIT.SUCCESS, output: lines.join("\n") };
+}
+
+/**
+ * `clutchcode serve` (§18.1/§18.5): the Agent API's stdio JSON-RPC
+ * binding, the same shape a VS Code (or, later, Zed/Neovim) client
+ * spawns and speaks to — "the extension spawns/attaches to the runtime;
+ * no separate reimplementation of agent logic in the extension." A thin
+ * pass-through over `serveAgentRpc` so it's callable with any
+ * Readable/Writable pair — tests use in-memory streams; `cli.ts` wires
+ * real `process.stdin`/`process.stdout` and owns the process lifecycle
+ * (this function doesn't call `process.exit` itself, so it stays testable).
+ */
+export function cmdServe(ctx: CliContext, stdin: Readable, stdout: Writable): AgentRpcServerHandle {
+  return serveAgentRpc({ repoPath: ctx.repoPath, stateDir: ctx.stateDir }, stdin, stdout);
 }

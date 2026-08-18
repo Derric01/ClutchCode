@@ -39,7 +39,10 @@ export async function replayTranscript(transcript: RecordedTranscript): Promise<
     denylist: new Denylist(),
     redactor: new Redactor(),
     repoTrustMode: "trusted" as const,
-    networkAllowlist: []
+    networkAllowlist: [],
+    submodulePaths: [],
+    lfsPatterns: [],
+    sandbox: { backend: "none" as const, reason: "eval replay fixture" }
   };
 
   const provider = new FakeProvider(transcript.turns);

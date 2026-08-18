@@ -1,9 +1,13 @@
 import fs from "node:fs";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { detectBwrapOnPath } from "@clutchcode/sandbox";
 import { saveCapabilityProfile, type CapabilityProfile } from "@clutchcode/capability";
 import { Agent } from "./agent.js";
-import { makeSampleRepo, makeTempDir } from "./test-helpers.js";
+import { addBareOrigin, makeMonorepo, makeSampleRepo, makeTempDir, sseChunk, startScriptedServer, type ScriptedServer } from "./test-helpers.js";
 import { initRepo } from "./scaffold.js";
+import { markTrusted, saveConfig, loadConfig } from "./config.js";
 
 describe("Agent (agent-api boundary, wired end-to-end with a real worktree)", () => {
   let repoPath: string;
@@ -116,6 +120,287 @@ describe("Agent + capability profiles (§4.2/§4.9)", () => {
     const state = await agent.run({ task: "investigate the repo", providerKind: "fake", model: "never-probed", yesMode: true, modelsDir });
 
     expect(state.capabilityProfileId).toBeUndefined();
+  }, 30_000);
+});
+
+describe("Agent.resume (§6.2, §6.3, §18.2)", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let server: ScriptedServer;
+
+  // `providerKind: "fake"` pins to one fixed no-op turn (§4.7) — no good for
+  // scripting a pause/resume across multiple turns. A local scripted
+  // openai-compatible server drives the real provider adapter instead, the
+  // same wire path `Agent.run`/`Agent.resume` use in production.
+  const toolCallThenStop = [
+    [
+      sseChunk({
+        choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "shell", arguments: JSON.stringify({ cmd: "echo hi" }) } }] } }]
+      }),
+      sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 5, completion_tokens: 2 } }),
+      "data: [DONE]\n\n"
+    ],
+    [sseChunk({ choices: [{ delta: { content: "Investigated, nothing to fix." }, finish_reason: "stop" }] }), "data: [DONE]\n\n"]
+  ];
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+    markTrusted(repoPath); // so the non-destructive `echo` is ALLOW'd outright instead of parking on an ASK approval
+  });
+
+  afterEach(async () => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    await server?.close();
+  });
+
+  it("continues a run past its step budget: pauses after 1 step, resumes after extending, reaches DONE", async () => {
+    server = await startScriptedServer(toolCallThenStop);
+    const agent = new Agent(repoPath, stateDir);
+
+    const paused = await agent.run({
+      task: "investigate",
+      providerKind: "openai-compatible",
+      model: "gpt-test",
+      baseUrl: server.baseUrl,
+      yesMode: true,
+      budgets: { steps: 1 }
+    });
+    expect(paused.status).toBe("PAUSED");
+    expect(paused.escalationReason).toMatch(/budget exceeded: steps/);
+    expect(server.callCount()).toBe(1);
+
+    const resumed = await agent.resume(paused.runId, { extendSteps: 5 });
+
+    expect(resumed.status).toBe("DONE");
+    expect(server.callCount()).toBe(2);
+    // The resumed run reconnected to the same baseUrl without being asked again (§4.7, persisted on RunState).
+    expect(resumed.baseUrl).toBe(server.baseUrl);
+  }, 30_000);
+
+  it("is a no-op that returns the state unchanged when the run isn't PAUSED", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    const done = await agent.run({ task: "investigate the repo", providerKind: "fake", model: "n/a", yesMode: true });
+    expect(done.status).toBe("DONE");
+
+    const result = await agent.resume(done.runId);
+
+    expect(result.status).toBe("DONE");
+    expect(result.runId).toBe(done.runId);
+  }, 30_000);
+
+  it("throws a clear error for an unknown run id", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    await expect(agent.resume("does-not-exist")).rejects.toThrow(/no such run/);
+  });
+});
+
+describe("Agent.checkpoints / Agent.rollback (§13.3)", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let server: ScriptedServer;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+    markTrusted(repoPath);
+  });
+
+  afterEach(async () => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    await server?.close();
+  });
+
+  it("checkpoints() lists the checkpoint verification created, and rollback() restores it", async () => {
+    server = await startScriptedServer([
+      [
+        sseChunk({
+          choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "write_file", arguments: JSON.stringify({ path: "feature.txt", body: "v1\n" }) } }] } }]
+        }),
+        sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+        "data: [DONE]\n\n"
+      ],
+      [sseChunk({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }), "data: [DONE]\n\n"]
+    ]);
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "add a feature", providerKind: "openai-compatible", model: "gpt-test", baseUrl: server.baseUrl });
+    expect(state.status).toBe("AWAITING_APPROVAL"); // no --yes, worktree still around to inspect
+
+    const checkpoints = agent.checkpoints(state.runId);
+    expect(checkpoints.length).toBeGreaterThan(0);
+
+    // Round-trips through an abbreviated sha, matching real `git log --oneline` width.
+    const rolledBack = agent.rollback(state.runId, checkpoints[0]!.sha.slice(0, 7));
+    expect(rolledBack.runId).toBe(state.runId);
+  }, 30_000);
+
+  it("rollback() rejects a sha that isn't one of the run's checkpoints", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "investigate", providerKind: "fake", model: "n/a" });
+    expect(() => agent.rollback(state.runId, "deadbeef")).toThrow(/no checkpoint matching/);
+  }, 30_000);
+});
+
+describe("Agent.pr (§13.5)", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let bareRemote: string;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+    bareRemote = addBareOrigin(repoPath);
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    fs.rmSync(bareRemote, { recursive: true, force: true });
+  });
+
+  it("pushes the run's branch to origin and falls back to a manual result when gh/GitHub aren't available", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "investigate", providerKind: "fake", model: "n/a" });
+    expect(state.status).toBe("AWAITING_APPROVAL");
+
+    const result = await agent.pr(state.runId);
+
+    expect(result.method).toBe("manual"); // no `gh` in this test environment; the bare local path isn't GitHub
+    expect(result.remote).toBe("origin");
+    const branches = execFileSync("git", ["branch", "--list", result.branch], { cwd: bareRemote, encoding: "utf8" });
+    expect(branches.trim()).not.toBe("");
+  }, 30_000);
+
+  it("throws a clear error for an unknown run id", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    await expect(agent.pr("does-not-exist")).rejects.toThrow(/no such run/);
+  });
+});
+
+describe("Agent.run scope (§13.4 monorepos)", () => {
+  let repoPath: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    repoPath = makeMonorepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("pins verification to the scoped subdir, so a failing root toolchain doesn't block a passing scoped one", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "investigate", providerKind: "fake", model: "n/a", yesMode: true, scope: "packages/foo" });
+
+    expect(state.status).toBe("DONE");
+    expect(state.verificationResults[0]!.allGreen).toBe(true);
+    expect(state.scope).toBe("packages/foo");
+  }, 30_000);
+
+  it("rejects a scope that doesn't exist in the worktree", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    await expect(agent.run({ task: "investigate", providerKind: "fake", model: "n/a", scope: "packages/nope" })).rejects.toThrow(/does not exist/);
+  }, 30_000);
+});
+
+describe("Agent.run requires a git repo (§13.4)", () => {
+  it("fails loudly and actionably instead of a raw git error, three calls deep", async () => {
+    const dir = makeTempDir("clutchcode-agentapi-nongit-");
+    const stateDir = makeTempDir("clutchcode-agentapi-state-");
+    try {
+      const agent = new Agent(dir, stateDir);
+      await expect(agent.run({ task: "investigate", providerKind: "fake", model: "n/a" })).rejects.toThrow(/not a git repository/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Agent sandbox Tier 1 (§12.5/§12.6) — real confinement, not just plumbing", () => {
+  // This proves the *security property*, not just that fields get passed
+  // around: a file outside the workspace is unreadable to the sandboxed
+  // shell under Tier 1, and (deliberately, to show the contrast) readable
+  // under the `policy.sandboxTier = "tier0"` escape hatch, which has no OS-
+  // level confinement — only the policy engine, which doesn't gate a raw
+  // `cat` of an absolute path the way it gates tool calls.
+  const hasBwrap = detectBwrapOnPath();
+  const maybeIt = hasBwrap ? it : it.skip;
+
+  let repoPath: string;
+  let stateDir: string;
+  let leakPath: string;
+  let server: ScriptedServer;
+
+  function catLeakScript(): string[][] {
+    return [
+      [
+        sseChunk({
+          choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "shell", arguments: JSON.stringify({ cmd: `cat ${leakPath}` }) } }] } }]
+        }),
+        sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+        "data: [DONE]\n\n"
+      ]
+    ];
+  }
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+    markTrusted(repoPath);
+    leakPath = path.join(makeTempDir("clutchcode-agentapi-leak-"), "outside-secret.txt");
+    fs.writeFileSync(leakPath, "leaked outside workspace content marker", "utf8");
+  });
+
+  afterEach(async () => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    fs.rmSync(path.dirname(leakPath), { recursive: true, force: true });
+    await server?.close();
+  });
+
+  maybeIt("Tier 1 (default): a file outside the workspace is unreadable to the sandboxed shell", async () => {
+    server = await startScriptedServer(catLeakScript());
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({
+      task: "investigate",
+      providerKind: "openai-compatible",
+      model: "gpt-test",
+      baseUrl: server.baseUrl,
+      budgets: { steps: 1 }
+    });
+
+    expect(state.status).toBe("PAUSED");
+    expect(JSON.stringify(state.messages)).not.toContain("leaked outside workspace content marker");
+    expect(JSON.stringify(state.toolCallLog)).toBeTruthy(); // sanity: the shell call actually happened
+  }, 30_000);
+
+  maybeIt("policy.sandboxTier = \"tier0\" is a real escape hatch: without OS confinement, the same file IS readable", async () => {
+    const config = loadConfig(repoPath);
+    saveConfig(repoPath, { ...config, policy: { ...config.policy, sandboxTier: "tier0" } });
+    // Commit it — otherwise the default dirty-tree handling (§13.4) stashes
+    // this uncommitted agent.toml away (`--include-untracked`) before the
+    // run even starts, and the run would never see the override at all.
+    execFileSync("git", ["add", "agent.toml"], { cwd: repoPath });
+    execFileSync("git", ["commit", "-q", "-m", "tier0 override"], { cwd: repoPath });
+
+    server = await startScriptedServer(catLeakScript());
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({
+      task: "investigate",
+      providerKind: "openai-compatible",
+      model: "gpt-test",
+      baseUrl: server.baseUrl,
+      budgets: { steps: 1 }
+    });
+
+    expect(state.status).toBe("PAUSED");
+    expect(JSON.stringify(state.messages)).toContain("leaked outside workspace content marker");
   }, 30_000);
 });
 

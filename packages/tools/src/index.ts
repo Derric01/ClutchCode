@@ -29,7 +29,7 @@ import { shellTool } from "./tools/shell.js";
 import { gitTool } from "./tools/git.js";
 import { processTool } from "./tools/process.js";
 
-/** The MVP native tool set (§11), keyed by name for the runtime's tool registry. */
+/** The native tool set (§11), keyed by name for the runtime's tool registry. */
 export function nativeToolSet(): Map<string, Tool<any, any>> {
   const tools: Array<Tool<any, any>> = [
     readFileTool,

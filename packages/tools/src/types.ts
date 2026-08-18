@@ -1,5 +1,5 @@
 import type { PermissionClass, PolicyEngine } from "@clutchcode/sandbox";
-import type { Denylist, Redactor } from "@clutchcode/sandbox";
+import type { Denylist, Redactor, SandboxCapability } from "@clutchcode/sandbox";
 
 /**
  * Unified tool interface (PROJECT_SPEC.md §11.1).
@@ -55,6 +55,12 @@ export interface ToolContext {
   networkAllowlist: string[];
   /** Cooperative cancellation (§6.6). */
   signal?: AbortSignal;
+  /** Submodule paths relative to `workspaceRoot`, from `.gitmodules` (§13.4) — empty when the repo has none (or isn't git at all). */
+  submodulePaths: string[];
+  /** `.gitattributes` glob patterns tagged `filter=lfs` (§13.4) — empty when the repo has no LFS config. */
+  lfsPatterns: string[];
+  /** Resolved OS sandbox Tier 1 backend (§12.5/§12.6) — `shell` wraps its spawn under this when it isn't `"none"`. Computed once per run via `detectSandboxBackend`. */
+  sandbox: SandboxCapability;
 }
 
 export interface TruncatedOutput {

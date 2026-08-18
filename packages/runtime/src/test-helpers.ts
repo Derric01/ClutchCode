@@ -72,7 +72,10 @@ export function setupAgentLoopFixture(runId = "run00000001"): AgentLoopTestFixtu
     denylist: new Denylist(),
     redactor: new Redactor(),
     repoTrustMode: "trusted",
-    networkAllowlist: []
+    networkAllowlist: [],
+    submodulePaths: [],
+    lfsPatterns: [],
+    sandbox: { backend: "none", reason: "test fixture" }
   };
 
   return {

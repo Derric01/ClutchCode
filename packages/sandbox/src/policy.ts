@@ -56,6 +56,13 @@ export class PolicyEngine {
         if (req.insideWorkspace === false) {
           return { decision: "DENY", reason: "write path is outside the run worktree" };
         }
+        if (req.submodule) {
+          // Always ask, never remembered (unlike ordinary EXECUTE ASKs) — a
+          // submodule is a separate repo, so this write needs a separate,
+          // explicit commit inside it (§13.4), not silent inclusion in the
+          // run's own checkpoint/squash commits.
+          return { decision: "ASK", reason: "write path is inside a git submodule (§13.4) — needs its own separate commit" };
+        }
         return { decision: "ALLOW", reason: "write inside the run worktree (§13)" };
       }
 

@@ -31,6 +31,19 @@ describe("PolicyEngine", () => {
     expect(p.decide(req({ permissionClass: "WRITE", insideWorkspace: false })).decision).toBe("DENY");
   });
 
+  it("asks (never silently allows) a write inside a git submodule, even in a trusted repo (§13.4)", () => {
+    const p = new PolicyEngine();
+    const r = p.decide(req({ permissionClass: "WRITE", insideWorkspace: true, submodule: true, repoTrustMode: "trusted" }));
+    expect(r.decision).toBe("ASK");
+    expect(r.reason).toMatch(/submodule/);
+  });
+
+  it("a submodule write outside the workspace is still DENY, not ASK — outside-workspace wins", () => {
+    const p = new PolicyEngine();
+    const r = p.decide(req({ permissionClass: "WRITE", insideWorkspace: false, submodule: true }));
+    expect(r.decision).toBe("DENY");
+  });
+
   it("asks on first non-destructive execute in an untrusted repo, then remembers", () => {
     const p = new PolicyEngine();
     const first = p.decide(req({ permissionClass: "EXECUTE", commandClass: "npm test" }));

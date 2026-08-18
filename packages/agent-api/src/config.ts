@@ -6,7 +6,7 @@ import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
  * Config schema/contract (PROJECT_SPEC.md §19.2, ADR-003): `agent.toml`,
  * TOML for human-editability + comments. Full JSON-Schema validation and
  * `apiVersion`-gated migrations (§8.2) are a Phase-2 hardening item; this
- * MVP loader validates just enough shape to fail loudly on garbage.
+ * loader validates just enough shape to fail loudly on garbage.
  */
 
 export interface ProviderConfig {
@@ -22,6 +22,8 @@ export interface AgentConfig {
   trustedRepos: string[];
   policy?: {
     costCeilingUsd?: number;
+    /** §12.6: "auto" (default) uses OS sandbox Tier 1 (bwrap/Seatbelt) when available; "tier0" opts out and runs with the policy engine only — an escape hatch for a setup Tier 1's confinement breaks. */
+    sandboxTier?: "auto" | "tier0";
   };
 }
 

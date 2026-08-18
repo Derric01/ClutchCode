@@ -107,4 +107,100 @@ describe("read_file / write_file / edit_file", () => {
     expect(r.data?.content).not.toContain(canary);
     expect(r.data?.content).toContain("«REDACTED:");
   });
+
+  it("read_file refuses binary content instead of returning garbled text (§4.5/§13.4)", async () => {
+    fs.writeFileSync(path.join(workspace, "image.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d, 0x0a]));
+    const r = await readFileTool.run({ path: "image.png" }, ctx);
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe("binary-file");
+  });
+
+  it("read_file recognizes an LFS pointer file and doesn't dump the pointer stub as real content (§13.4)", async () => {
+    const pointer = [
+      "version https://git-lfs.github.com/spec/v1",
+      "oid sha256:4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393",
+      "size 999999",
+      ""
+    ].join("\n");
+    fs.writeFileSync(path.join(workspace, "asset.psd"), pointer, "utf8");
+    const r = await readFileTool.run({ path: "asset.psd" }, ctx);
+    expect(r.ok).toBe(true);
+    expect(r.data?.lfsPointer).toBe(true);
+    expect(r.data?.content).toContain("999999");
+    expect(r.data?.content).not.toContain("version https://git-lfs.github.com/spec/v1");
+  });
+});
+
+describe("write_file / edit_file inside a git submodule (§13.4)", () => {
+  let workspace: string;
+  let ctx: ToolContext;
+
+  beforeEach(() => {
+    workspace = makeTempWorkspace();
+    ctx = makeTestContext(workspace, { submodulePaths: ["libs/vendored"] });
+    fs.mkdirSync(path.join(workspace, "libs", "vendored"), { recursive: true });
+    fs.writeFileSync(path.join(workspace, "libs", "vendored", "existing.ts"), "export const x = 1;\n", "utf8");
+  });
+
+  afterEach(() => {
+    fs.rmSync(workspace, { recursive: true, force: true });
+    fs.rmSync(ctx.evidenceDir, { recursive: true, force: true });
+  });
+
+  it("write_file inside a submodule needs approval, never silently allowed", async () => {
+    const w = await writeFileTool.run({ path: "libs/vendored/new.ts", body: "export const y = 1;\n" }, ctx);
+    expect(w.ok).toBe(false);
+    expect(w.error?.code).toBe("needs-approval");
+    expect(w.error?.message).toMatch(/submodule/);
+    expect(fs.existsSync(path.join(workspace, "libs", "vendored", "new.ts"))).toBe(false);
+  });
+
+  it("edit_file inside a submodule needs approval, never silently allowed", async () => {
+    const e = await editFileTool.run(
+      { path: "libs/vendored/existing.ts", edits: [{ search: "const x = 1;", replace: "const x = 2;" }] },
+      ctx
+    );
+    expect(e.ok).toBe(false);
+    expect(e.error?.code).toBe("needs-approval");
+    expect(fs.readFileSync(path.join(workspace, "libs", "vendored", "existing.ts"), "utf8")).toContain("const x = 1;");
+  });
+
+  it("a write outside the submodule is unaffected", async () => {
+    const w = await writeFileTool.run({ path: "src/main.ts", body: "ok\n" }, ctx);
+    expect(w.ok).toBe(true);
+  });
+});
+
+describe("write_file / edit_file flag LFS-tracked paths (§13.4)", () => {
+  let workspace: string;
+  let ctx: ToolContext;
+
+  beforeEach(() => {
+    workspace = makeTempWorkspace();
+    ctx = makeTestContext(workspace, { lfsPatterns: ["*.bin"] });
+  });
+
+  afterEach(() => {
+    fs.rmSync(workspace, { recursive: true, force: true });
+    fs.rmSync(ctx.evidenceDir, { recursive: true, force: true });
+  });
+
+  it("write_file flags an LFS-tracked path but still allows the write", async () => {
+    const w = await writeFileTool.run({ path: "assets/blob.bin", body: "x" }, ctx);
+    expect(w.ok).toBe(true);
+    expect(w.data?.lfsTracked).toBe(true);
+  });
+
+  it("write_file does not flag a non-matching path", async () => {
+    const w = await writeFileTool.run({ path: "src/main.ts", body: "ok\n" }, ctx);
+    expect(w.ok).toBe(true);
+    expect(w.data?.lfsTracked).toBe(false);
+  });
+
+  it("edit_file flags an LFS-tracked path but still applies the edit", async () => {
+    await writeFileTool.run({ path: "assets/blob.bin", body: "before\n" }, ctx);
+    const e = await editFileTool.run({ path: "assets/blob.bin", edits: [{ search: "before", replace: "after" }] }, ctx);
+    expect(e.ok).toBe(true);
+    expect(e.data?.lfsTracked).toBe(true);
+  });
 });

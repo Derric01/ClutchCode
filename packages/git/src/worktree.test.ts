@@ -14,6 +14,15 @@ import {
   type RunWorktree
 } from "./worktree.js";
 
+function installHook(repoPath: string, script: string): void {
+  const hookPath = path.join(repoPath, ".git", "hooks", "pre-commit");
+  fs.writeFileSync(hookPath, script, { mode: 0o755 });
+}
+
+function installRejectingHook(repoPath: string): void {
+  installHook(repoPath, "#!/bin/sh\nexit 1\n");
+}
+
 describe("worktree isolation (§13.1)", () => {
   let repoPath: string;
   let stateDir: string;
@@ -104,6 +113,37 @@ describe("worktree isolation (§13.1)", () => {
     const after = git(["rev-parse", "HEAD"], { cwd: repoPath }).trim();
     expect(after).toBe(before); // nothing to commit, HEAD unchanged
     expect(fs.existsSync(run.worktreePath)).toBe(false);
+  });
+
+  it("checkpoint commits bypass the user's pre-commit hook (§13.4)", () => {
+    installRejectingHook(repoPath);
+
+    fs.writeFileSync(path.join(run.worktreePath, "a.txt"), "first\n", "utf8");
+    // Worktrees share hooks with the main repo's .git dir — this would
+    // fail if `checkpoint()` didn't pass `--no-verify`.
+    expect(checkpoint(run, "add a.txt")).not.toBeNull();
+  });
+
+  it("approveRun's final squash commit runs the user's pre-commit hook and fails loudly if it rejects (§13.4)", () => {
+    installRejectingHook(repoPath);
+
+    fs.writeFileSync(path.join(run.worktreePath, "a.txt"), "first\n", "utf8");
+    checkpoint(run, "add a.txt"); // succeeds — checkpoints bypass the hook
+
+    expect(() => approveRun(run, { squash: true })).toThrow();
+    // The worktree is still there — approval genuinely failed, nothing was silently accepted.
+    expect(fs.existsSync(run.worktreePath)).toBe(true);
+  });
+
+  it("approveRun's final squash commit actually invokes the user's pre-commit hook when it passes", () => {
+    const marker = path.join(repoPath, "hook-ran.marker");
+    installHook(repoPath, `#!/bin/sh\ntouch "${marker}"\nexit 0\n`);
+
+    fs.writeFileSync(path.join(run.worktreePath, "a.txt"), "first\n", "utf8");
+    checkpoint(run, "add a.txt");
+    approveRun(run, { squash: true });
+
+    expect(fs.existsSync(marker)).toBe(true);
   });
 
   it("approveRun with squash produces a single commit on the target branch", () => {

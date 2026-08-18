@@ -3,6 +3,7 @@ import type { Tool, ToolContext, ToolResult } from "../types.js";
 import { fail, ok } from "../types.js";
 import { resolveInWorkspace } from "../workspace-path.js";
 import { applyEdits, type EditBlock } from "../edit-cascade.js";
+import { isInsideAnySubmodule, matchesLfsPattern } from "../repo-edge-cases.js";
 
 export interface EditFileArgs {
   path: string;
@@ -12,6 +13,8 @@ export interface EditFileArgs {
 export interface EditFileData {
   path: string;
   strategiesUsed: string[];
+  /** §13.4: the path matches an LFS-tracked `.gitattributes` pattern — flagged so the model (and diff review) knows a SEARCH/REPLACE here is unusual. */
+  lfsTracked: boolean;
 }
 
 export const editFileTool: Tool<EditFileArgs, EditFileData> = {
@@ -58,16 +61,21 @@ export const editFileTool: Tool<EditFileArgs, EditFileData> = {
 
   async run(args, ctx: ToolContext): Promise<ToolResult<EditFileData>> {
     const { abs, inside } = resolveInWorkspace(ctx.workspaceRoot, args.path);
+    const submodule = inside && isInsideAnySubmodule(args.path, ctx.submodulePaths);
 
     const decision = ctx.policy.decide({
       permissionClass: "WRITE",
       commandClass: "edit_file",
       subject: abs,
       repoTrustMode: ctx.repoTrustMode,
-      insideWorkspace: inside
+      insideWorkspace: inside,
+      submodule
     });
     if (decision.decision !== "ALLOW") {
-      return fail(inside ? "policy-denied" : "path-outside-workspace", decision.reason);
+      return fail(
+        !inside ? "path-outside-workspace" : decision.decision === "ASK" ? "needs-approval" : "policy-denied",
+        decision.reason
+      );
     }
     if (ctx.denylist.isDenied(abs)) return fail("denylisted", `refusing to edit a denylisted path: ${args.path}`);
     if (!fs.existsSync(abs)) return fail("not-found", `no such file: ${args.path} (use write_file to create it)`);
@@ -83,6 +91,6 @@ export const editFileTool: Tool<EditFileArgs, EditFileData> = {
     }
 
     fs.writeFileSync(abs, result.content, "utf8");
-    return ok({ path: args.path, strategiesUsed: result.strategiesUsed });
+    return ok({ path: args.path, strategiesUsed: result.strategiesUsed, lfsTracked: matchesLfsPattern(args.path, ctx.lfsPatterns) });
   }
 };

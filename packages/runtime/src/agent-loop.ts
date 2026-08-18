@@ -53,6 +53,8 @@ export interface AgentLoopDeps {
   run: RunWorktree;
   toolchainCommands: ToolchainCommands;
   evidenceDir: string;
+  /** Verification pipeline cwd — defaults to `run.worktreePath` when omitted. §13.4 monorepos: pinned to a subdir when `--scope` is set, so tests run against that subdir's own toolchain. */
+  verifyCwd?: string;
   /**
    * The adaptation layer's inputs (§4.2, §4.9): drives edit-format guidance
    * (§4.4) and context budgeting (§4.5). Defaults to `resolveCapability(null,
@@ -85,7 +87,8 @@ export class AgentLoop {
    * history before those subsystems exist for no benefit.
    */
   private readonly historyTokenBudget: number;
-  private messages: NormalizedMessage[];
+  /** Assigned via `replaceMessages` at the end of the constructor (see below), not directly. */
+  private messages!: NormalizedMessage[];
 
   constructor(
     state: RunState,
@@ -102,11 +105,47 @@ export class AgentLoop {
     this.contextBudget = computeContextBudget(this.capability.effectiveContext);
     this.historyTokenBudget = this.contextBudget.conversationHistory + this.contextBudget.repoMapRetrieval + this.contextBudget.openFileWindows;
 
-    this.messages = buildInitialMessages(state.task, this.capability);
+    // `resume()` (§6.2, §18.2): a non-empty `state.messages` means this
+    // RunState was loaded from a previous, paused run — pick its (already
+    // redacted, per the field's own doc comment) transcript up as the
+    // starting conversation instead of building a fresh one. `messages`
+    // is [] on every newly created RunState, so a first run always takes
+    // the `buildInitialMessages` branch.
+    const resuming = state.messages.length > 0;
+    this.replaceMessages(resuming ? state.messages : buildInitialMessages(state.task, this.capability), resuming);
   }
 
   private emit(event: RuntimeEvent): void {
     this.opts.onEvent?.(event);
+  }
+
+  /**
+   * `this.messages` is the *live* conversation actually sent to the model —
+   * it can legitimately contain secret values the model just read (§5.2).
+   * `this.state.messages` is what gets written to disk (`RunStateStore`),
+   * so every message reaching it is scrubbed first, mirroring how
+   * `toolCallLog.args` is already redacted before being logged. These two
+   * helpers are the only places `this.messages`/`this.state.messages`
+   * change, so that guarantee can't be bypassed by a stray direct push.
+   */
+  private redactMessage(message: NormalizedMessage): NormalizedMessage {
+    const redactor = this.deps.toolContext.redactor;
+    const redacted: NormalizedMessage = { ...message, content: redactor.scrub(message.content).text };
+    if (message.toolCalls) {
+      redacted.toolCalls = message.toolCalls.map((tc) => ({ ...tc, argsJson: redactor.scrub(tc.argsJson).text }));
+    }
+    return redacted;
+  }
+
+  private pushMessage(message: NormalizedMessage): void {
+    this.messages.push(message);
+    this.state.messages.push(this.redactMessage(message));
+  }
+
+  /** Full reassignment (initial build, resume, post-compaction) — `alreadyRedacted` skips re-scrubbing a transcript that's already `state.messages` itself (the resume path). */
+  private replaceMessages(messages: NormalizedMessage[], alreadyRedacted = false): void {
+    this.messages = [...messages];
+    this.state.messages = alreadyRedacted ? [...messages] : messages.map((m) => this.redactMessage(m));
   }
 
   private setStatus(to: RunStatus): void {
@@ -129,7 +168,7 @@ export class AgentLoop {
     });
     if (plan) {
       this.setStatus("PLANNING");
-      // MVP: the planning *stage* exists (state, gating heuristic, storage
+      // Phase 1: the planning *stage* exists (state, gating heuristic, storage
       // in RunState.plan) without a dedicated separate model call yet — a
       // Phase-2+ refinement per §6.7 [C:Med]. The main loop below still
       // does the work; this records that planning was warranted.
@@ -139,6 +178,30 @@ export class AgentLoop {
     this.setStatus("INSPECTING");
     this.setStatus("ACTING");
 
+    return await this.actAndVerifyLoop();
+  }
+
+  /**
+   * Continues a paused run (§6.2, §6.3, §18.2's `agent resume`) instead of
+   * re-running `run()` from scratch: UNDERSTANDING/PLANNING/INSPECTING
+   * already happened, `state.repairIterations`/`state.stepIndex`/the loop
+   * detector's state are already correct as loaded, and the constructor
+   * already restored `this.messages` from `state.messages` — the only
+   * things a resumed run needs are the ACTING transition and the same
+   * act↔verify loop `run()` itself falls into.
+   *
+   * §6.3 pauses exclusively on a budget limit (`hardStop` cost overruns go
+   * to ESCALATED instead, which requires human review, not a resume) — the
+   * caller is expected to have raised `state.budgets` before calling this
+   * (`Agent.resume`'s `extend*` options), otherwise `actLoop`'s very first
+   * budget check re-pauses immediately, which is a correct, if useless,
+   * outcome, not an error.
+   */
+  async resume(): Promise<RunState> {
+    if (this.state.status !== "PAUSED") {
+      throw new Error(`AgentLoop.resume() requires a PAUSED run; got status "${this.state.status}" (run ${this.state.runId})`);
+    }
+    this.setStatus("ACTING");
     return await this.actAndVerifyLoop();
   }
 
@@ -166,7 +229,7 @@ export class AgentLoop {
 
       const compaction = compactHistory(this.messages, this.historyTokenBudget);
       if (compaction.compacted) {
-        this.messages = compaction.messages;
+        this.replaceMessages(compaction.messages);
         this.emit({ type: "context.compacted", droppedCount: compaction.droppedCount });
       }
 
@@ -190,11 +253,11 @@ export class AgentLoop {
       }
 
       if (response.toolCalls.length === 0) {
-        this.messages.push({ role: "assistant", content: response.text });
+        this.pushMessage({ role: "assistant", content: response.text });
         return "completed";
       }
 
-      this.messages.push({
+      this.pushMessage({
         role: "assistant",
         content: response.text,
         toolCalls: response.toolCalls.map((tc) => ({ id: tc.id, name: tc.name, argsJson: tc.argsJson }))
@@ -223,7 +286,7 @@ export class AgentLoop {
 
         this.state.toolCallLog.push({ step: this.state.stepIndex++, tool: call.name, args: redactedArgs, ok, errorCode, ts: Date.now() });
         this.emit({ type: "tool.result", tool: call.name, ok, errorCode });
-        this.messages.push({ role: "tool", toolCallId: call.id, content: payload });
+        this.pushMessage({ role: "tool", toolCallId: call.id, content: payload });
 
         if (isEdit && editedPath) {
           const oscillationWarning = this.recordEditForLoopDetection(editedPath);
@@ -317,7 +380,7 @@ export class AgentLoop {
     this.setStatus("VERIFYING");
 
     const pipelineResult = runPipeline(this.deps.toolchainCommands, {
-      cwd: this.deps.run.worktreePath,
+      cwd: this.deps.verifyCwd ?? this.deps.run.worktreePath,
       evidenceDir: this.deps.evidenceDir
     });
     for (const stage of pipelineResult.stages) {
@@ -356,7 +419,7 @@ export class AgentLoop {
       this.state.repairIterations += 1;
       this.setStatus("REPAIRING");
       const failureClass = classifyFailure(failure);
-      this.messages.push(buildRepairMessage(failure, failureClass));
+      this.pushMessage(buildRepairMessage(failure, failureClass));
       this.setStatus("EDITING");
       this.setStatus("ACTING");
       return await this.actAndVerifyLoop();
@@ -366,7 +429,7 @@ export class AgentLoop {
     checkpoint(this.deps.run, `verify passed at step ${this.state.stepIndex}`);
 
     if (cheatFlags.length > 0) {
-      this.messages.push(buildCheatReviewMessage(cheatFlags));
+      this.pushMessage(buildCheatReviewMessage(cheatFlags));
       this.setStatus("ESCALATED");
       this.state.escalationReason = `cheat detection flagged ${cheatFlags.length} issue(s): ${cheatFlags.map((f) => f.rule).join(", ")}`;
       return this.finish();

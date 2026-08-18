@@ -15,7 +15,7 @@ import type { TruncatedOutput } from "./types.js";
 const FAILURE_LINE_RE = /\b(fail(ed|ure)?|error|✗|✘|assert(ion)?\s*error|exception|traceback)\b/i;
 
 export interface TruncateOptions {
-  /** Character budget (a simple proxy for token budget in this MVP). */
+  /** Character budget (a simple proxy for token budget). */
   budget: number;
   kind: "test" | "log" | "search";
   evidenceDir: string;

@@ -12,7 +12,7 @@ Synthesized from repo notes. Feeds PROJECT_SPEC §4.5, §9, §10.
 | Cline | `@`-mentions + env-details block | context-window truncation/condensation | no |
 | Continue | **embeddings index** (`core/indexing`) + context providers | rules/prompt files | RAG-forward |
 | Archon | external-doc **vector RAG** (pgvector) | n/a (serves knowledge) | it's a knowledge base, not repo context |
-| **ClutchCode** | **ripgrep + on-demand tree-sitter** (MVP); PageRank map (Phase 7); **no vector DB** (§9) | **summarization checkpoints** + tool-output truncation-at-ingestion | **hard rule: NEVER dump the repo** (§4.5) |
+| **ClutchCode** | **ripgrep + on-demand tree-sitter** (Phase 1); PageRank map (Phase 7); **no vector DB** (§9) | **summarization checkpoints** + tool-output truncation-at-ingestion | **hard rule: NEVER dump the repo** (§4.5) |
 
 ## Key judgments
 1. **Never dump the whole repo** into context — fatal on local 8k models, wasteful on frontier. Universal rule (§4.5); Aider's ranked map and Cline's windowing embody it.

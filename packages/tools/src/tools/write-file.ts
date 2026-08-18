@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 import { fail, ok } from "../types.js";
 import { resolveInWorkspace } from "../workspace-path.js";
+import { isInsideAnySubmodule, matchesLfsPattern } from "../repo-edge-cases.js";
 
 export interface WriteFileArgs {
   path: string;
@@ -13,6 +14,8 @@ export interface WriteFileData {
   path: string;
   bytesWritten: number;
   created: boolean;
+  /** §13.4: the path matches an LFS-tracked `.gitattributes` pattern — write allowed, but flagged so the model (and diff review) knows. */
+  lfsTracked: boolean;
 }
 
 const MAX_BYTES = 5_000_000;
@@ -42,16 +45,21 @@ export const writeFileTool: Tool<WriteFileArgs, WriteFileData> = {
 
   async run(args, ctx: ToolContext): Promise<ToolResult<WriteFileData>> {
     const { abs, inside } = resolveInWorkspace(ctx.workspaceRoot, args.path);
+    const submodule = inside && isInsideAnySubmodule(args.path, ctx.submodulePaths);
 
     const decision = ctx.policy.decide({
       permissionClass: "WRITE",
       commandClass: "write_file",
       subject: abs,
       repoTrustMode: ctx.repoTrustMode,
-      insideWorkspace: inside
+      insideWorkspace: inside,
+      submodule
     });
     if (decision.decision !== "ALLOW") {
-      return fail(inside ? "policy-denied" : "path-outside-workspace", decision.reason);
+      return fail(
+        !inside ? "path-outside-workspace" : decision.decision === "ASK" ? "needs-approval" : "policy-denied",
+        decision.reason
+      );
     }
     if (ctx.denylist.isDenied(abs)) {
       return fail("denylisted", `refusing to write a denylisted path: ${args.path}`);
@@ -64,6 +72,6 @@ export const writeFileTool: Tool<WriteFileArgs, WriteFileData> = {
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, args.body, "utf8");
 
-    return ok({ path: args.path, bytesWritten: bodyBytes, created });
+    return ok({ path: args.path, bytesWritten: bodyBytes, created, lfsTracked: matchesLfsPattern(args.path, ctx.lfsPatterns) });
   }
 };

@@ -1,5 +1,7 @@
+import fs from "node:fs";
+import path from "node:path";
 import { spawn } from "node:child_process";
-import { isDestructiveCommand, scrubEnv } from "@clutchcode/sandbox";
+import { buildConfinedSpawn, ensureSeccompFilterFile, isDestructiveCommand, scrubEnv } from "@clutchcode/sandbox";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 import { fail, ok } from "../types.js";
 import { truncate } from "../truncate.js";
@@ -76,18 +78,65 @@ export const shellTool: Tool<ShellArgs, ShellData> = {
     const timeoutMs = args.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const cwd = args.cwd ? args.cwd : ctx.workspaceRoot;
 
+    // §12.5/§12.6: wrap under OS confinement (bwrap/Seatbelt) when Tier 1
+    // is available; a plain `/bin/sh -c` passthrough otherwise (Tier 0 —
+    // the policy engine + env scrubbing above still apply either way).
+    // The synthetic `$HOME` lives next to the run's evidence dir — a
+    // real, run-scoped, empty directory Seatbelt needs to exist on disk
+    // (bwrap creates its own internally via `--dir`, so this is a no-op
+    // for that backend beyond staying consistent).
+    const homeDir = path.join(ctx.evidenceDir, "..", "sandbox-home");
+    if (ctx.sandbox.backend !== "none") fs.mkdirSync(homeDir, { recursive: true });
+
+    // §12.6: layer the seccomp-bpf hardening filter under bwrap when this
+    // platform/arch supports it (x86_64 Linux only, see seccomp-linux.ts).
+    // The filter file is opened here — real file I/O, deliberately kept
+    // out of buildConfinedSpawn's pure argv-building — and handed to the
+    // child as fd 3 via `stdio`; `--seccomp 3` in the built argv is what
+    // tells bwrap to read it from there.
+    const seccompFilterPath = ctx.sandbox.backend === "bwrap" && ctx.sandbox.seccomp?.supported ? ensureSeccompFilterFile() : undefined;
+    const seccompFd = seccompFilterPath ? fs.openSync(seccompFilterPath, "r") : undefined;
+    const { bin, args: spawnArgs } = buildConfinedSpawn(ctx.sandbox.backend, {
+      workspaceRoot: ctx.workspaceRoot,
+      cwd,
+      command: args.cmd,
+      homeDir,
+      enableSeccomp: seccompFd !== undefined
+    });
+
+    const env = scrubEnv(process.env);
+    if (ctx.sandbox.backend !== "none") env.HOME = homeDir; // never the real $HOME under Tier 1 (§12.1/§12.3)
+
     return await new Promise<ToolResult<ShellData>>((resolve) => {
       // `detached: true` puts the child in its own process group so a
       // timeout/cancel can kill the whole group (`kill(-pid, …)`), not just
-      // the top-level `/bin/sh` — otherwise a shell that doesn't exec-replace
-      // itself for a compound command leaves its grandchildren running
-      // (§6.6: "an in-flight shell command is sent SIGTERM→SIGKILL").
-      const child = spawn(args.cmd, {
-        shell: true,
+      // the top-level process — otherwise a shell that doesn't exec-replace
+      // itself for a compound command (or, under Tier 1, everything inside
+      // the sandbox's own pid namespace) leaves grandchildren running
+      // (§6.6: "an in-flight shell command is sent SIGTERM→SIGKILL"). Under
+      // bwrap, `--die-with-parent` plus `--unshare-pid` means killing this
+      // one process tears down the whole sandboxed tree via the kernel's
+      // own pid-namespace cleanup — strictly more reliable than Tier 0's
+      // process-group-only cleanup.
+      const child = spawn(bin, spawnArgs, {
         cwd,
-        env: scrubEnv(process.env),
-        detached: true
+        env,
+        detached: true,
+        stdio: seccompFd === undefined ? "pipe" : ["pipe", "pipe", "pipe", seccompFd]
       });
+
+      // `spawn()` performs the actual fork+exec synchronously before
+      // returning — the child already holds its own duplicated fd 3 by
+      // this point, independent of the parent's copy, so it's safe (and
+      // the tidy thing to do) to close the parent's copy right away
+      // rather than hold it open for the whole command's lifetime.
+      if (seccompFd !== undefined) {
+        try {
+          fs.closeSync(seccompFd);
+        } catch {
+          /* already closed */
+        }
+      }
 
       let stdout = "";
       let stderr = "";

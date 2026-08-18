@@ -1,0 +1,20 @@
+{
+  "name": "@clutchcode/agent-rpc",
+  "version": "0.1.0",
+  "description": "The Agent API's stdio JSON-RPC binding (PROJECT_SPEC.md §18.1/§18.5, ACP-shaped): LSP-style framing, a server wrapping @clutchcode/agent-api's Agent, and a client any editor (VS Code today; Zed/Neovim later) can speak to over a spawned process's stdio.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@clutchcode/agent-api": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

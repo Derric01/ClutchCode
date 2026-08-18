@@ -2,6 +2,7 @@ import fs from "node:fs";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 import { fail, ok } from "../types.js";
 import { resolveInWorkspace } from "../workspace-path.js";
+import { isLfsPointerContent, looksBinary, parseLfsPointer } from "../repo-edge-cases.js";
 
 export interface ReadFileArgs {
   path: string;
@@ -14,6 +15,8 @@ export interface ReadFileData {
   content: string;
   totalLines: number;
   windowed: boolean;
+  /** §13.4: true when `content` is an LFS pointer stub, not the real (potentially huge) tracked file. */
+  lfsPointer?: boolean;
 }
 
 const MAX_BYTES = 2_000_000;
@@ -63,7 +66,31 @@ export const readFileTool: Tool<ReadFileArgs, ReadFileData> = {
       return fail("too-large", `file exceeds ${MAX_BYTES} bytes; request a window instead`);
     }
 
-    const raw = fs.readFileSync(abs, "utf8");
+    // §4.5/§13.4: "large binaries not read into context" — sniffed before
+    // decoding, so a real (LFS-smudged or ordinary) binary under the size
+    // cap is refused with a clear reason instead of dumped as mojibake.
+    const buf = fs.readFileSync(abs);
+    if (looksBinary(buf)) {
+      return fail("binary-file", `${args.path} looks binary (NUL byte found) — read_file only handles text`);
+    }
+    const raw = buf.toString("utf8");
+
+    // §13.4: an LFS pointer file's on-disk content is a small stand-in for
+    // the real tracked object, not the file the model probably means to
+    // read — say so plainly instead of returning the three-line pointer
+    // stub as if it were real content.
+    if (isLfsPointerContent(raw)) {
+      const pointer = parseLfsPointer(raw);
+      const sizeNote = pointer.size !== undefined ? `${pointer.size} bytes` : "unknown size";
+      return ok({
+        path: args.path,
+        content: `[git-lfs pointer: ${args.path} is LFS-tracked (§13.4); the real content (${sizeNote}) is not checked out or is a binary this tool won't read. oid=${pointer.oid ?? "unknown"}]`,
+        totalLines: raw.split("\n").length,
+        windowed: false,
+        lfsPointer: true
+      });
+    }
+
     const lines = raw.split("\n");
 
     // §5.2: every string crossing the tool-output-ingestion boundary is
