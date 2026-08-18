@@ -10,11 +10,10 @@ file is the time-stamped snapshot of where the project actually stands.
 **Latest commit:** `0d50179` — "fix: three real bugs found by a code-review pass on this session's work"
 **Test suite:** 595/595 passing, 69 test files, clean `tsc -b`, clean `eslint .`
 
-**PR:** open, not yet merged — check `git log`/GitHub for its number if
-this note is stale (created right after this snapshot). #8 merged
-cleanly. Pattern established across #4 through #8: one open PR per phase
-of work, never reused once merged, branch always restarted from `main`'s
-merged tip before new commits land on it.
+**PR:** [#9](https://github.com/Derric01/ClutchCode/pull/9) — open, not
+yet merged. #8 merged cleanly. Pattern established across #4 through #9:
+one open PR per phase of work, never reused once merged, branch always
+restarted from `main`'s merged tip before new commits land on it.
 
 ---
 
