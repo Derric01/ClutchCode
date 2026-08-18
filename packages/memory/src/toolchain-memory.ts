@@ -191,9 +191,24 @@ export function forgetToolchainFact(repoRoot: string, key: ToolchainFactKey, opt
   return true;
 }
 
-/** §10.3 point 5, "correct a fact": a human directly overwrites a cached value, e.g. `agent memory correct test "pytest -q --maxfail=1"`. Creates the record if none existed yet. */
+/**
+ * §10.3 point 5, "correct a fact": a human directly overwrites a cached
+ * value, e.g. `agent memory correct test "pytest -q --maxfail=1"`. Creates
+ * the record if none existed yet.
+ *
+ * Always stamps the *current* manifest hash, not just when creating a new
+ * record — a real bug caught in code review: reusing `cached.manifestHash`
+ * unchanged meant a correction landing on a record whose hash was already
+ * stale (e.g. `package.json` was edited earlier and nothing had re-derived
+ * since) got silently discarded on the very next `getOrDetectToolchain`
+ * call — it would see the hash mismatch, conclude the whole record was
+ * stale, and re-derive everything from scratch, overwriting the human's
+ * correction with no warning. That directly contradicts this module's own
+ * "human edits win" contract (§10.3 point 4).
+ */
 export function correctToolchainFact(repoRoot: string, key: ToolchainFactKey, value: string, opts?: ToolchainMemoryOptions): void {
-  const cached = loadRaw(repoRoot, opts) ?? { manifestHash: computeManifestHash(repoRoot), facts: {} };
+  const cached = loadRaw(repoRoot, opts) ?? { manifestHash: "", facts: {} };
+  cached.manifestHash = computeManifestHash(repoRoot);
   cached.facts[key] = { value, derivedAt: new Date().toISOString(), source: "human-corrected via `agent memory correct`" };
   saveRaw(repoRoot, cached, opts);
 }

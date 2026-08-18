@@ -20,6 +20,22 @@ const ALLOWED_OPS: GitOp[] = ["status", "diff", "log"];
 const OUTPUT_BUDGET = 20_000;
 
 /**
+ * §12.2: `arg` for `log` is documented as "how many entries" — a plain
+ * count, nothing else. Real vulnerability caught in security review: the
+ * old code built the argv token as `` `-${args.arg ?? "10"}` ``, so an
+ * `arg` beginning with its own `-` (e.g. `"-output=/tmp/pwned"`, model/
+ * LLM-controlled) produced a genuine `--output=...` long option — `git
+ * log` writes its output straight to that path, an arbitrary-file-write
+ * primitive completely outside the workspace, confirmed against a real
+ * git binary. Validating here means the count can never contain anything
+ * but digits, so it can never be interpreted as a flag no matter how the
+ * argv token is assembled.
+ */
+function parseLogCount(arg: string | undefined): string {
+  return arg !== undefined && /^\d+$/.test(arg) ? arg : "10";
+}
+
+/**
  * A deliberately narrow read-only `git` tool for the agent to inspect repo
  * state (status/diff/log). Worktree creation, checkpoint commits, and
  * rollback are runtime-orchestrated (packages/git), not agent-invokable —
@@ -61,7 +77,7 @@ export const gitTool: Tool<GitArgs, GitData> = {
 
     const cliArgs =
       args.op === "log"
-        ? ["log", `-${args.arg ?? "10"}`, "--oneline"]
+        ? ["log", "-n", parseLogCount(args.arg), "--oneline"]
         : args.op === "diff"
           ? args.arg
             ? ["diff", "--", args.arg]

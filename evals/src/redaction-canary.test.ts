@@ -77,7 +77,13 @@ describe("redaction canary — full recorded run through the public Agent API", 
         sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 5, completion_tokens: 2 } }),
         "data: [DONE]\n\n"
       ],
-      [sseChunk({ choices: [{ delta: { content: "Done." }, finish_reason: "stop" }] }), "data: [DONE]\n\n"]
+      // The model's own final reply also echoes the canary back — a real
+      // bug caught in code review: the runtime used to emit this text
+      // straight into the model.response event unredacted, even though
+      // `state.messages` correctly redacted the same text. Only injecting
+      // the canary via the tool-call argument above (the original test)
+      // would never have caught that gap.
+      [sseChunk({ choices: [{ delta: { content: `Done — printed ${CANARY}.` }, finish_reason: "stop" }] }), "data: [DONE]\n\n"]
     ]);
     cleanupFns.push(() => server.close());
 

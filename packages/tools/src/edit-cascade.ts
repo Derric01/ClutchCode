@@ -216,7 +216,15 @@ function applyEllipsisSegments(
     }
     const idx = content.indexOf(seg, cursor);
     if (idx === -1) return null;
-    if (i === 0) firstMatchIdx = idx;
+    // The *first segment actually matched* sets firstMatchIdx — not
+    // necessarily i===0. A real bug caught in code review: a SEARCH block
+    // that starts with its own ellipsis line (e.g. "...\nfoo();\n...")
+    // makes searchSegments[0] the empty [] segment, which hits the
+    // `seg.length === 0` branch above and `continue`s straight past
+    // whatever set firstMatchIdx here — so it never got set at all, and
+    // every such (perfectly valid, matching) edit was rejected as "SEARCH
+    // block did not match" unconditionally, no matter what came after.
+    if (firstMatchIdx === -1) firstMatchIdx = idx;
     else {
       // Preserve the elided gap between the previous segment's end and this one, untouched.
       out += content.slice(cursor, idx);

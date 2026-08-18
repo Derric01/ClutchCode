@@ -329,7 +329,17 @@ export class AgentLoop {
       );
       this.budgetGuard.recordStep();
       if (response.usage) this.budgetGuard.recordUsage(response.usage.inputTokens, response.usage.outputTokens);
-      this.emit({ type: "model.response", text: response.text, toolCalls: response.toolCalls.length });
+      // §5.2: the model's own reply text is model output too — it can quote
+      // a secret it just read straight back (e.g. summarizing a `.env` file
+      // it opened). `state.messages` already redacts this same text via
+      // `pushMessage`/`redactMessage` below, but this *event* is a
+      // separately persisted artifact (`agent-api`'s `appendEvent` writes
+      // every RuntimeEvent to `<stateDir>/runs/<runId>/events.jsonl`
+      // verbatim) — redact here too, the same way `tool.call`'s `args` is
+      // scrubbed a few lines down, or the raw secret reaches that file
+      // unredacted regardless of what `state.messages` does.
+      const redactedResponseText = this.deps.toolContext.redactor.scrub(response.text).text;
+      this.emit({ type: "model.response", text: redactedResponseText, toolCalls: response.toolCalls.length });
 
       if (response.finishReason === "error") {
         this.setStatus("ESCALATED");

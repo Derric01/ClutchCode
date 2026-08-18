@@ -100,4 +100,16 @@ describe("agent-rpc client↔server round trip (§18.1/§18.5)", () => {
   it("an unknown method is a clear method-not-found error", async () => {
     await expect(client.request("no-such-method", {})).rejects.toThrow(/method not found/);
   });
+
+  it("rejects a path-traversal runId over the real RPC boundary instead of creating a worktree outside stateDir (real vulnerability caught in security review)", async () => {
+    // The `run` handler takes `params.runId` straight from untrusted JSON-RPC
+    // input (`p.runId ?? newRunId()`) with no format validation of its own —
+    // this proves the fix lives deep enough (createRunWorktree) that it's
+    // actually reached and enforced from this real, untrusted-facing boundary,
+    // not just from a direct unit-level call.
+    await expect(
+      client.request("run", { task: "investigate", providerKind: "fake", model: "n/a", runId: "../../../../../../tmp/pwned-worktree" })
+    ).rejects.toThrow(/invalid runId/);
+    expect(fs.existsSync("/tmp/pwned-worktree")).toBe(false);
+  }, 30_000);
 });

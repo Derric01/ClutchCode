@@ -180,7 +180,23 @@ describe("showToolchainFact / forgetToolchainFact / correctToolchainFact", () =>
   it("a corrected fact survives a subsequent cache-hit read (manifest unchanged)", () => {
     correctToolchainFact(repo, "test", "corrected-command", { configDir });
     const result = getOrDetectToolchain(repo, repo, undefined, { configDir });
-    // manifestHash is unchanged since correctToolchainFact doesn't touch it and package.json wasn't edited — cache hit, corrected value preserved.
+    // manifestHash is freshly recomputed by correctToolchainFact and happens to match
+    // (package.json wasn't edited) — cache hit, corrected value preserved either way.
+    expect(result.fromCache).toBe(true);
+    expect(result.commands.test).toBe("corrected-command");
+  });
+
+  it("a correction still survives a cache-hit read even when the cached manifestHash was already stale before the correction ran (real bug caught in code review — §10.3 point 4, 'human edits win')", () => {
+    // package.json changes *after* the initial getOrDetectToolchain (in
+    // beforeEach) but *before* the correction — the cached record's
+    // manifestHash is now stale relative to the repo's real current state.
+    makeNodeRepo(repo, { test: "x", build: "x", lint: "x" });
+
+    correctToolchainFact(repo, "test", "corrected-command", { configDir });
+    const result = getOrDetectToolchain(repo, repo, undefined, { configDir });
+    // Before the fix: correctToolchainFact left the stale hash untouched, so this
+    // call would see a mismatch, conclude the whole record was stale, and silently
+    // re-derive from scratch — discarding the correction with no warning.
     expect(result.fromCache).toBe(true);
     expect(result.commands.test).toBe("corrected-command");
   });
