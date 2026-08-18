@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
+import type { FileDiff, RunState } from "@clutchcode/agent-api";
 import { connectToAgentRpc, type RpcConnection } from "./connection.js";
-import { runClutchCodeTask, type TaskUI } from "./runTask.js";
+import { formatDiffTabTitle } from "./presentation.js";
+import { pickRun, prTask, resumeTask, rollbackTask, runClutchCodeTask, type TaskUI } from "./runTask.js";
 
 /**
  * The VS Code half of PROJECT_SPEC.md §18.5: "extension (TS) ⇄ Agent API
@@ -16,11 +18,11 @@ import { runClutchCodeTask, type TaskUI } from "./runTask.js";
  * in this environment, only its published `.d.ts` types (`@types/vscode`)
  * for type-checking. It's written carefully against the documented,
  * long-stable extension API (the same handful of calls most extensions
- * use: commands, output channels, input boxes, quick picks, a text
- * document content provider for the diff view), but "compiles against the
- * types" is not the same claim as "runs correctly in VS Code." Flagged,
- * not silently claimed — see `tier1-macos.ts` for the same pattern
- * applied to the other unverified-here piece of this codebase.
+ * use: commands, output channels, quick picks, a text document content
+ * provider for the diff view), but "compiles against the types" is not the
+ * same claim as "runs correctly in VS Code." Flagged, not silently
+ * claimed — see `tier1-macos.ts` for the same pattern applied to the other
+ * unverified-here piece of this codebase.
  */
 
 let connection: RpcConnection | undefined;
@@ -43,22 +45,33 @@ function getConnection(): RpcConnection {
   return connection;
 }
 
-/** Serves `clutchcode-diff:<runId>` virtual documents so a run's diff opens in a real editor tab with diff syntax highlighting, without writing a temp file to disk. */
+/**
+ * Serves `clutchcode-diff://<runId>/before|after/<path>` virtual documents
+ * so a run's diff opens as real, native `vscode.diff` editors — one per
+ * changed file, each with two whole documents (not a unified-diff text
+ * blob), so VS Code's own diff renderer does the side-by-side highlighting
+ * and the file's real extension still drives language-aware syntax
+ * coloring on both sides. `authority` carries the run id specifically so
+ * the `path` component stays the real repo-relative file path verbatim.
+ */
 class DiffContentProvider implements vscode.TextDocumentContentProvider {
   private readonly content = new Map<string, string>();
   private readonly changeEmitter = new vscode.EventEmitter<vscode.Uri>();
   readonly onDidChange = this.changeEmitter.event;
 
-  set(runId: string, diffText: string): vscode.Uri {
-    this.content.set(runId, diffText);
-    const uri = vscode.Uri.parse(`clutchcode-diff:${runId}.diff`);
+  private uriFor(runId: string, side: "before" | "after", filePath: string): vscode.Uri {
+    return vscode.Uri.from({ scheme: "clutchcode-diff", authority: runId, path: `/${side}/${filePath}` });
+  }
+
+  set(runId: string, side: "before" | "after", filePath: string, text: string): vscode.Uri {
+    const uri = this.uriFor(runId, side, filePath);
+    this.content.set(uri.toString(), text);
     this.changeEmitter.fire(uri);
     return uri;
   }
 
   provideTextDocumentContent(uri: vscode.Uri): string {
-    const runId = uri.path.replace(/\.diff$/, "");
-    return this.content.get(runId) ?? "(no diff recorded for this run)";
+    return this.content.get(uri.toString()) ?? "";
   }
 }
 
@@ -68,9 +81,16 @@ function buildTaskUI(diffProvider: DiffContentProvider): TaskUI {
     showOutputLine(line) {
       channel.appendLine(line);
     },
-    showDiff(runId, diffText) {
-      const uri = diffProvider.set(runId, diffText);
-      void vscode.workspace.openTextDocument(uri).then((doc) => vscode.window.showTextDocument(doc, { preview: false }));
+    showDiff(runId, files) {
+      for (const file of files) {
+        if (file.binary) {
+          channel.appendLine(`ClutchCode: ${file.path} changed but is binary — open it directly to review, no diff view shown.`);
+          continue;
+        }
+        const leftUri = diffProvider.set(runId, "before", file.oldPath ?? file.path, file.before ?? "");
+        const rightUri = diffProvider.set(runId, "after", file.path, file.after ?? "");
+        void vscode.commands.executeCommand("vscode.diff", leftUri, rightUri, formatDiffTabTitle(file), { preview: false });
+      }
     },
     async askApproveOrReject() {
       const picked = await vscode.window.showQuickPick(
@@ -88,12 +108,26 @@ function buildTaskUI(diffProvider: DiffContentProvider): TaskUI {
     },
     showError(message) {
       void vscode.window.showErrorMessage(message);
+    },
+    async pickRun(runs, placeholder) {
+      const picked = await vscode.window.showQuickPick(
+        runs.map((state) => ({
+          label: state.runId,
+          description: state.status,
+          detail: state.task,
+          runId: state.runId
+        })),
+        { placeHolder: placeholder }
+      );
+      return picked?.runId;
     }
   };
 }
 
-async function promptForRunId(prompt: string): Promise<string | undefined> {
-  return vscode.window.showInputBox({ prompt });
+/** Shared by every command below that operates on "some run" rather than always the one just started. */
+async function pickRunOrWarn(ui: TaskUI, placeholder: string, filter?: (state: RunState) => boolean): Promise<string | undefined> {
+  const { client } = getConnection();
+  return pickRun(client, ui, { placeholder, filter });
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -127,12 +161,13 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("clutchcode.diff", async () => {
-      const runId = await promptForRunId("Run id to show the diff for");
-      if (!runId) return;
+      const ui = buildTaskUI(diffProvider);
       try {
+        const runId = await pickRunOrWarn(ui, "Select a run to view its diff");
+        if (!runId) return;
         const { client } = getConnection();
-        const { diff } = await client.request<{ diff: string }>("diff", { runId });
-        buildTaskUI(diffProvider).showDiff(runId, diff);
+        const { files } = await client.request<{ files: FileDiff[] }>("diffFiles", { runId });
+        ui.showDiff(runId, files);
       } catch (e) {
         void vscode.window.showErrorMessage(`ClutchCode: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -141,9 +176,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("clutchcode.approve", async () => {
-      const runId = await promptForRunId("Run id to approve");
-      if (!runId) return;
+      const ui = buildTaskUI(diffProvider);
       try {
+        const runId = await pickRunOrWarn(ui, "Select a run to approve", (s) => s.status === "AWAITING_APPROVAL");
+        if (!runId) return;
         const { client } = getConnection();
         await client.request("approve", { runId, squash: true });
         void vscode.window.showInformationMessage(`ClutchCode: run ${runId} approved and committed.`);
@@ -155,12 +191,71 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("clutchcode.reject", async () => {
-      const runId = await promptForRunId("Run id to reject");
-      if (!runId) return;
+      const ui = buildTaskUI(diffProvider);
       try {
+        const runId = await pickRunOrWarn(ui, "Select a run to reject", (s) => s.status === "AWAITING_APPROVAL");
+        if (!runId) return;
         const { client } = getConnection();
         await client.request("reject", { runId });
         void vscode.window.showInformationMessage(`ClutchCode: run ${runId} rejected.`);
+      } catch (e) {
+        void vscode.window.showErrorMessage(`ClutchCode: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("clutchcode.resume", async () => {
+      const ui = buildTaskUI(diffProvider);
+      try {
+        const runId = await pickRunOrWarn(ui, "Select a paused run to resume", (s) => s.status === "PAUSED");
+        if (!runId) return;
+        const extendInput = await vscode.window.showInputBox({
+          prompt: "Extend the step budget by how many steps? (blank = resume without extending — it may just re-pause immediately)",
+          placeHolder: "e.g. 20"
+        });
+        const extendSteps = extendInput ? Number(extendInput) : undefined;
+        const { client } = getConnection();
+        getOutputChannel().show(true);
+        await resumeTask(client, runId, ui, extendSteps !== undefined && !Number.isNaN(extendSteps) ? { extendSteps } : {});
+      } catch (e) {
+        void vscode.window.showErrorMessage(`ClutchCode: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("clutchcode.rollback", async () => {
+      const ui = buildTaskUI(diffProvider);
+      try {
+        const runId = await pickRunOrWarn(ui, "Select a run to roll back");
+        if (!runId) return;
+        const { client } = getConnection();
+        const checkpoints = await client.request<{ sha: string; message: string }[]>("checkpoints", { runId });
+        if (checkpoints.length === 0) {
+          void vscode.window.showInformationMessage(`ClutchCode: run ${runId} has no checkpoints to roll back to.`);
+          return;
+        }
+        const picked = await vscode.window.showQuickPick(
+          checkpoints.map((c) => ({ label: c.sha.slice(0, 7), description: c.message, sha: c.sha })),
+          { placeHolder: "Roll back to which checkpoint?" }
+        );
+        if (!picked) return;
+        await rollbackTask(client, runId, picked.sha, ui);
+      } catch (e) {
+        void vscode.window.showErrorMessage(`ClutchCode: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("clutchcode.pr", async () => {
+      const ui = buildTaskUI(diffProvider);
+      try {
+        const runId = await pickRunOrWarn(ui, "Select a run to open a PR for");
+        if (!runId) return;
+        const { client } = getConnection();
+        await prTask(client, runId, ui);
       } catch (e) {
         void vscode.window.showErrorMessage(`ClutchCode: ${e instanceof Error ? e.message : String(e)}`);
       }

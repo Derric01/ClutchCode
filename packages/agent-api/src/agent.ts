@@ -9,6 +9,7 @@ import { nativeToolSet, type Tool, type ToolContext } from "@clutchcode/tools";
 import {
   createRunWorktree,
   diffAgainstBase,
+  diffFilesAgainstBase,
   diffStat,
   githubCompareUrl,
   isGitRepo,
@@ -20,6 +21,7 @@ import {
   remoteUrl,
   rollbackTo,
   type CheckpointRecord,
+  type FileDiff,
   type RunWorktree
 } from "@clutchcode/git";
 import type { FailureClass, StageResult, ToolchainCommands } from "@clutchcode/verification";
@@ -369,6 +371,12 @@ export class Agent {
   diff(runId: string): string {
     const run = this.requireRunWorktree(runId);
     return diffAgainstBase(run);
+  }
+
+  /** Per-file before/after content (§18.5) — what a native two-sided diff view needs that `diff()`'s unified-diff text can't drive on its own. */
+  diffFiles(runId: string): FileDiff[] {
+    const run = this.requireRunWorktree(runId);
+    return diffFilesAgainstBase(run);
   }
 
   approve(runId: string, opts: ApproveOptions = {}): RunState {

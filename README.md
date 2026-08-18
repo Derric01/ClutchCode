@@ -140,21 +140,41 @@ methods and runtime events forwarded as `clutchcode/event` notifications.
 `clutchcode serve` runs it over real stdin/stdout. `apps/vscode` is a thin
 client of that boundary — per §18.1's "no separate reimplementation of
 agent logic," `runTask.ts`/`connection.ts`/`presentation.ts` hold all of
-the orchestration (run → stream → diff → approve/reject) and spawn logic
-with zero `vscode` import, and are proven with real round-trip tests: a
-real `Agent` behind a real `AgentRpcClient` over `PassThrough` streams, and
-a separate test that spawns the actual compiled `clutchcode serve` binary
-as a child process and drives a run through it end to end. `extension.ts`
-— the one file that calls `vscode.window`/`vscode.commands` — type-checks
-cleanly against the official `@types/vscode` but has **not** run inside a
-real VS Code extension host; there's no `vscode` runtime in this
-environment to verify it against, and the code says so in a header
-comment rather than claiming more than was checked (`apps/vscode/README.md`
-states the same boundary). Not yet built: a native two-sided diff view (a
-single read-only diff-highlighted document today, not `vscode.diff`), a
-run-picker instead of typing a run id, and resume/rollback/pr commands in
-the extension UI (the CLI has them; the extension covers §18.5's core
-run/diff/approve/reject loop).
+the orchestration (run → stream → diff → approve/reject, plus resume/
+rollback/pr) and spawn logic with zero `vscode` import, and are proven
+with real round-trip tests: a real `Agent` behind a real `AgentRpcClient`
+over `PassThrough` streams, and a separate test that spawns the actual
+compiled `clutchcode serve` binary as a child process and drives a run
+through it end to end. `extension.ts` — the one file that calls
+`vscode.window`/`vscode.commands` — type-checks cleanly against the
+official `@types/vscode` but has **not** run inside a real VS Code
+extension host; there's no `vscode` runtime in this environment to verify
+it against, and the code says so in a header comment rather than claiming
+more than was checked (`apps/vscode/README.md` states the same boundary).
+
+**§18.5 polish landed:** a new `@clutchcode/git` function,
+`diffFilesAgainstBase`, produces per-file `{path, status, before, after,
+binary}` — real before/after file content instead of just unified-diff
+text — proven with real git worktrees covering added/modified/deleted/
+renamed/binary files, wired through `Agent.diffFiles`/the `diffFiles`
+RPC method the same way `diff`/`diffStat` already were. `extension.ts`
+uses it to open one **real `vscode.diff` editor per changed file**
+(replacing the single unified-text document it opened before), each side
+served from a `TextDocumentContentProvider` so the file's own extension
+still drives language-aware syntax highlighting on both panes; a binary
+file is skipped with a note instead of dumped as mojibake. Every command
+(`diff`/`approve`/`reject`/new `resume`/`rollback`/`pr`) now goes through
+a real **run-picker** (`pickRun`, backed by the real `listRuns` RPC call,
+filtered per command — e.g. only `PAUSED` runs offered for resume) instead
+of a free-text run-id input box. `resumeTask`/`rollbackTask`/`prTask` are
+new orchestration functions mirroring `runClutchCodeTask`'s existing
+split (vscode-free logic, real-`Agent`-backed tests) — `resumeTask`
+without an explicit step extension re-pauses immediately, which is
+`Agent.resume`'s own documented no-op semantics (§6.3), not a bug here.
+Deliberately still out of scope: opening several files' diffs as one
+combined multi-file "changes" view (VS Code's newer `vscode.changes`
+command isn't universally available across the `^1.85.0` engine range
+this extension targets) — one `vscode.diff` tab per file is what ships.
 
 **§10.3's project-memory correction UX is done.** A new `@clutchcode/memory`
 package persists toolchain detection as a provenance-timestamped cache
