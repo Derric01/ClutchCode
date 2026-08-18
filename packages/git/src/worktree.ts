@@ -76,6 +76,98 @@ export function diffStat(run: RunWorktree): string {
   return git(["diff", "--stat", run.baseCommit], { cwd: run.worktreePath });
 }
 
+export interface FileDiff {
+  path: string;
+  /** Only set for a rename/copy (git status R/C) — the path it was diffed against. */
+  oldPath?: string;
+  status: "added" | "modified" | "deleted" | "renamed";
+  /** Full file content at `run.baseCommit`; undefined for `added` and for `binary` files. */
+  before?: string;
+  /** Full file content in the worktree right now; undefined for `deleted` and for `binary` files. */
+  after?: string;
+  /** True for a file git itself can't diff as text (binary content, or an LFS pointer's real payload) — `before`/`after` are omitted rather than handed to a caller as mojibake. */
+  binary: boolean;
+}
+
+/**
+ * Per-file before/after content (§18.5's native two-sided diff view needs
+ * this — `diffAgainstBase`'s unified-diff text alone can't drive
+ * `vscode.diff`, which wants two whole documents). Deliberately a separate
+ * function rather than a `diffAgainstBase` option: the unified-diff path
+ * stays a single cheap `git diff` call for callers (the CLI, `agent pr`'s
+ * body) that only ever wanted text; this one does one extra `git diff
+ * --numstat` (for binary detection) plus one `git show`/file read per
+ * changed file, real I/O a caller shouldn't pay for by default.
+ */
+export function diffFilesAgainstBase(run: RunWorktree, pathScope?: string): FileDiff[] {
+  // §13.1: `git diff <commit>` (no `--cached`) never reports an untracked
+  // path at all, no matter what it's diffed against — a brand-new file the
+  // model just wrote would silently vanish from this list unless it's
+  // tracked first. `checkpoint()` already stages everything the same way
+  // per step; doing it here too is consistent, not a new side effect, and
+  // never commits or touches file content.
+  git(["add", "-A"], { cwd: run.worktreePath });
+
+  // `-M` (rename detection) isn't universally on by default for `git diff`
+  // across git versions/configs — requested explicitly so a rename is
+  // reported as one `FileDiff` with `oldPath` set, not an unrelated
+  // delete+add pair.
+  const nameStatusArgs = pathScope ? ["diff", "--name-status", "-M", run.baseCommit, "--", pathScope] : ["diff", "--name-status", "-M", run.baseCommit];
+  const nameStatusOut = git(nameStatusArgs, { cwd: run.worktreePath, allowFailure: true }).trim();
+  if (!nameStatusOut) return [];
+
+  // `--numstat` reports "-\t-\t<path>" for a file git treats as binary —
+  // the same signal `git diff`'s own porcelain output uses internally, so
+  // this matches what `diffAgainstBase`'s unified diff would have called
+  // "Binary files differ" on, rather than a heuristic re-guess here.
+  const numstatArgs = pathScope ? ["diff", "--numstat", "-M", run.baseCommit, "--", pathScope] : ["diff", "--numstat", "-M", run.baseCommit];
+  const numstatOut = git(numstatArgs, { cwd: run.worktreePath, allowFailure: true });
+  const binaryPaths = new Set(
+    numstatOut
+      .trim()
+      .split("\n")
+      .filter((line) => line.startsWith("-\t-\t"))
+      .map((line) => line.slice("-\t-\t".length))
+  );
+
+  return nameStatusOut.split("\n").map((line): FileDiff => {
+    const fields = line.split("\t");
+    const statusChar = fields[0]!;
+
+    let status: FileDiff["status"];
+    let filePath: string;
+    let oldPath: string | undefined;
+    if (statusChar.startsWith("R") || statusChar.startsWith("C")) {
+      status = "renamed";
+      oldPath = fields[1]!;
+      filePath = fields[2]!;
+    } else if (statusChar === "A") {
+      status = "added";
+      filePath = fields[1]!;
+    } else if (statusChar === "D") {
+      status = "deleted";
+      filePath = fields[1]!;
+    } else {
+      status = "modified";
+      filePath = fields[1]!;
+    }
+
+    const binary = binaryPaths.has(filePath) || (oldPath !== undefined && binaryPaths.has(oldPath));
+    const before = status !== "added" && !binary ? git(["show", `${run.baseCommit}:${oldPath ?? filePath}`], { cwd: run.worktreePath, allowFailure: true }) : undefined;
+    const after = status !== "deleted" && !binary ? readWorktreeTextFile(run.worktreePath, filePath) : undefined;
+
+    return { path: filePath, oldPath, status, before, after, binary };
+  });
+}
+
+function readWorktreeTextFile(worktreePath: string, filePath: string): string | undefined {
+  try {
+    return fs.readFileSync(path.join(worktreePath, filePath), "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * A checkpoint commit at each successful verify (§13.2), so rollback is
  * per-step. `--no-verify` bypasses the user's hooks for internal

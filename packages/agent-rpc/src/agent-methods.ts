@@ -44,6 +44,7 @@ export function buildAgentRpcMethods(opts: AgentRpcMethodsOptions): { agent: Age
     listRuns: () => agent.listRuns(),
 
     diff: (params) => ({ diff: agent.diff(requireRunId(params)) }),
+    diffFiles: (params) => ({ files: agent.diffFiles(requireRunId(params)) }),
 
     // Each of these forwards `params` straight through as the options bag
     // for its Agent method — `params.runId` riding along as an extra,

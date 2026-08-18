@@ -8,6 +8,7 @@ import {
   checkpoint,
   createRunWorktree,
   diffAgainstBase,
+  diffFilesAgainstBase,
   discardRun,
   listCheckpoints,
   rollbackTo,
@@ -215,5 +216,88 @@ describe("dirty working tree handling (§13.4)", () => {
     const status = git(["status", "--porcelain"], { cwd: repoPath });
     expect(status.trim()).not.toBe("");
     expect(fs.readFileSync(path.join(repoPath, "README.md"), "utf8")).toBe("dirty change\n");
+  });
+});
+
+describe("diffFilesAgainstBase (§18.5 native two-sided diff view data layer)", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let run: RunWorktree;
+
+  beforeEach(() => {
+    repoPath = makeTempRepo();
+    stateDir = makeTempDir("clutchcode-git-test-state-");
+    run = createRunWorktree({ repoPath, stateDir, runId: "run87654321", slug: "diff files" });
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("returns [] when nothing changed", () => {
+    expect(diffFilesAgainstBase(run)).toEqual([]);
+  });
+
+  it("reports an added file with only 'after' content", () => {
+    fs.writeFileSync(path.join(run.worktreePath, "new.txt"), "brand new\n", "utf8");
+    const files = diffFilesAgainstBase(run);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toEqual({ path: "new.txt", status: "added", oldPath: undefined, before: undefined, after: "brand new\n", binary: false });
+  });
+
+  it("reports a modified file with both 'before' and 'after' content", () => {
+    fs.writeFileSync(path.join(run.worktreePath, "README.md"), "hello, edited\n", "utf8");
+    const files = diffFilesAgainstBase(run);
+    expect(files).toHaveLength(1);
+    expect(files[0]!.status).toBe("modified");
+    expect(files[0]!.before).toBe("hello\n");
+    expect(files[0]!.after).toBe("hello, edited\n");
+    expect(files[0]!.binary).toBe(false);
+  });
+
+  it("reports a deleted file with only 'before' content", () => {
+    fs.rmSync(path.join(run.worktreePath, "README.md"));
+    const files = diffFilesAgainstBase(run);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toEqual({ path: "README.md", status: "deleted", oldPath: undefined, before: "hello\n", after: undefined, binary: false });
+  });
+
+  it("reports a rename with oldPath set and content read from the new location", () => {
+    fs.renameSync(path.join(run.worktreePath, "README.md"), path.join(run.worktreePath, "RENAMED.md"));
+    const files = diffFilesAgainstBase(run);
+    expect(files).toHaveLength(1);
+    expect(files[0]!.status).toBe("renamed");
+    expect(files[0]!.oldPath).toBe("README.md");
+    expect(files[0]!.path).toBe("RENAMED.md");
+    expect(files[0]!.before).toBe("hello\n");
+    expect(files[0]!.after).toBe("hello\n");
+  });
+
+  it("flags a binary file and omits its before/after content instead of returning mojibake", () => {
+    // A null byte is git's own signal for "treat as binary" — the same
+    // thing that makes `git diff` print "Binary files differ" instead of a
+    // text hunk.
+    fs.writeFileSync(path.join(run.worktreePath, "blob.bin"), Buffer.from([0x00, 0x01, 0x02, 0xff]));
+    const files = diffFilesAgainstBase(run);
+    expect(files).toHaveLength(1);
+    expect(files[0]!.path).toBe("blob.bin");
+    expect(files[0]!.status).toBe("added");
+    expect(files[0]!.binary).toBe(true);
+    expect(files[0]!.before).toBeUndefined();
+    expect(files[0]!.after).toBeUndefined();
+  });
+
+  it("reports multiple changed files together, and pathScope filters to a subdir", () => {
+    fs.mkdirSync(path.join(run.worktreePath, "sub"), { recursive: true });
+    fs.writeFileSync(path.join(run.worktreePath, "sub", "in-scope.txt"), "in scope\n", "utf8");
+    fs.writeFileSync(path.join(run.worktreePath, "out-of-scope.txt"), "out of scope\n", "utf8");
+
+    const all = diffFilesAgainstBase(run);
+    expect(all.map((f) => f.path).sort()).toEqual(["out-of-scope.txt", "sub/in-scope.txt"]);
+
+    const scoped = diffFilesAgainstBase(run, "sub");
+    expect(scoped).toHaveLength(1);
+    expect(scoped[0]!.path).toBe("sub/in-scope.txt");
   });
 });

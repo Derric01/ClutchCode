@@ -1,4 +1,4 @@
-import type { RunStatus, RuntimeEvent } from "@clutchcode/agent-api";
+import type { FileDiff, PrResult, RunStatus, RuntimeEvent } from "@clutchcode/agent-api";
 
 /**
  * Pure formatting — deliberately has no `vscode` import, so it's testable
@@ -57,4 +57,23 @@ export function formatStatusSummary(status: RunStatus, escalationReason?: string
     default:
       return `status: ${status}`;
   }
+}
+
+/**
+ * The tab title for one file's native two-sided diff (§18.5 polish — a real
+ * `vscode.diff` editor per changed file, replacing the single unified-text
+ * document the extension used to show). A rename gets an "old → new" title
+ * since `vscode.diff` itself only ever labels the two content URIs, not
+ * that they're the same logical file under different names.
+ */
+export function formatDiffTabTitle(file: FileDiff): string {
+  const label = file.status === "renamed" ? `${file.oldPath} → ${file.path}` : file.path;
+  return `${label} (${file.status})`;
+}
+
+/** The info message shown after `agent pr` finishes — mirrors the CLI's own three-way `PrResult.method` handling (§13.5). */
+export function formatPrResult(runId: string, result: PrResult): string {
+  if (result.method === "gh") return `run ${runId} — PR opened: ${result.url}`;
+  if (result.method === "compare-url") return `run ${runId} — branch "${result.branch}" pushed to ${result.remote}; open a PR: ${result.url}`;
+  return `run ${runId} — branch "${result.branch}" pushed to ${result.remote} (no gh/GitHub compare URL available — open a PR manually)`;
 }

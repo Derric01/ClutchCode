@@ -341,6 +341,52 @@ describe("Agent.checkpoints / Agent.rollback (§13.3)", () => {
   }, 30_000);
 });
 
+describe("Agent.diffFiles (§18.5 native two-sided diff view data layer)", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let server: ScriptedServer;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+    markTrusted(repoPath);
+  });
+
+  afterEach(async () => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    await server?.close();
+  });
+
+  it("reports per-file before/after content through the real Agent API boundary", async () => {
+    server = await startScriptedServer([
+      [
+        sseChunk({
+          choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "write_file", arguments: JSON.stringify({ path: "feature.txt", body: "v1\n" }) } }] } }]
+        }),
+        sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+        "data: [DONE]\n\n"
+      ],
+      [sseChunk({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }), "data: [DONE]\n\n"]
+    ]);
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "add a feature", providerKind: "openai-compatible", model: "gpt-test", baseUrl: server.baseUrl });
+    expect(state.status).toBe("AWAITING_APPROVAL"); // no --yes, worktree still around to inspect
+
+    const files = agent.diffFiles(state.runId);
+    expect(files).toHaveLength(1);
+    expect(files[0]!.path).toBe("feature.txt");
+    expect(files[0]!.status).toBe("added");
+    expect(files[0]!.before).toBeUndefined();
+    expect(files[0]!.after).toBe("v1\n");
+  }, 30_000);
+
+  it("throws a clear error for an unknown run id, same as diff()", () => {
+    const agent = new Agent(repoPath, stateDir);
+    expect(() => agent.diffFiles("does-not-exist")).toThrow(/no worktree metadata/);
+  });
+});
+
 describe("Agent.pr (§13.5)", () => {
   let repoPath: string;
   let stateDir: string;

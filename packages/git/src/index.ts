@@ -5,6 +5,7 @@ export type { DirtyTreeStrategy, DirtyTreeResult } from "./dirty-tree.js";
 export {
   createRunWorktree,
   diffAgainstBase,
+  diffFilesAgainstBase,
   diffStat,
   checkpoint,
   listCheckpoints,
@@ -12,7 +13,7 @@ export {
   discardRun,
   approveRun
 } from "./worktree.js";
-export type { CreateRunOptions, RunWorktree, CheckpointRecord, ApproveOptions } from "./worktree.js";
+export type { CreateRunOptions, RunWorktree, CheckpointRecord, ApproveOptions, FileDiff } from "./worktree.js";
 export { SnapshotBackup } from "./snapshot-backup.js";
 export type { SnapshotBackupOptions, SnapshotDiffEntry } from "./snapshot-backup.js";
 export { listSubmodules, listLfsPatterns } from "./edge-cases.js";
