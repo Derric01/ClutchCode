@@ -7,15 +7,13 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-18
 **Branch:** `claude/handoff-prompt-continuation-c2cxh9`
-**Latest commit:** `f3e14b8` — "feat: §8.1 user-declarative workflow layer — real JSON-Schema via ajv"
-**Test suite:** 588/588 passing, 69 test files, clean `tsc -b`, clean `eslint .`
+**Latest commit:** `0d50179` — "fix: three real bugs found by a code-review pass on this session's work"
+**Test suite:** 595/595 passing, 69 test files, clean `tsc -b`, clean `eslint .`
 
-**PR:** [#8](https://github.com/Derric01/ClutchCode/pull/8) — open, not
-yet merged. #7 merged cleanly; this branch was fast-forwarded to `main`'s
-merged tip before this session's §8.1 commit landed on it. Pattern
-established across #4/#5/#6/#7/#8: one open PR per phase of work, never
-reused once merged, branch always restarted from `main`'s merged tip
-before new commits land on it.
+**PR:** [#9](https://github.com/Derric01/ClutchCode/pull/9) — open, not
+yet merged. #8 merged cleanly. Pattern established across #4 through #9:
+one open PR per phase of work, never reused once merged, branch always
+restarted from `main`'s merged tip before new commits land on it.
 
 ---
 
@@ -194,6 +192,74 @@ schema filtering, review-only edit-attempt refusal + report capture), and
 `agent.test.ts`/`commands.test.ts` (real end-to-end through the Agent API
 and CLI boundaries, plus the unknown-id rejection).
 
+### Code-review pass over this session's own work — three real bugs found and fixed
+Ran the `code-review` skill at `high` effort against the full diff since
+the seccomp commit (everything built this session: §10.3 memory, §8.2
+workflow engine, §18.5 VS Code polish, §8.1 declarative workflows). Three
+findings, all verified for real (not taken on faith) before fixing:
+
+1. **`diffFilesAgainstBase` mis-detected a renamed binary file as text.**
+   `git diff --numstat -M` combines a rename's two paths into one string
+   — confirmed empirically with three throwaway repos: `"old =>
+   new"` when the paths share no directory, `"dir/{old => new}"` when
+   they do. The original implementation matched a `Set<string>` of
+   binary paths (from one bulk `--numstat` query) against the
+   individually-parsed `path`/`oldPath` from `--name-status` — never
+   matches a combined rename string, so the binary flag silently stayed
+   `false` for a renamed binary file with real content changes, and
+   `git show`/`fs.readFileSync(...,"utf8")` would have read raw binary
+   bytes as text, producing mojibake in the new VS Code diff view. Fixed
+   by scoping the numstat binary check to one explicit pathspec per
+   file — verified this suppresses the combining entirely (git only
+   condenses rename paths when a diff query spans more than the single
+   path it's asked about). New test constructs exactly this scenario
+   (a binary file, committed, then renamed with a small — not total —
+   content change so git's rename-similarity heuristic still detects
+   it as a rename) and — checked by literally reverting the fix and
+   re-running — fails against the old code, passes against the new.
+2. **`classifyFailure`'s `command-not-found` fallback misclassified
+   ordinary missing-file errors.** The text-pattern fallback (behind
+   exit-code-127, the primary/reliable check) included a bare `"no such
+   file or directory"` — precisely the phrase Node's own generic
+   `ENOENT` uses for *any* missing file, not just a missing shell
+   command. A real test failure like `Error: ENOENT: no such file or
+   directory, open '/repo/fixtures/data.json'` (a genuinely fixable bug —
+   wrong fixture path) would have been misclassified as
+   `command-not-found`: the repair message would tell the model to stop
+   calling tools and escalate instead of asking for a targeted fix, and
+   `markToolchainFactStale` would incorrectly invalidate a perfectly
+   valid cached command. Fixed by only trusting the bare phrase when the
+   output *isn't* Node's own `ENOENT`-labeled wording (a shell's own
+   exec-failure message for a truly missing command never includes that
+   label — only Node's generic file error does). Two new tests: the
+   legitimate shell case still classifies as `command-not-found`; the
+   Node-ENOENT-for-an-ordinary-file case now doesn't.
+3. **`agent memory` commands had no way to see a scoped run's memory at
+   all.** `Agent.run --scope path/` (§13.4) caches toolchain memory under
+   `<repoPath>/<scope>`, computed once inline in `agent.ts`; `agent
+   memory list/show/forget/correct` (§10.3) only ever took a bare
+   `repoPath` with no scope parameter and no `--scope` CLI flag —
+   structurally incapable of reading or correcting a scoped run's cache,
+   not just missing a flag. `agent memory list` after a scoped run
+   reported "nothing remembered" even though a fact genuinely was
+   cached, and `agent memory correct` for a scoped run silently wrote to
+   a different, unused cache file. Fixed by threading `scope` through
+   all four `@clutchcode/agent-api` memory functions and adding
+   `--scope` to the CLI's `memory`/`list`/`show`/`forget`/`correct`
+   subcommands; extracted one shared `resolveMemoryCacheKeyPath(repoPath,
+   scope)` helper used by both `memory.ts` and `Agent.run` itself so the
+   two computations can't drift apart again the way this bug happened in
+   the first place (two separate ad-hoc computations of the same key).
+   Four new tests across `agent.test.ts` (scoped vs. unscoped `listMemory`/
+   `correctMemoryFact` through the real `Agent` boundary) and
+   `commands.test.ts` (the same through the real CLI command functions).
+
+7 new tests total. Full suite after all three fixes: 595/595 passing,
+clean `tsc -b`, clean `eslint .`. Nothing here should be read as "the
+review found only three things" — it's a single-pass, single-reviewer
+review; the honest claim is "these three were confirmed real and fixed,"
+not "this code is now bug-free."
+
 ### §8.1 user-declarative workflow layer — real JSON-Schema validation via `ajv`
 The second authoring layer §8.1 describes, on top of the three built-ins
 (previous entry). New `packages/runtime/src/workflow-declaration.ts`:
@@ -365,6 +431,15 @@ loose "MVP" estimate.
   (`git add -A`), same as `checkpoint()` already does per step. If a
   diff-based function mysteriously misses a brand-new file, check whether
   it's staged.
+- **`git diff --numstat -M` combines a rename's two paths into one
+  string** — `"old => new"`, or `"dir/{old => new}"` when they share a
+  directory — instead of two separate columns. Any code that tries to
+  match a bulk `--numstat` query's output back against individually-
+  parsed old/new paths from `--name-status` will never match a rename.
+  `diffFilesAgainstBase`'s binary detection hit exactly this (caught in
+  code review, see "what's done"): fixed by scoping the numstat query to
+  one explicit pathspec per file instead of one bulk query — confirmed
+  empirically that scoping to a single path suppresses the combining.
 - **`git stash push --include-untracked` silently hides new files.**
   `handleDirtyTree`'s default "stash" strategy will stash an uncommitted
   config change (e.g. a test's `saveConfig()` call) before a run starts,

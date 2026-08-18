@@ -23,7 +23,20 @@ const ENV_ERROR_RE =
 const COMPILE_ERROR_RE =
   /syntaxerror|cannot find module|unexpected token|referenceerror.*is not defined|importerror|modulenotfounderror|error ts\d{4}|compilation failed/i;
 const TEST_ASSERTION_RE = /assertionerror|expect\(.*\)\.(to|not)|assert(_equal|equal)?\(|failed:.*expected|assertionfailederror/i;
-const COMMAND_NOT_FOUND_RE = /: not found\b|: command not found|is not recognized as an internal or external command|no such file or directory/i;
+const COMMAND_NOT_FOUND_RE = /: not found\b|: command not found|is not recognized as an internal or external command/i;
+// A bare "no such file or directory" is ambiguous on its own: a shell's own
+// exec-failure message uses that exact phrase for a genuinely missing
+// *command* (e.g. bash's `execvp: eslint: No such file or directory`), but
+// so does every Node.js ENOENT for an ordinary missing *file* — a test
+// fixture, a generated asset — that has nothing to do with a missing
+// binary and is exactly the kind of real, fixable bug a code edit should
+// address, not something to hand back as "stop calling tools, escalate."
+// Node always labels its own ENOENT errors explicitly ("ENOENT: no such
+// file or directory, open '...'"); a shell's exec-failure message never
+// does. So: trust the phrase only when the surrounding output *isn't*
+// Node's own ENOENT wording.
+const BARE_NO_SUCH_FILE_RE = /\bno such file or directory\b/i;
+const NODE_ENOENT_RE = /\benoent\b/i;
 
 /**
  * Classify a failed verification stage into the §6.8 error taxonomy so the
@@ -49,7 +62,9 @@ export function classifyFailure(result: StageResult): FailureClass {
   // shell (`runStage` always spawns via `shell: true`, i.e. through a real
   // shell, so this is a reliable mechanical check); the text patterns are
   // a fallback for shells/platforms that report it differently.
-  if (result.exitCode === 127 || COMMAND_NOT_FOUND_RE.test(output)) return "command-not-found";
+  const isCommandNotFound =
+    result.exitCode === 127 || COMMAND_NOT_FOUND_RE.test(output) || (BARE_NO_SUCH_FILE_RE.test(output) && !NODE_ENOENT_RE.test(output));
+  if (isCommandNotFound) return "command-not-found";
 
   if (result.stage === "lint") return "lint";
   if (result.stage === "typecheck") return "typecheck";

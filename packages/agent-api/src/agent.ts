@@ -50,6 +50,7 @@ import { loadCredentials, type Credentials } from "./credentials.js";
 import { buildProvider, type ProviderKind } from "./provider-factory.js";
 import { appendEvent, readEvents } from "./events.js";
 import { loadRunWorktree, saveRunWorktree } from "./worktree-store.js";
+import { resolveMemoryCacheKeyPath } from "./memory.js";
 
 export interface RunOptions {
   task: string;
@@ -241,7 +242,7 @@ export class Agent {
     // on it would mean it never hits at all, silently defeating the
     // point of caching; `detectFrom` still reads the live worktree
     // content, since that's what's actually being verified this run.
-    const memoryCacheKeyPath = opts.scope ? path.join(this.repoPath, opts.scope) : this.repoPath;
+    const memoryCacheKeyPath = resolveMemoryCacheKeyPath(this.repoPath, opts.scope);
     const agentsMdPath = path.join(run.worktreePath, "AGENTS.md");
     const agentsMdContent = fs.existsSync(agentsMdPath) ? fs.readFileSync(agentsMdPath, "utf8") : undefined;
     const memoryOpts = opts.memoryDir ? { configDir: opts.memoryDir } : undefined;

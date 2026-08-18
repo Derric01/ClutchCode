@@ -61,6 +61,24 @@ export function makeSampleRepo(): string {
   return dir;
 }
 
+/** A repo whose root test *fails* but whose `packages/foo` subdir has its own, passing toolchain — for `--scope` tests (§13.4). */
+export function makeMonorepo(): string {
+  const dir = makeTempDir("clutchcode-cli-monorepo-");
+  git(dir, ["init", "-q", "-b", "main"]);
+  git(dir, ["config", "user.email", "test@example.com"]);
+  git(dir, ["config", "user.name", "Test"]);
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "root", scripts: { test: "node -e \"process.exit(1)\"" } }, null, 2), "utf8");
+  fs.mkdirSync(path.join(dir, "packages", "foo"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "packages", "foo", "package.json"),
+    JSON.stringify({ name: "foo", scripts: { test: "node -e \"console.log('ok')\"" } }, null, 2),
+    "utf8"
+  );
+  git(dir, ["add", "."]);
+  git(dir, ["commit", "-q", "-m", "initial commit"]);
+  return dir;
+}
+
 /** Adds a local bare repo as `origin`, for `agent pr` tests that need a real (but offline) remote. */
 export function addBareOrigin(repoPath: string): string {
   const bareDir = makeTempDir("clutchcode-cli-bare-remote-");

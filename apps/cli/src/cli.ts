@@ -42,6 +42,8 @@ interface GlobalOpts {
   json: boolean;
   stateDir?: string;
   modelsDir?: string;
+  /** Only actually registered as a CLI flag on the `memory` subcommands (§13.4/§10.3) — `undefined` everywhere else, harmless. */
+  scope?: string;
 }
 
 function emit(result: CommandResult, json: boolean): never {
@@ -58,7 +60,7 @@ function emit(result: CommandResult, json: boolean): never {
 }
 
 function ctx(opts: GlobalOpts): CliContext {
-  return { repoPath: opts.repo, json: opts.json, stateDir: opts.stateDir, modelsDir: opts.modelsDir };
+  return { repoPath: opts.repo, json: opts.json, stateDir: opts.stateDir, modelsDir: opts.modelsDir, scope: opts.scope };
 }
 
 interface ModelsGlobalOpts {
@@ -224,26 +226,33 @@ baseOptions(providers.command("unset-key"))
   .argument("<provider>", "anthropic | openai-compatible")
   .action(async (provider: string, opts: GlobalOpts) => emit(await cmdProvidersUnsetKey(ctx(opts), provider), opts.json));
 
-const memory = baseOptions(program.command("memory"));
+const SCOPE_OPTION = ["--scope <path>", "monorepo: the same subdir a scoped run used (`agent run --scope`, §13.4) — memory is cached per-scope, not just per-repo"] as const;
+
+const memory = baseOptions(program.command("memory")).option(...SCOPE_OPTION);
 memory.description("project memory (§10.3) — machine-derived toolchain facts, with provenance and correction");
 memory.action(async (opts: GlobalOpts) => emit(await cmdMemoryList(ctx(opts)), opts.json));
 
-baseOptions(memory.command("list")).action(async (opts: GlobalOpts) => emit(await cmdMemoryList(ctx(opts)), opts.json));
+baseOptions(memory.command("list"))
+  .option(...SCOPE_OPTION)
+  .action(async (opts: GlobalOpts) => emit(await cmdMemoryList(ctx(opts)), opts.json));
 
 baseOptions(memory.command("show"))
   .description("show one remembered fact's full detail (value, provenance, staleness)")
   .argument("<key>", "language | packageManager | build | test | lint | typecheck")
+  .option(...SCOPE_OPTION)
   .action(async (key: string, opts: GlobalOpts) => emit(await cmdMemoryShow(ctx(opts), key), opts.json));
 
 baseOptions(memory.command("forget"))
   .description("remove a remembered fact — the next run re-derives it")
   .argument("<key>", "language | packageManager | build | test | lint | typecheck")
+  .option(...SCOPE_OPTION)
   .action(async (key: string, opts: GlobalOpts) => emit(await cmdMemoryForget(ctx(opts), key), opts.json));
 
 baseOptions(memory.command("correct"))
   .description("directly overwrite a remembered fact (§10.3 point 5 — human edits win)")
   .argument("<key>", "language | packageManager | build | test | lint | typecheck")
   .argument("<value>", "the corrected command/value")
+  .option(...SCOPE_OPTION)
   .action(async (key: string, value: string, opts: GlobalOpts) => emit(await cmdMemoryCorrect(ctx(opts), key, value), opts.json));
 
 baseOptions(program.command("doctor")).action(async (opts: GlobalOpts) => emit(await cmdDoctor(ctx(opts)), opts.json));

@@ -31,6 +31,7 @@ import {
 import { EXIT, exitCodeForRunStatus } from "./exit-codes.js";
 import {
   addBareOrigin,
+  makeMonorepo,
   makeSampleRepo,
   makeTempDir,
   sseChunk,
@@ -337,6 +338,48 @@ describe("memory list/show/forget/correct (§10.3)", () => {
     expect(parsed.value).toBe("npm run test");
     expect(parsed.source).toBeTruthy();
   }, 30_000);
+});
+
+describe("memory --scope (§13.4 monorepos, §10.3)", () => {
+  let repoPath: string;
+  let memoryDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    repoPath = makeMonorepo();
+    memoryDir = makeTempDir("clutchcode-cli-memory-test-");
+    stateDir = makeTempDir("clutchcode-cli-memory-state-");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(memoryDir, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("a scoped run's memory is only visible through `memory list/show --scope`, not the unscoped commands", async () => {
+    const runResult = await cmdRun({ repoPath, stateDir, memoryDir }, { task: "investigate", providerKind: "fake", model: "n/a", yes: true, scope: "packages/foo" });
+    expect(runResult.exitCode).toBe(EXIT.SUCCESS);
+
+    const scopedShow = await cmdMemoryShow({ repoPath, memoryDir, json: true, scope: "packages/foo" }, "test");
+    expect(JSON.parse(scopedShow.output).value).toBeTruthy();
+
+    // Before the fix, there was no `scope` field on CliContext at all — this
+    // was the *only* lookup available, and it always came back empty for a
+    // scoped run's memory.
+    const unscopedShow = await cmdMemoryShow({ repoPath, memoryDir, json: true }, "test");
+    expect(unscopedShow.output).toBe("null");
+  }, 30_000);
+
+  it("`memory correct --scope` writes to the same cache a scoped run reads, not the unscoped one", async () => {
+    const corrected = await cmdMemoryCorrect({ repoPath, memoryDir, scope: "packages/foo" }, "test", "echo scoped-cli-correction");
+    expect(corrected.exitCode).toBe(EXIT.SUCCESS);
+
+    const scopedList = await cmdMemoryList({ repoPath, memoryDir, json: true, scope: "packages/foo" });
+    expect(JSON.parse(scopedList.output).facts.test?.value).toBe("echo scoped-cli-correction");
+
+    expect((await cmdMemoryList({ repoPath, memoryDir, json: true })).output).toBe("null");
+  });
 });
 
 describe("resume (§6.2, §6.3)", () => {

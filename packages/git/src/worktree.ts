@@ -116,20 +116,6 @@ export function diffFilesAgainstBase(run: RunWorktree, pathScope?: string): File
   const nameStatusOut = git(nameStatusArgs, { cwd: run.worktreePath, allowFailure: true }).trim();
   if (!nameStatusOut) return [];
 
-  // `--numstat` reports "-\t-\t<path>" for a file git treats as binary —
-  // the same signal `git diff`'s own porcelain output uses internally, so
-  // this matches what `diffAgainstBase`'s unified diff would have called
-  // "Binary files differ" on, rather than a heuristic re-guess here.
-  const numstatArgs = pathScope ? ["diff", "--numstat", "-M", run.baseCommit, "--", pathScope] : ["diff", "--numstat", "-M", run.baseCommit];
-  const numstatOut = git(numstatArgs, { cwd: run.worktreePath, allowFailure: true });
-  const binaryPaths = new Set(
-    numstatOut
-      .trim()
-      .split("\n")
-      .filter((line) => line.startsWith("-\t-\t"))
-      .map((line) => line.slice("-\t-\t".length))
-  );
-
   return nameStatusOut.split("\n").map((line): FileDiff => {
     const fields = line.split("\t");
     const statusChar = fields[0]!;
@@ -152,12 +138,31 @@ export function diffFilesAgainstBase(run: RunWorktree, pathScope?: string): File
       filePath = fields[1]!;
     }
 
-    const binary = binaryPaths.has(filePath) || (oldPath !== undefined && binaryPaths.has(oldPath));
+    const binary = isBinaryDiff(run, oldPath ?? filePath);
     const before = status !== "added" && !binary ? git(["show", `${run.baseCommit}:${oldPath ?? filePath}`], { cwd: run.worktreePath, allowFailure: true }) : undefined;
     const after = status !== "deleted" && !binary ? readWorktreeTextFile(run.worktreePath, filePath) : undefined;
 
     return { path: filePath, oldPath, status, before, after, binary };
   });
+}
+
+/**
+ * "-\t-\t<path>" from `git diff --numstat` is git's own binary signal — the
+ * same one its unified diff calls "Binary files differ" on, rather than a
+ * heuristic re-guess here. Scoped to exactly one pathspec (never a bulk
+ * query across every changed file): for a *rename*, `git diff --numstat -M`
+ * doesn't print the two paths separately — it combines them into one
+ * string, either `"old => new"` or, when they share a directory,
+ * `"dir/{old => new}"`. Neither form matches `filePath`/`oldPath`
+ * individually, so a bulk query's result can never be reliably matched
+ * back to a renamed file; scoping the query to a single explicit pathspec
+ * sidesteps the combining entirely (verified empirically — git only
+ * combines rename paths when a diff covers more than the one path it's
+ * asked about).
+ */
+function isBinaryDiff(run: RunWorktree, scopedPath: string): boolean {
+  const out = git(["diff", "--numstat", "-M", run.baseCommit, "--", scopedPath], { cwd: run.worktreePath, allowFailure: true });
+  return out.trim().startsWith("-\t-\t");
 }
 
 function readWorktreeTextFile(worktreePath: string, filePath: string): string | undefined {
