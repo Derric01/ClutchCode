@@ -10,14 +10,13 @@ file is the time-stamped snapshot of where the project actually stands.
 **Latest commit:** `35e104f` — "feat: VS Code extension polish — native diff, run-picker, resume/rollback/pr (§18.5)"
 **Test suite:** 558/558 passing, 68 test files, clean `tsc -b`, clean `eslint .`
 
-**PR:** #6 **merged.** This branch was reset to match `main` right after
-(a clean fast-forward — nothing stacked on top of merged history this
-time), then this session's newest commit (VS Code polish) was added on
-top of that fresh base. A new PR is opened for it; check `git log` /
-GitHub for its number if this note is stale by the time you're reading
-it — the pattern established across #4/#5/#6 is: one open PR per phase of
-work, never reused once merged, branch always restarted from `main`'s
-merged tip before new commits land on it.
+**PR:** [#7](https://github.com/Derric01/ClutchCode/pull/7) — open, not yet
+merged. #6 merged cleanly; this branch was fast-forwarded to `main`'s
+merged tip before this session's VS Code-polish commit landed on it, so
+#7 stacks on genuinely fresh history (nothing rebased this time). Pattern
+established across #4/#5/#6/#7: one open PR per phase of work, never
+reused once merged, branch always restarted from `main`'s merged tip
+before new commits land on it.
 
 ---
 
