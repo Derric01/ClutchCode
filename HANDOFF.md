@@ -7,10 +7,12 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-18
 **Branch:** `claude/handoff-prompt-continuation-c2cxh9`
-**Latest commit:** `333c889` — "feat: seccomp-bpf hardening layered under Linux bwrap (§12.6)"
-**Test suite:** 487/487 passing, 66 test files, clean `tsc -b`, clean `eslint .`
+**Latest commit:** `3f185f6` — "feat: project memory correction UX — §10.3, new @clutchcode/memory package"
+**Test suite:** 524/524 passing, 67 test files, clean `tsc -b`, clean `eslint .`
 
-No PR has been opened for this branch's work yet — none was requested.
+**PR:** [#5](https://github.com/Derric01/ClutchCode/pull/5) — open, not yet
+merged (continues #4's branch, which merged earlier in this project's
+history).
 
 ---
 
@@ -132,6 +134,28 @@ keys never cross-reading each other's values. `agent providers set-key
 history) and routes to whichever tier is actually available; `agent
 providers unset-key <provider>` removes it from the same place.
 
+### Project memory correction UX (§10.3) — new @clutchcode/memory package
+Toolchain detection now persists as a provenance-timestamped cache
+(`{value, derivedAt, source}` per fact), keyed by the repo's *stable*
+path — every run used to call `detectToolchain` fresh, so caching at all
+is a real behavior change. Invalidated when the manifest files it was
+derived from change content; `AGENTS.md` overrides still win on every
+re-derive. `agent memory list/show/forget/correct` expose it at the CLI.
+**Self-healing (§10.3 point 3):** a real bug got fixed along the way —
+`classifyFailure` used to trust `lint`/`typecheck`'s own stage name
+unconditionally, so a missing `eslint`/`tsc` binary was misreported as
+"there's a lint issue" instead of what it is; new `command-not-found`
+classification (exit 127, checked first) fixes this for all four stages,
+and `AgentLoop`'s new optional `onVerificationFailure` hook (runtime
+stays decoupled from the memory package) lets `agent-api` mark the
+matching cached fact stale so the next run re-derives instead of
+repeating a proven-wrong command. Proven end-to-end through a real run,
+not just at the unit level — including a real bug the test suite itself
+caught (see gotchas below). Deliberately out of scope: the "agent
+proposes an `AGENTS.md` edit, with consent" flow §10.1 also describes,
+and the long-term engineering tier (prior runs/decisions queryable via a
+history database) — both real, separate features.
+
 ### Docs: "MVP" removed everywhere
 The spec used "MVP" to label Phase 1 scope throughout — renamed to
 "Phase 1" (or a non-numeric label where it would collide with the
@@ -157,8 +181,7 @@ loose "MVP" estimate.
 | arm64 seccomp | §12.6 | small, needs an arm64 host | The x86_64 filter is done and verified; arm64 has a different syscall number table with no way to verify it in this (x86_64) environment — needs either an arm64 host/CI runner or a very high-confidence authoritative source cross-checked the same way libseccomp's resolver was used for x86_64. |
 | VS Code extension polish | §18.5 | medium | Native two-sided diff view (needs per-file before/after content, not just the unified diff text `agent diff` returns), a run-picker, resume/rollback/pr commands in the UI. |
 | Full non-git `AgentLoop` execution path | — | large, separate project | Snapshot-backed (not worktree-backed) execution for non-git directories. `Agent.run` currently refuses cleanly with a "run git init" error instead of attempting this. |
-| Workflow engine — user-declarative workflows | §8, Phase 6 | medium | Built-in workflows (default/quickfix/review-only) already exist as typed TS; the JSON-Schema-validated user-declarative layer on top does not. |
-| Memory correction UX | §10.3, Phase 7 | medium | `AGENTS.md` basic read exists; `agent memory` list/show/correct does not. |
+| Workflow engine — built-ins + user-declarative | §8, Phase 6 | medium–large | **Corrected from an earlier, inaccurate note in this file:** no workflow engine exists yet at all — `AgentLoop` always runs one hardcoded pipeline (plan(opt) → implement → verify → approve → commit); `RunState.workflowId` is a stored label with no effect on control flow. The three named built-ins (default/quickfix/review-only, §8.2) and the JSON-Schema-validated user-declarative layer on top are both still to build. |
 | PageRank repo map | §9, Phase 7 | medium | Tier 0 (ripgrep + on-demand tree-sitter) is what's live; the Aider-style PageRank map is Tier 1, triggered by measured retrieval-accuracy failures on large repos, not built preemptively. |
 | Eval scoreboard | §16, Phase 8 | medium–large | The replay harness (§16.3c) is live and gates every phase; the full SWE-bench-Verified-subset + Terminal-Bench-style scoreboard with published methodology is not. |
 | Multi-agent orchestration | §7, Phase 9 | large | Explicitly out of scope until the §7 rule justifies it — the spec argues *against* building this by default. Don't start it without re-reading §7's reasoning first. |
@@ -221,6 +244,25 @@ loose "MVP" estimate.
   trusting recall. Where no authoritative local source exists (arm64,
   here), the honest move is to say so and not implement that path at all
   — see the arm64-seccomp row in "what's left."
+- **A cache keyed on a per-run ephemeral path never hits — this bit the
+  first pass of `@clutchcode/memory` for real.** `getOrDetectToolchain`
+  originally took one `repoRoot` param used for both reading manifest
+  files *and* the cache filename; `agent-api` passed it the run's git
+  worktree path, which is a fresh temp directory every single run. The
+  cache write always "succeeded" and the read logic was all correct in
+  isolation — it just never hit anything, because no two runs ever share
+  a worktree path. Two `agent.test.ts` assertions caught it immediately
+  (`listMemory` came back `undefined`; a "verification is the truth
+  oracle" test that expected the run to escalate on a corrupted command
+  instead came back `DONE`, because the correction had been written under
+  a path nothing would ever read from again). The fix: split the
+  parameter into `detectFrom` (the live worktree — what's actually being
+  verified) and `cacheKeyPath` (the stable repo+scope identity). Lesson:
+  when a cache/memory layer sits underneath something that creates a
+  fresh directory per invocation (worktrees, temp dirs, per-run scratch
+  space), double-check which path is actually being used as the cache
+  *key* versus the *content source* — they're very easy to conflate when
+  one function reads from disk and persists to disk in the same call.
 
 ## How to resume
 
