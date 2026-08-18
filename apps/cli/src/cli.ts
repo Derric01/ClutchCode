@@ -8,6 +8,10 @@ import {
   cmdDoctor,
   cmdInit,
   cmdInspect,
+  cmdMemoryCorrect,
+  cmdMemoryForget,
+  cmdMemoryList,
+  cmdMemoryShow,
   cmdModelsList,
   cmdModelsProbe,
   cmdPr,
@@ -213,6 +217,28 @@ baseOptions(providers.command("unset-key"))
   .description("remove an API key from the OS keychain (§5.1)")
   .argument("<provider>", "anthropic | openai-compatible")
   .action(async (provider: string, opts: GlobalOpts) => emit(await cmdProvidersUnsetKey(ctx(opts), provider), opts.json));
+
+const memory = baseOptions(program.command("memory"));
+memory.description("project memory (§10.3) — machine-derived toolchain facts, with provenance and correction");
+memory.action(async (opts: GlobalOpts) => emit(await cmdMemoryList(ctx(opts)), opts.json));
+
+baseOptions(memory.command("list")).action(async (opts: GlobalOpts) => emit(await cmdMemoryList(ctx(opts)), opts.json));
+
+baseOptions(memory.command("show"))
+  .description("show one remembered fact's full detail (value, provenance, staleness)")
+  .argument("<key>", "language | packageManager | build | test | lint | typecheck")
+  .action(async (key: string, opts: GlobalOpts) => emit(await cmdMemoryShow(ctx(opts), key), opts.json));
+
+baseOptions(memory.command("forget"))
+  .description("remove a remembered fact — the next run re-derives it")
+  .argument("<key>", "language | packageManager | build | test | lint | typecheck")
+  .action(async (key: string, opts: GlobalOpts) => emit(await cmdMemoryForget(ctx(opts), key), opts.json));
+
+baseOptions(memory.command("correct"))
+  .description("directly overwrite a remembered fact (§10.3 point 5 — human edits win)")
+  .argument("<key>", "language | packageManager | build | test | lint | typecheck")
+  .argument("<value>", "the corrected command/value")
+  .action(async (key: string, value: string, opts: GlobalOpts) => emit(await cmdMemoryCorrect(ctx(opts), key, value), opts.json));
 
 baseOptions(program.command("doctor")).action(async (opts: GlobalOpts) => emit(await cmdDoctor(ctx(opts)), opts.json));
 

@@ -95,6 +95,9 @@ importers:
       '@clutchcode/git':
         specifier: workspace:*
         version: link:../git
+      '@clutchcode/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@clutchcode/providers':
         specifier: workspace:*
         version: link:../providers
@@ -145,6 +148,16 @@ importers:
         version: 5.9.3
 
   packages/git:
+    devDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
+  packages/memory:
+    dependencies:
+      '@clutchcode/verification':
+        specifier: workspace:*
+        version: link:../verification
     devDependencies:
       typescript:
         specifier: ^5.7.2

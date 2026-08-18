@@ -26,3 +26,5 @@ export { saveRunWorktree, loadRunWorktree } from "./worktree-store.js";
 export { probeModel, listModelProfiles } from "./capability.js";
 export type { ProbeModelOptions, ProbeModelResult } from "./capability.js";
 export type { CapabilityProfile } from "@clutchcode/capability";
+export { listMemory, showMemoryFact, forgetMemoryFact, correctMemoryFact } from "./memory.js";
+export type { MemoryFact, ToolchainFactKey, ToolchainMemory, ToolchainMemoryOptions } from "@clutchcode/memory";

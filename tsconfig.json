@@ -5,6 +5,7 @@
     { "path": "packages/providers" },
     { "path": "packages/git" },
     { "path": "packages/verification" },
+    { "path": "packages/memory" },
     { "path": "packages/capability" },
     { "path": "packages/runtime" },
     { "path": "packages/agent-api" },

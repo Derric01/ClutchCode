@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildEditFormatGuidance, buildInitialMessages, buildSystemPrompt } from "./message-builder.js";
+import type { StageResult } from "@clutchcode/verification";
+import { buildEditFormatGuidance, buildInitialMessages, buildRepairMessage, buildSystemPrompt } from "./message-builder.js";
+
+function stage(overrides: Partial<StageResult>): StageResult {
+  return { stage: "test", ran: true, exitCode: 1, stdout: "", stderr: "", passed: false, durationMs: 1, ...overrides };
+}
 
 describe("buildEditFormatGuidance (§4.4 decision tree → prose)", () => {
   it("grammar-enforced search/replace for a high-accuracy model with constrained decode", () => {
@@ -50,5 +55,21 @@ describe("buildInitialMessages", () => {
     expect(messages[0]!.role).toBe("system");
     expect(messages[0]!.content).toMatch(/grammar-enforced/);
     expect(messages[1]).toEqual({ role: "user", content: "fix the bug" });
+  });
+});
+
+describe("buildRepairMessage", () => {
+  it("asks for a targeted fix for an ordinary failure class", () => {
+    const msg = buildRepairMessage(stage({ stderr: "AssertionError: expected 1 to equal 2" }), "test-assertion");
+    expect(msg.role).toBe("user");
+    expect(msg.content).toContain('Verification stage "test" failed (classified as test-assertion');
+    expect(msg.content).toContain("Analyze this failure and make a targeted fix");
+  });
+
+  it("tells the model plainly not to guess at code edits for command-not-found — this can't be fixed by editing source (§10.3)", () => {
+    const msg = buildRepairMessage(stage({ exitCode: 127, stderr: "sh: 1: pytest: not found" }), "command-not-found");
+    expect(msg.content).toContain("missing tool/binary, not a bug in your code");
+    expect(msg.content).toContain("let this run escalate for human review");
+    expect(msg.content).not.toContain("Analyze this failure and make a targeted fix");
   });
 });

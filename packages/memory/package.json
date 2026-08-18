@@ -1,0 +1,20 @@
+{
+  "name": "@clutchcode/memory",
+  "version": "0.1.0",
+  "description": "Project memory (PROJECT_SPEC.md §10): a provenance-timestamped, self-correcting cache of machine-derived facts (toolchain commands today), with human forget/correct and verification-as-truth-oracle self-healing.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@clutchcode/verification": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

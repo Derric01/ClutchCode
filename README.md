@@ -156,6 +156,32 @@ run-picker instead of typing a run id, and resume/rollback/pr commands in
 the extension UI (the CLI has them; the extension covers §18.5's core
 run/diff/approve/reject loop).
 
+**§10.3's project-memory correction UX is done.** A new `@clutchcode/memory`
+package persists toolchain detection as a provenance-timestamped cache
+(`{value, derivedAt, source}` per fact — build/test/lint/typecheck/
+language/packageManager), keyed by the repo's stable path so it actually
+survives across runs — every run used to call `detectToolchain` fresh,
+so this is a real behavior change, not just plumbing. Invalidated when
+the manifest files it was derived from change content (`package.json`,
+`Cargo.toml`, lockfiles, …); `AGENTS.md` overrides still win on every
+re-derive. `agent memory list/show/forget/correct` expose it at the CLI —
+`correct` is a direct human override (`agent memory correct test "pytest
+-q --maxfail=1"`), `forget` clears one fact for re-derivation. The
+self-healing half (§10.3 point 3, "verification is the truth oracle"):
+a verification failure now classifies `command-not-found` as its own
+case (a real bug fixed along the way — a missing `eslint`/`tsc`/etc.
+binary used to get misreported as "there's a lint issue" / "there's a
+typecheck issue" instead of what it actually is), the repair message
+tells the model plainly not to guess at code edits for it, and
+`Agent.run`/`Agent.resume` mark the matching cached fact stale so the
+*next* run re-derives instead of repeating a proven-wrong command —
+proven end-to-end through a real run (a scripted broken command hits the
+loop detector's stall check, and the cached fact really is marked stale
+afterward, not just at the unit level). Deliberately out of scope: the
+"agent proposes an `AGENTS.md` edit, with consent" flow §10.1 also
+describes, and the long-term engineering tier (§10 — prior runs/decisions
+queryable via a history database) — both real, separate features.
+
 ## Repository layout
 
 ```
@@ -165,6 +191,7 @@ packages/
   tools/          native tool set + truncation
   git/            worktree isolation, checkpoints, diff
   verification/   pipeline, toolchain detect, cheat detection
+  memory/         §10.3 project memory — provenance-timestamped toolchain cache, self-healing, correction
   capability/     capability probe, profile persistence, context budgeter, edit-format selector
   agent-api/      the Agent API boundary (in-process)
   agent-rpc/      the Agent API's stdio JSON-RPC binding (LSP-style framing, ACP-shaped)

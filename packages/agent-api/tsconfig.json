@@ -9,6 +9,7 @@
   "references": [
     { "path": "../capability" },
     { "path": "../git" },
+    { "path": "../memory" },
     { "path": "../providers" },
     { "path": "../runtime" },
     { "path": "../sandbox" },

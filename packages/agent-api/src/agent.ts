@@ -22,7 +22,8 @@ import {
   type CheckpointRecord,
   type RunWorktree
 } from "@clutchcode/git";
-import { applyAgentsMdOverrides, detectToolchain, type ToolchainCommands } from "@clutchcode/verification";
+import type { FailureClass, StageResult, ToolchainCommands } from "@clutchcode/verification";
+import { getOrDetectToolchain, markToolchainFactStale, type ToolchainFactKey } from "@clutchcode/memory";
 import { defaultModelsDir, loadCapabilityProfile, resolveCapability, type EffectiveCapability } from "@clutchcode/capability";
 import type { Provider } from "@clutchcode/providers";
 import {
@@ -55,6 +56,8 @@ export interface RunOptions {
   budgets?: Partial<Budgets>;
   /** §13.4 monorepos: pin the verification (toolchain detection + pipeline cwd) scope to this subdir, relative to the repo root. */
   scope?: string;
+  /** Override for the §10.3 project-memory store's location (default: ~/.config/clutchcode/memory); real usage never sets this, tests use it for isolation. */
+  memoryDir?: string;
   onEvent?: (event: RuntimeEvent) => void;
 }
 
@@ -74,6 +77,8 @@ export interface ResumeOptions {
   /** Overrides the run's original `--yes` setting for this resume only; defaults to whatever the run was started with. */
   yesMode?: boolean;
   modelsDir?: string;
+  /** Override for the §10.3 project-memory store's location; see `RunOptions.memoryDir`. */
+  memoryDir?: string;
   onEvent?: (event: RuntimeEvent) => void;
 }
 
@@ -166,6 +171,8 @@ interface RunDeps {
   credentials: Credentials;
   config: AgentConfig;
   verifyCwd: string;
+  /** §10.3 point 3: reacts to a real verification failure by marking the matching cached toolchain fact stale, so the *next* run re-derives instead of repeating a proven-wrong command. */
+  onVerificationFailure: (stage: StageResult, failureClass: FailureClass) => void;
 }
 
 /**
@@ -198,7 +205,7 @@ export class Agent {
     model: string,
     providerKind: ProviderKind,
     run: RunWorktree,
-    opts: { baseUrl?: string; modelsDir?: string; scope?: string }
+    opts: { baseUrl?: string; modelsDir?: string; scope?: string; memoryDir?: string }
   ): RunDeps {
     const config = loadConfig(this.repoPath);
     const credentials = loadCredentials(); // §5.1: OS keychain first, env vars as the fallback
@@ -214,11 +221,29 @@ export class Agent {
       throw new Error(`--scope "${opts.scope}" does not exist in the worktree (resolved to ${verifyCwd})`);
     }
 
-    let toolchainCommands: ToolchainCommands = detectToolchain(verifyCwd);
+    // §10.3: a persisted, provenance-timestamped cache — not a fresh
+    // `detectToolchain` call every run — with `AGENTS.md` overrides
+    // (point 4, "human edits win") re-applied on every re-derive. Cached
+    // under the *stable* repo (+scope) path, not `verifyCwd` — that's a
+    // fresh git-worktree directory every single run, so keying the cache
+    // on it would mean it never hits at all, silently defeating the
+    // point of caching; `detectFrom` still reads the live worktree
+    // content, since that's what's actually being verified this run.
+    const memoryCacheKeyPath = opts.scope ? path.join(this.repoPath, opts.scope) : this.repoPath;
     const agentsMdPath = path.join(run.worktreePath, "AGENTS.md");
-    if (fs.existsSync(agentsMdPath)) {
-      toolchainCommands = applyAgentsMdOverrides(toolchainCommands, fs.readFileSync(agentsMdPath, "utf8"));
-    }
+    const agentsMdContent = fs.existsSync(agentsMdPath) ? fs.readFileSync(agentsMdPath, "utf8") : undefined;
+    const memoryOpts = opts.memoryDir ? { configDir: opts.memoryDir } : undefined;
+    const { commands: toolchainCommands } = getOrDetectToolchain(verifyCwd, memoryCacheKeyPath, agentsMdContent, memoryOpts);
+
+    // §10.3 point 3, "verification is the truth oracle": a command that
+    // turns out not to exist at all means the cached fact was wrong, not
+    // that the model's edit was — mark just that fact stale so the next
+    // run re-derives instead of repeating the same broken command.
+    const onVerificationFailure = (stage: StageResult, failureClass: FailureClass): void => {
+      if (failureClass !== "command-not-found") return;
+      const key = stage.stage as ToolchainFactKey; // StageName ("build"|"test"|"lint"|"typecheck") is a subset of ToolchainFactKey
+      markToolchainFactStale(memoryCacheKeyPath, key, `verification actually ran "${stage.command}" and got exit code ${stage.exitCode} (command not found)`, memoryOpts);
+    };
 
     const evidenceDir = path.join(this.stateDir, "runs", run.runId, "evidence");
     const tools: Map<string, Tool<unknown, unknown>> = nativeToolSet();
@@ -261,7 +286,7 @@ export class Agent {
     const capabilityProfile = loadCapabilityProfile(model, modelsDir);
     const capability = resolveCapability(capabilityProfile, provider.capabilityDefaults);
 
-    return { provider, tools, toolContext, toolchainCommands, evidenceDir, capability, credentials, config, verifyCwd };
+    return { provider, tools, toolContext, toolchainCommands, evidenceDir, capability, credentials, config, verifyCwd, onVerificationFailure };
   }
 
   async run(opts: RunOptions): Promise<RunState> {
@@ -284,7 +309,7 @@ export class Agent {
     const run = createRunWorktree({ repoPath: this.repoPath, stateDir: this.stateDir, runId, slug: slugify(opts.task) });
     saveRunWorktree(this.stateDir, run);
 
-    const deps = this.buildRunDeps(opts.model, opts.providerKind, run, { baseUrl: opts.baseUrl, modelsDir: opts.modelsDir, scope: opts.scope });
+    const deps = this.buildRunDeps(opts.model, opts.providerKind, run, { baseUrl: opts.baseUrl, modelsDir: opts.modelsDir, scope: opts.scope, memoryDir: opts.memoryDir });
 
     const state = createRunState({
       runId,
@@ -314,7 +339,8 @@ export class Agent {
         toolchainCommands: deps.toolchainCommands,
         evidenceDir: deps.evidenceDir,
         capability: deps.capability,
-        verifyCwd: deps.verifyCwd
+        verifyCwd: deps.verifyCwd,
+        onVerificationFailure: deps.onVerificationFailure
       },
       {
         yesMode: opts.yesMode,
@@ -475,7 +501,7 @@ export class Agent {
     if (opts.extendTokens) state.budgets.tokens += opts.extendTokens;
     if (opts.extendCostUsd) state.budgets.costUsd += opts.extendCostUsd;
 
-    const deps = this.buildRunDeps(state.model, state.provider as ProviderKind, run, { baseUrl: state.baseUrl, modelsDir: opts.modelsDir, scope: state.scope });
+    const deps = this.buildRunDeps(state.model, state.provider as ProviderKind, run, { baseUrl: state.baseUrl, modelsDir: opts.modelsDir, scope: state.scope, memoryDir: opts.memoryDir });
 
     const loop = new AgentLoop(
       state,
@@ -487,7 +513,8 @@ export class Agent {
         toolchainCommands: deps.toolchainCommands,
         evidenceDir: deps.evidenceDir,
         capability: deps.capability,
-        verifyCwd: deps.verifyCwd
+        verifyCwd: deps.verifyCwd,
+        onVerificationFailure: deps.onVerificationFailure
       },
       {
         yesMode: opts.yesMode ?? state.yesMode,

@@ -6,7 +6,7 @@ import { collect } from "@clutchcode/providers";
 import type { Tool, ToolContext } from "@clutchcode/tools";
 import type { RunWorktree } from "@clutchcode/git";
 import { approveRun, checkpoint, diffAgainstBase, diffStat } from "@clutchcode/git";
-import type { ToolchainCommands, CheatFlag } from "@clutchcode/verification";
+import type { ToolchainCommands, CheatFlag, FailureClass, StageResult } from "@clutchcode/verification";
 import { classifyFailure, detectCheats, evaluateCompletion, MAX_REPAIR_ITERS, runPipeline } from "@clutchcode/verification";
 import { computeContextBudget, resolveCapability, type ContextBudget, type EffectiveCapability } from "@clutchcode/capability";
 
@@ -64,6 +64,15 @@ export interface AgentLoopDeps {
    * the eval replay harness) get sane behavior for free.
    */
   capability?: EffectiveCapability;
+  /**
+   * §10.3 point 3, "verification is the truth oracle": fired whenever a
+   * verification stage fails, with the deterministic §14.5 classification
+   * already computed. `@clutchcode/agent-api` wires this to
+   * `@clutchcode/memory`'s `markToolchainFactStale` when the class is
+   * `command-not-found` — the loop itself stays decoupled from the memory
+   * package, same as it stays decoupled from credentials/keychain.
+   */
+  onVerificationFailure?: (stage: StageResult, failureClass: FailureClass) => void;
 }
 
 export interface AgentLoopOptions {
@@ -409,16 +418,21 @@ export class AgentLoop {
 
     if (!pipelineResult.allGreen) {
       const failure = pipelineResult.firstFailure!;
+      const failureClass = classifyFailure(failure);
+      // §10.3 point 3: let the caller react to what verification just
+      // proved about a cached toolchain command — independent of whether
+      // this run has repair budget left, so memory heals even on the
+      // final, escalating failure.
+      this.deps.onVerificationFailure?.(failure, failureClass);
+
       if (this.state.repairIterations >= MAX_REPAIR_ITERS) {
         this.setStatus("FAILED");
-        const failureClass = classifyFailure(failure);
         this.state.lastError = { class: failureClass, detail: `standing failure at stage "${failure.stage}" after ${MAX_REPAIR_ITERS} repair attempts` };
         return this.finish();
       }
 
       this.state.repairIterations += 1;
       this.setStatus("REPAIRING");
-      const failureClass = classifyFailure(failure);
       this.pushMessage(buildRepairMessage(failure, failureClass));
       this.setStatus("EDITING");
       this.setStatus("ACTING");
