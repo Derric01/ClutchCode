@@ -3,21 +3,26 @@ import { execFileSync } from "node:child_process";
 import {
   Agent,
   clearCredential,
+  correctMemoryFact,
   detectKeychainBackend,
   detectSandboxBackend,
+  forgetMemoryFact,
   initRepo,
+  listMemory,
   listModelProfiles,
   loadConfig,
   loadCredentials,
   markTrusted,
   probeModel,
   saveCredential,
+  showMemoryFact,
   type Budgets,
   type CapabilityProfile,
   type CredentialKind,
   type FileStoreOptions,
   type ProviderKind,
-  type RunState
+  type RunState,
+  type ToolchainFactKey
 } from "@clutchcode/agent-api";
 import { serveAgentRpc, type AgentRpcServerHandle } from "@clutchcode/agent-rpc";
 import { exitCodeForRunStatus, EXIT } from "./exit-codes.js";
@@ -37,6 +42,8 @@ export interface CliContext {
   env?: NodeJS.ProcessEnv;
   /** Override for the §5.1 tier 2 encrypted file store's location (default: ~/.config/clutchcode); tests point it at a temp dir. */
   credentialFileStore?: FileStoreOptions;
+  /** Override for the §10.3 project-memory store's location (default: ~/.config/clutchcode/memory); tests point it at a temp dir. */
+  memoryDir?: string;
 }
 
 function summarizeRunState(state: RunState): Record<string, unknown> {
@@ -110,6 +117,8 @@ export interface RunCommandOptions {
   costCeilingUsd?: number;
   /** §13.4 monorepos: pin verification (toolchain + pipeline cwd) to this subdir. */
   scope?: string;
+  /** §8.2: "default" | "quickfix" | "review-only"; default "default". */
+  workflowId?: string;
 }
 
 export async function cmdRun(ctx: CliContext, opts: RunCommandOptions): Promise<CommandResult> {
@@ -122,7 +131,9 @@ export async function cmdRun(ctx: CliContext, opts: RunCommandOptions): Promise<
       baseUrl: opts.baseUrl,
       yesMode: opts.yes,
       modelsDir: ctx.modelsDir,
+      memoryDir: ctx.memoryDir,
       scope: opts.scope,
+      workflowId: opts.workflowId,
       budgets: definedBudgets({ steps: opts.maxSteps, wallclockMs: opts.maxWallclockMs, tokens: opts.maxTokens, costUsd: opts.costCeilingUsd })
     });
     return { exitCode: exitCodeForRunStatus(state.status), output: formatRunState(state, ctx.json) };
@@ -209,7 +220,8 @@ export async function cmdResume(ctx: CliContext, runId: string, opts: ResumeComm
       extendTokens: opts.extendTokens,
       extendCostUsd: opts.extendCostUsd,
       yesMode: opts.yes,
-      modelsDir: ctx.modelsDir
+      modelsDir: ctx.modelsDir,
+      memoryDir: ctx.memoryDir
     });
     return { exitCode: exitCodeForRunStatus(state.status), output: formatRunState(state, ctx.json) };
   } catch (e) {
@@ -385,6 +397,68 @@ export async function cmdDoctor(ctx: CliContext): Promise<CommandResult> {
   const lines = checks.map((c) => `${c.ok ? "✓" : "✗"} ${c.name}: ${c.detail}`);
   lines.push("", "At least one of a provider API key or a reachable local Ollama server is needed to run a real task.");
   return { exitCode: EXIT.SUCCESS, output: lines.join("\n") };
+}
+
+const MEMORY_FACT_KEYS: ToolchainFactKey[] = ["language", "packageManager", "build", "test", "lint", "typecheck"];
+
+function memoryOpts(ctx: CliContext): { configDir?: string } | undefined {
+  return ctx.memoryDir ? { configDir: ctx.memoryDir } : undefined;
+}
+
+function parseMemoryFactKey(key: string): ToolchainFactKey | undefined {
+  return (MEMORY_FACT_KEYS as string[]).includes(key) ? (key as ToolchainFactKey) : undefined;
+}
+
+/** `agent memory list` (§10.3, §18.2): every remembered toolchain fact, with provenance and staleness. */
+export async function cmdMemoryList(ctx: CliContext): Promise<CommandResult> {
+  const memory = listMemory(ctx.repoPath, memoryOpts(ctx));
+  if (!memory) {
+    return { exitCode: EXIT.SUCCESS, output: ctx.json ? "null" : "nothing remembered yet for this repo — run `agent run` once, or `agent memory correct <key> <value>` to seed a fact" };
+  }
+  if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify(memory) };
+  const lines = [`manifest hash: ${memory.manifestHash.slice(0, 12)}…`];
+  for (const key of MEMORY_FACT_KEYS) {
+    const fact = memory.facts[key];
+    if (!fact) continue;
+    lines.push(`  ${key}: ${fact.value}${fact.stale ? " [STALE]" : ""}`);
+    lines.push(`    source: ${fact.source}`);
+    lines.push(`    derived: ${fact.derivedAt}`);
+    if (fact.stale && fact.staleReason) lines.push(`    stale reason: ${fact.staleReason}`);
+  }
+  return { exitCode: EXIT.SUCCESS, output: lines.join("\n") };
+}
+
+/** `agent memory show <key>` (§10.3, §18.2): one fact's full detail. */
+export async function cmdMemoryShow(ctx: CliContext, key: string): Promise<CommandResult> {
+  const factKey = parseMemoryFactKey(key);
+  if (!factKey) return { exitCode: EXIT.CONFIG_ERROR, output: `unknown fact "${key}" — expected one of: ${MEMORY_FACT_KEYS.join(", ")}` };
+
+  const fact = showMemoryFact(ctx.repoPath, factKey, memoryOpts(ctx));
+  if (!fact) return { exitCode: EXIT.SUCCESS, output: ctx.json ? "null" : `${key}: nothing remembered yet` };
+  if (ctx.json) return { exitCode: EXIT.SUCCESS, output: JSON.stringify(fact) };
+  const lines = [`${key}: ${fact.value}${fact.stale ? " [STALE]" : ""}`, `source: ${fact.source}`, `derived: ${fact.derivedAt}`];
+  if (fact.stale && fact.staleReason) lines.push(`stale reason: ${fact.staleReason}`);
+  return { exitCode: EXIT.SUCCESS, output: lines.join("\n") };
+}
+
+/** `agent memory forget <key>` (§10.3, §18.2): removes one fact — the next run re-derives it. */
+export async function cmdMemoryForget(ctx: CliContext, key: string): Promise<CommandResult> {
+  const factKey = parseMemoryFactKey(key);
+  if (!factKey) return { exitCode: EXIT.CONFIG_ERROR, output: `unknown fact "${key}" — expected one of: ${MEMORY_FACT_KEYS.join(", ")}` };
+
+  const removed = forgetMemoryFact(ctx.repoPath, factKey, memoryOpts(ctx));
+  const humanLine = removed ? `${key}: forgotten — the next run will re-derive it` : `${key}: nothing to forget`;
+  return { exitCode: EXIT.SUCCESS, output: ctx.json ? JSON.stringify({ key, removed }) : humanLine };
+}
+
+/** `agent memory correct <key> <value>` (§10.3 point 5, §18.2): a human directly overwrites a fact. */
+export async function cmdMemoryCorrect(ctx: CliContext, key: string, value: string): Promise<CommandResult> {
+  const factKey = parseMemoryFactKey(key);
+  if (!factKey) return { exitCode: EXIT.CONFIG_ERROR, output: `unknown fact "${key}" — expected one of: ${MEMORY_FACT_KEYS.join(", ")}` };
+  if (!value.trim()) return { exitCode: EXIT.CONFIG_ERROR, output: "no value provided — usage: agent memory correct <key> <value>" };
+
+  correctMemoryFact(ctx.repoPath, factKey, value, memoryOpts(ctx));
+  return { exitCode: EXIT.SUCCESS, output: ctx.json ? JSON.stringify({ key, value }) : `${key}: corrected to "${value}"` };
 }
 
 export interface ModelsProbeOptions {

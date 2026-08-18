@@ -14,7 +14,7 @@ import type { StageResult } from "./pipeline.js";
  * ```
  */
 
-export type FailureClass = "compile-error" | "test-assertion" | "test-error-env" | "lint" | "typecheck" | "unknown";
+export type FailureClass = "compile-error" | "test-assertion" | "test-error-env" | "command-not-found" | "lint" | "typecheck" | "unknown";
 
 export const MAX_REPAIR_ITERS = 3;
 
@@ -23,6 +23,7 @@ const ENV_ERROR_RE =
 const COMPILE_ERROR_RE =
   /syntaxerror|cannot find module|unexpected token|referenceerror.*is not defined|importerror|modulenotfounderror|error ts\d{4}|compilation failed/i;
 const TEST_ASSERTION_RE = /assertionerror|expect\(.*\)\.(to|not)|assert(_equal|equal)?\(|failed:.*expected|assertionfailederror/i;
+const COMMAND_NOT_FOUND_RE = /: not found\b|: command not found|is not recognized as an internal or external command|no such file or directory/i;
 
 /**
  * Classify a failed verification stage into the §6.8 error taxonomy so the
@@ -30,9 +31,25 @@ const TEST_ASSERTION_RE = /assertionerror|expect\(.*\)\.(to|not)|assert(_equal|e
  * environment error surfaces to the human instead of being handed back to
  * the model ("misclassifying an environment error as a task error makes
  * the model flail").
+ *
+ * `command-not-found` is checked first, ahead of every stage-specific
+ * branch — including `lint`/`typecheck`, which otherwise always trust
+ * their own stage name as the classification. Without this, a missing
+ * `eslint`/`tsc` binary would get reported as "there's a lint issue" /
+ * "there's a typecheck issue" and sent to the model to "fix," when the
+ * actual problem is a wrong or stale cached command (§10.3's project
+ * memory) that no code edit can repair — this is exactly the case
+ * `@clutchcode/memory`'s `markToolchainFactStale` exists to self-heal
+ * from a run's real verification result, not a guess.
  */
 export function classifyFailure(result: StageResult): FailureClass {
   const output = `${result.stdout}\n${result.stderr}`;
+
+  // Exit code 127 is the POSIX-standard "command not found" signal from a
+  // shell (`runStage` always spawns via `shell: true`, i.e. through a real
+  // shell, so this is a reliable mechanical check); the text patterns are
+  // a fallback for shells/platforms that report it differently.
+  if (result.exitCode === 127 || COMMAND_NOT_FOUND_RE.test(output)) return "command-not-found";
 
   if (result.stage === "lint") return "lint";
   if (result.stage === "typecheck") return "typecheck";

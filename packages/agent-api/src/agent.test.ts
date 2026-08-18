@@ -8,6 +8,7 @@ import { Agent } from "./agent.js";
 import { addBareOrigin, makeMonorepo, makeSampleRepo, makeTempDir, sseChunk, startScriptedServer, type ScriptedServer } from "./test-helpers.js";
 import { initRepo } from "./scaffold.js";
 import { markTrusted, saveConfig, loadConfig } from "./config.js";
+import { correctMemoryFact, forgetMemoryFact, listMemory, showMemoryFact } from "./memory.js";
 
 describe("Agent (agent-api boundary, wired end-to-end with a real worktree)", () => {
   let repoPath: string;
@@ -121,6 +122,103 @@ describe("Agent + capability profiles (§4.2/§4.9)", () => {
 
     expect(state.capabilityProfileId).toBeUndefined();
   }, 30_000);
+});
+
+describe("Agent + project memory (§10.3) — real toolchain-memory persistence and self-healing", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let memoryDir: string;
+  let server: ScriptedServer;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+    memoryDir = makeTempDir("clutchcode-agentapi-memory-");
+    markTrusted(repoPath);
+  });
+
+  afterEach(async () => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    fs.rmSync(memoryDir, { recursive: true, force: true });
+    await server?.close();
+  });
+
+  it("a real run persists toolchain memory with provenance and timestamps", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    await agent.run({ task: "investigate the repo", providerKind: "fake", model: "n/a", yesMode: true, memoryDir });
+
+    const memory = listMemory(repoPath, { configDir: memoryDir });
+    expect(memory).toBeDefined();
+    expect(memory!.facts.test?.value).toBe("npm run test");
+    expect(memory!.facts.test?.source).toBeTruthy();
+    expect(new Date(memory!.facts.test!.derivedAt).getTime()).toBeGreaterThan(0);
+  }, 30_000);
+
+  it("a second run reuses the cached toolchain memory instead of re-deriving (derivedAt unchanged)", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    await agent.run({ task: "investigate the repo", providerKind: "fake", model: "n/a", yesMode: true, memoryDir });
+    const firstDerivedAt = showMemoryFact(repoPath, "test", { configDir: memoryDir })?.derivedAt;
+
+    await agent.run({ task: "investigate again", providerKind: "fake", model: "n/a", yesMode: true, memoryDir });
+    const secondDerivedAt = showMemoryFact(repoPath, "test", { configDir: memoryDir })?.derivedAt;
+
+    expect(secondDerivedAt).toBe(firstDerivedAt);
+  }, 30_000);
+
+  it("a corrected fact via agent-api's correctMemoryFact is what the next real run actually uses", async () => {
+    correctMemoryFact(repoPath, "test", "echo corrected-command-ran", { configDir: memoryDir });
+
+    const agent = new Agent(repoPath, stateDir);
+    server = await startScriptedServer([
+      [
+        sseChunk({
+          choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "shell", arguments: JSON.stringify({ cmd: "echo hi" }) } }] } }]
+        }),
+        sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+        "data: [DONE]\n\n"
+      ],
+      [sseChunk({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }), "data: [DONE]\n\n"]
+    ]);
+    const state = await agent.run({ task: "investigate", providerKind: "openai-compatible", model: "gpt-test", baseUrl: server.baseUrl, yesMode: true, memoryDir });
+
+    expect(state.status).toBe("DONE"); // "echo corrected-command-ran" exits 0, unlike the real `npm run test` which needs no network but would differ from this override
+    expect(state.verificationResults.at(-1)?.allGreen).toBe(true);
+  }, 30_000);
+
+  it("verification is the truth oracle (§10.3 point 3): a command-not-found failure marks the cached fact stale end to end, through a real run", async () => {
+    // Force a broken cached command directly, bypassing detection — the
+    // real thing under test is the *loop's reaction* when it turns out to
+    // be wrong, not detection itself (already covered elsewhere).
+    correctMemoryFact(repoPath, "test", "this-binary-does-not-exist-anywhere", { configDir: memoryDir });
+    expect(showMemoryFact(repoPath, "test", { configDir: memoryDir })?.stale).toBeUndefined();
+
+    // Same broken command fails identically every turn, so the loop
+    // detector's "almost-done-stall" check (3 consecutive verify
+    // failures, independent of and checked before the repair-iteration
+    // cap) is what actually ends this run — matters for the assertions
+    // below, and it still only takes 3 turns, well within what's scripted.
+    const stopTurn = [sseChunk({ choices: [{ delta: { content: "investigated, nothing to fix" }, finish_reason: "stop" }] }), "data: [DONE]\n\n"];
+    server = await startScriptedServer([stopTurn, stopTurn, stopTurn, stopTurn]);
+
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "investigate", providerKind: "openai-compatible", model: "gpt-test", baseUrl: server.baseUrl, yesMode: true, memoryDir });
+
+    expect(state.status).toBe("ESCALATED");
+    expect(state.escalationReason).toContain("almost-done-stall");
+
+    const fact = showMemoryFact(repoPath, "test", { configDir: memoryDir });
+    expect(fact?.stale).toBe(true);
+    expect(fact?.staleReason).toContain("command not found");
+  }, 30_000);
+
+  it("listMemory/showMemoryFact/forgetMemoryFact are wired through the real Agent API boundary", () => {
+    correctMemoryFact(repoPath, "build", "make", { configDir: memoryDir });
+    expect(listMemory(repoPath, { configDir: memoryDir })?.facts.build?.value).toBe("make");
+    expect(showMemoryFact(repoPath, "build", { configDir: memoryDir })?.value).toBe("make");
+    expect(forgetMemoryFact(repoPath, "build", { configDir: memoryDir })).toBe(true);
+    expect(showMemoryFact(repoPath, "build", { configDir: memoryDir })).toBeUndefined();
+  });
 });
 
 describe("Agent.resume (§6.2, §6.3, §18.2)", () => {
@@ -305,6 +403,46 @@ describe("Agent.run scope (§13.4 monorepos)", () => {
   it("rejects a scope that doesn't exist in the worktree", async () => {
     const agent = new Agent(repoPath, stateDir);
     await expect(agent.run({ task: "investigate", providerKind: "fake", model: "n/a", scope: "packages/nope" })).rejects.toThrow(/does not exist/);
+  }, 30_000);
+});
+
+describe("Agent.run workflow selection (§8.2)", () => {
+  let repoPath: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("defaults to the \"default\" workflow when --workflow is omitted", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "investigate the repo", providerKind: "fake", model: "n/a", yesMode: true });
+    expect(state.workflowId).toBe("default");
+  }, 30_000);
+
+  it("review-only runs end to end through the real Agent API boundary: DONE, no edits, no verification", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    const before = fs.readFileSync(path.join(repoPath, "README.md"), "utf8");
+
+    const state = await agent.run({ task: "review the repo", providerKind: "fake", model: "n/a", yesMode: true, workflowId: "review-only" });
+
+    expect(state.status).toBe("DONE");
+    expect(state.workflowId).toBe("review-only");
+    expect(state.verificationResults).toHaveLength(0);
+    expect(fs.readFileSync(path.join(repoPath, "README.md"), "utf8")).toBe(before);
+  }, 30_000);
+
+  it("rejects an unknown workflow id with a clear error instead of a confusing downstream failure", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    await expect(agent.run({ task: "investigate", providerKind: "fake", model: "n/a", workflowId: "does-not-exist" })).rejects.toThrow(
+      /unknown workflow "does-not-exist"/
+    );
   }, 30_000);
 });
 

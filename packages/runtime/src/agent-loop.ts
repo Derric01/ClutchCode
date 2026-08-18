@@ -6,7 +6,7 @@ import { collect } from "@clutchcode/providers";
 import type { Tool, ToolContext } from "@clutchcode/tools";
 import type { RunWorktree } from "@clutchcode/git";
 import { approveRun, checkpoint, diffAgainstBase, diffStat } from "@clutchcode/git";
-import type { ToolchainCommands, CheatFlag } from "@clutchcode/verification";
+import type { ToolchainCommands, CheatFlag, FailureClass, StageResult } from "@clutchcode/verification";
 import { classifyFailure, detectCheats, evaluateCompletion, MAX_REPAIR_ITERS, runPipeline } from "@clutchcode/verification";
 import { computeContextBudget, resolveCapability, type ContextBudget, type EffectiveCapability } from "@clutchcode/capability";
 
@@ -64,6 +64,15 @@ export interface AgentLoopDeps {
    * the eval replay harness) get sane behavior for free.
    */
   capability?: EffectiveCapability;
+  /**
+   * §10.3 point 3, "verification is the truth oracle": fired whenever a
+   * verification stage fails, with the deterministic §14.5 classification
+   * already computed. `@clutchcode/agent-api` wires this to
+   * `@clutchcode/memory`'s `markToolchainFactStale` when the class is
+   * `command-not-found` — the loop itself stays decoupled from the memory
+   * package, same as it stays decoupled from credentials/keychain.
+   */
+  onVerificationFailure?: (stage: StageResult, failureClass: FailureClass) => void;
 }
 
 export interface AgentLoopOptions {
@@ -87,6 +96,16 @@ export class AgentLoop {
    * history before those subsystems exist for no benefit.
    */
   private readonly historyTokenBudget: number;
+  /**
+   * §8.2 `review-only`: the tool set the model actually sees and can call
+   * for this run — identical to `deps.tools` for every other workflow, but
+   * with `write_file`/`edit_file` removed for `review-only`. Filtered here,
+   * once, so both `toolsToSchemas` (what the model is told exists) and
+   * `runToolCall`'s dispatch (what can actually execute) read from the same
+   * source — a model that names an undeclared tool anyway still gets
+   * `unknown-tool`, not a real write.
+   */
+  private readonly effectiveTools: Map<string, Tool<unknown, unknown>>;
   /** Assigned via `replaceMessages` at the end of the constructor (see below), not directly. */
   private messages!: NormalizedMessage[];
 
@@ -104,6 +123,11 @@ export class AgentLoop {
     this.capability = deps.capability ?? resolveCapability(null, deps.provider.capabilityDefaults);
     this.contextBudget = computeContextBudget(this.capability.effectiveContext);
     this.historyTokenBudget = this.contextBudget.conversationHistory + this.contextBudget.repoMapRetrieval + this.contextBudget.openFileWindows;
+
+    this.effectiveTools =
+      state.workflowId === "review-only"
+        ? new Map([...deps.tools].filter(([name]) => name !== "write_file" && name !== "edit_file"))
+        : deps.tools;
 
     // `resume()` (§6.2, §18.2): a non-empty `state.messages` means this
     // RunState was loaded from a previous, paused run — pick its (already
@@ -162,10 +186,18 @@ export class AgentLoop {
   async run(): Promise<RunState> {
     this.setStatus("UNDERSTANDING");
 
-    const plan = shouldPlan({
-      taskDescription: this.state.task,
-      lowInstructionFidelity: !this.deps.provider.supportsNativeTools
-    });
+    // §8.2: `quickfix` skips planning unconditionally, even when the
+    // heuristic below would otherwise trigger it; `review-only` never
+    // plans either (there is nothing to plan an edit for). Only `default`
+    // (and any future/unrecognized workflowId, defensively) consults the
+    // heuristic at all.
+    const plan =
+      this.state.workflowId !== "quickfix" &&
+      this.state.workflowId !== "review-only" &&
+      shouldPlan({
+        taskDescription: this.state.task,
+        lowInstructionFidelity: !this.deps.provider.supportsNativeTools
+      });
     if (plan) {
       this.setStatus("PLANNING");
       // Phase 1: the planning *stage* exists (state, gating heuristic, storage
@@ -208,7 +240,27 @@ export class AgentLoop {
   private async actAndVerifyLoop(): Promise<RunState> {
     const outcome = await this.actLoop();
     if (outcome === "stopped") return this.finish();
+    // §8.2 `review-only`: "inspect → review → report" — there is no verify/
+    // approve/commit stage in this workflow (nothing was ever edited, since
+    // `effectiveTools` withholds write_file/edit_file above). `resume()`
+    // funnels through here too, so a paused-then-resumed review-only run
+    // still finishes the same way.
+    if (this.state.workflowId === "review-only") return this.finishReviewOnly();
     return await this.verifyAndFinish();
+  }
+
+  /** The last assistant reply in the live transcript — used as the review-only "report" (§8.2). */
+  private lastAssistantText(): string {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      if (this.messages[i]!.role === "assistant") return this.messages[i]!.content;
+    }
+    return "";
+  }
+
+  private finishReviewOnly(): RunState {
+    this.state.summaryCheckpoints.push(this.lastAssistantText());
+    this.setStatus("DONE");
+    return this.finish();
   }
 
   /** Runs model↔tool turns until the model stops calling tools, or budgets/loop-detection force a stop. */
@@ -238,7 +290,7 @@ export class AgentLoop {
         this.deps.provider.chat({
           model: this.state.model,
           messages: this.messages,
-          tools: toolsToSchemas(this.deps.tools),
+          tools: toolsToSchemas(this.effectiveTools),
           maxOutputTokens: this.contextBudget.reservedOutput
         })
       );
@@ -338,7 +390,7 @@ export class AgentLoop {
     name: string,
     argsJson: string
   ): Promise<{ ok: boolean; errorCode?: string; payload: string; isEdit: boolean; editedPath?: string }> {
-    const tool = this.deps.tools.get(name);
+    const tool = this.effectiveTools.get(name);
     if (!tool) {
       return { ok: false, errorCode: "unknown-tool", payload: JSON.stringify({ ok: false, error: { code: "unknown-tool", message: `no such tool: ${name}` } }), isEdit: false };
     }
@@ -409,16 +461,21 @@ export class AgentLoop {
 
     if (!pipelineResult.allGreen) {
       const failure = pipelineResult.firstFailure!;
+      const failureClass = classifyFailure(failure);
+      // §10.3 point 3: let the caller react to what verification just
+      // proved about a cached toolchain command — independent of whether
+      // this run has repair budget left, so memory heals even on the
+      // final, escalating failure.
+      this.deps.onVerificationFailure?.(failure, failureClass);
+
       if (this.state.repairIterations >= MAX_REPAIR_ITERS) {
         this.setStatus("FAILED");
-        const failureClass = classifyFailure(failure);
         this.state.lastError = { class: failureClass, detail: `standing failure at stage "${failure.stage}" after ${MAX_REPAIR_ITERS} repair attempts` };
         return this.finish();
       }
 
       this.state.repairIterations += 1;
       this.setStatus("REPAIRING");
-      const failureClass = classifyFailure(failure);
       this.pushMessage(buildRepairMessage(failure, failureClass));
       this.setStatus("EDITING");
       this.setStatus("ACTING");

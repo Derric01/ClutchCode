@@ -44,6 +44,30 @@ describe("classifyFailure", () => {
     const result = stage({ stage: "test", stdout: "something went wrong in a way we've never seen" });
     expect(classifyFailure(result)).toBe("unknown");
   });
+
+  it("classifies exit code 127 as command-not-found, regardless of output text", () => {
+    expect(classifyFailure(stage({ stage: "test", exitCode: 127, stderr: "" }))).toBe("command-not-found");
+  });
+
+  it("classifies a shell 'not found' message as command-not-found even without exit code 127", () => {
+    const result = stage({ stage: "test", exitCode: 1, stderr: "sh: 1: pytest: not found" });
+    expect(classifyFailure(result)).toBe("command-not-found");
+  });
+
+  it("command-not-found takes precedence over lint/typecheck's own stage-name classification — the missing binary is a memory problem, not a real lint/typecheck issue", () => {
+    expect(classifyFailure(stage({ stage: "lint", exitCode: 127, stderr: "sh: 1: eslint: not found" }))).toBe("command-not-found");
+    expect(classifyFailure(stage({ stage: "typecheck", exitCode: 127, stderr: "sh: 1: tsc: not found" }))).toBe("command-not-found");
+  });
+
+  it("a real lint/typecheck failure (not a missing binary) still classifies by stage name", () => {
+    expect(classifyFailure(stage({ stage: "lint", exitCode: 1, stderr: "error  no-unused-vars" }))).toBe("lint");
+    expect(classifyFailure(stage({ stage: "typecheck", exitCode: 2, stderr: "error TS2322: Type 'string' is not assignable" }))).toBe("typecheck");
+  });
+
+  it("command-not-found takes precedence over compile-error/test-assertion/test-error-env too", () => {
+    const result = stage({ stage: "test", exitCode: 127, stderr: "bash: cargo: command not found" });
+    expect(classifyFailure(result)).toBe("command-not-found");
+  });
 });
 
 describe("isFlaky", () => {

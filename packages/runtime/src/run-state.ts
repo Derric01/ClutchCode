@@ -40,7 +40,12 @@ const HAPPY_PATH_EDGES: Record<RunStatus, RunStatus[]> = {
   UNDERSTANDING: ["PLANNING", "INSPECTING"], // §6.7: planning is skippable for small/simple tasks
   PLANNING: ["INSPECTING"],
   INSPECTING: ["ACTING"],
-  ACTING: ["ACTING", "EDITING", "VERIFYING"],
+  // DONE here (not just via VERIFYING): §8.2's `review-only` workflow ends
+  // as inspect → review → report — no verify/approve/commit stage exists
+  // for it, since write_file/edit_file are withheld so nothing was ever
+  // edited. `AgentLoop.finishReviewOnly()` is the only caller that uses
+  // this edge; every other workflow keeps going through VERIFYING as before.
+  ACTING: ["ACTING", "EDITING", "VERIFYING", "DONE"],
   EDITING: ["ACTING", "EDITING", "VERIFYING"],
   VERIFYING: ["REPAIRING", "AWAITING_APPROVAL", "DONE", "ESCALATED", "FAILED"],
   REPAIRING: ["EDITING"],

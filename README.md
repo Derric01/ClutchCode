@@ -156,6 +156,62 @@ run-picker instead of typing a run id, and resume/rollback/pr commands in
 the extension UI (the CLI has them; the extension covers §18.5's core
 run/diff/approve/reject loop).
 
+**§10.3's project-memory correction UX is done.** A new `@clutchcode/memory`
+package persists toolchain detection as a provenance-timestamped cache
+(`{value, derivedAt, source}` per fact — build/test/lint/typecheck/
+language/packageManager), keyed by the repo's stable path so it actually
+survives across runs — every run used to call `detectToolchain` fresh,
+so this is a real behavior change, not just plumbing. Invalidated when
+the manifest files it was derived from change content (`package.json`,
+`Cargo.toml`, lockfiles, …); `AGENTS.md` overrides still win on every
+re-derive. `agent memory list/show/forget/correct` expose it at the CLI —
+`correct` is a direct human override (`agent memory correct test "pytest
+-q --maxfail=1"`), `forget` clears one fact for re-derivation. The
+self-healing half (§10.3 point 3, "verification is the truth oracle"):
+a verification failure now classifies `command-not-found` as its own
+case (a real bug fixed along the way — a missing `eslint`/`tsc`/etc.
+binary used to get misreported as "there's a lint issue" / "there's a
+typecheck issue" instead of what it actually is), the repair message
+tells the model plainly not to guess at code edits for it, and
+`Agent.run`/`Agent.resume` mark the matching cached fact stale so the
+*next* run re-derives instead of repeating a proven-wrong command —
+proven end-to-end through a real run (a scripted broken command hits the
+loop detector's stall check, and the cached fact really is marked stale
+afterward, not just at the unit level). Deliberately out of scope: the
+"agent proposes an `AGENTS.md` edit, with consent" flow §10.1 also
+describes, and the long-term engineering tier (§10 — prior runs/decisions
+queryable via a history database) — both real, separate features.
+
+**§8's Workflow Engine is done for the three Phase 1 built-ins.**
+`RunState.workflowId` existed since early in the project but was inert —
+stored on every run, read by nothing. It's now load-bearing: `agent run
+--workflow <default|quickfix|review-only>` selects one of three real,
+behaviorally-distinct pipelines. `default` is the unchanged baseline
+(plan(opt) → implement → verify → approve → commit). `quickfix` skips the
+planning stage unconditionally — even for a task whose description would
+otherwise trip the §6.7 heuristic (ambiguity markers, length, low
+instruction fidelity), proven by running the identical ambiguous task
+description through both workflows and asserting `PLANNING` fires for one
+and not the other. `review-only` (inspect → review → report) is read-only
+end to end: `write_file`/`edit_file` are filtered out of both the tool
+schema sent to the model *and* the dispatch table `AgentLoop` actually
+executes against (the same `effectiveTools` map backs both), so a model
+that tries to edit anyway gets a genuine `unknown-tool` error, not a
+silent no-op — proven with a scripted turn that attempts exactly that
+attack and asserts the working tree is untouched afterward. The workflow
+then finishes by capturing the model's final reply into
+`RunState.summaryCheckpoints` as its report and transitioning straight to
+`DONE`, skipping verify/approve/commit entirely (a new, narrowly-scoped
+`ACTING → DONE` state-machine edge exists solely for this). An unknown
+`--workflow` value is rejected at the `Agent.run` boundary with a clear
+error naming the three valid ids, the same "fail loud, three calls up"
+style already used for "not a git repo." Deliberately out of scope, per
+§8.1/§18.2: the JSON-Schema-validated user-declarative layer for
+*customizing* the linear pipeline (built-ins today are fixed TS code
+paths, not data), and the dedicated `agent workflow` list/select/validate
+CLI command (§18.2 marks it Phase 2) — selection today is the `--workflow`
+flag and nothing more.
+
 ## Repository layout
 
 ```
@@ -165,6 +221,7 @@ packages/
   tools/          native tool set + truncation
   git/            worktree isolation, checkpoints, diff
   verification/   pipeline, toolchain detect, cheat detection
+  memory/         §10.3 project memory — provenance-timestamped toolchain cache, self-healing, correction
   capability/     capability probe, profile persistence, context budgeter, edit-format selector
   agent-api/      the Agent API boundary (in-process)
   agent-rpc/      the Agent API's stdio JSON-RPC binding (LSP-style framing, ACP-shaped)

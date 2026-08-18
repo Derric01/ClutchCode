@@ -53,11 +53,21 @@ export function buildInitialMessages(task: string, editFormatProfile?: EditForma
 
 /** Fed back into the conversation on a verification failure (§14.5 repair loop: "feed the FAILURE, truncated, not the whole log"). */
 export function buildRepairMessage(stage: StageResult, failureClass: string): NormalizedMessage {
+  // §10.3 point 3 / §6.8: a missing binary is a wrong cached command, not
+  // a code bug — telling the model plainly instead of "make a targeted
+  // fix" avoids it flailing at something it structurally cannot repair by
+  // editing source. The runtime self-heals the underlying stale command
+  // (see @clutchcode/memory's markToolchainFactStale) independently of
+  // this turn.
+  const instruction =
+    failureClass === "command-not-found"
+      ? "This looks like a missing tool/binary, not a bug in your code — the command this project's toolchain detection cached apparently doesn't exist in this environment. If a real fix exists (e.g. a dependency is missing from a manifest file and should be added there), make it; otherwise stop calling tools without making changes and let this run escalate for human review rather than guessing at unrelated code edits."
+      : "Analyze this failure and make a targeted fix, then stop calling tools so verification can re-run.";
   const parts = [
     `Verification stage "${stage.stage}" failed (classified as ${failureClass}, exit code ${stage.exitCode}).`,
     stage.stdout ? `stdout:\n${stage.stdout}` : "",
     stage.stderr ? `stderr:\n${stage.stderr}` : "",
-    "Analyze this failure and make a targeted fix, then stop calling tools so verification can re-run."
+    instruction
   ].filter(Boolean);
   return { role: "user", content: parts.join("\n\n") };
 }

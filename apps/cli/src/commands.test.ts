@@ -10,6 +10,10 @@ import {
   cmdDoctor,
   cmdInit,
   cmdInspect,
+  cmdMemoryCorrect,
+  cmdMemoryForget,
+  cmdMemoryList,
+  cmdMemoryShow,
   cmdModelsList,
   cmdModelsProbe,
   cmdPr,
@@ -261,6 +265,79 @@ describe("providers set-key/unset-key (§5.1 tier 2) — encrypted file store, w
   });
 });
 
+describe("memory list/show/forget/correct (§10.3)", () => {
+  let repoPath: string;
+  let memoryDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    memoryDir = makeTempDir("clutchcode-cli-memory-test-");
+    stateDir = makeTempDir("clutchcode-cli-memory-state-");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(memoryDir, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("list reports nothing remembered before any run or correction", async () => {
+    const result = await cmdMemoryList({ repoPath, memoryDir, json: true });
+    expect(result.exitCode).toBe(EXIT.SUCCESS);
+    expect(result.output).toBe("null");
+  });
+
+  it("correct seeds a fact; list and show then report it with provenance", async () => {
+    const corrected = await cmdMemoryCorrect({ repoPath, memoryDir, json: true }, "test", "pytest -q --maxfail=1");
+    expect(corrected.exitCode).toBe(EXIT.SUCCESS);
+    expect(JSON.parse(corrected.output)).toEqual({ key: "test", value: "pytest -q --maxfail=1" });
+
+    const list = await cmdMemoryList({ repoPath, memoryDir, json: true });
+    const parsedList = JSON.parse(list.output) as { facts: { test?: { value: string; source: string } } };
+    expect(parsedList.facts.test?.value).toBe("pytest -q --maxfail=1");
+    expect(parsedList.facts.test?.source).toContain("human-corrected");
+
+    const show = await cmdMemoryShow({ repoPath, memoryDir, json: true }, "test");
+    const parsedShow = JSON.parse(show.output) as { value: string };
+    expect(parsedShow.value).toBe("pytest -q --maxfail=1");
+  });
+
+  it("show reports null for a fact that was never remembered", async () => {
+    const result = await cmdMemoryShow({ repoPath, memoryDir, json: true }, "lint");
+    expect(result.exitCode).toBe(EXIT.SUCCESS);
+    expect(result.output).toBe("null");
+  });
+
+  it("show/forget/correct reject an unknown fact key", async () => {
+    expect((await cmdMemoryShow({ repoPath, memoryDir }, "not-a-real-key")).exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect((await cmdMemoryForget({ repoPath, memoryDir }, "not-a-real-key")).exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect((await cmdMemoryCorrect({ repoPath, memoryDir }, "not-a-real-key", "x")).exitCode).toBe(EXIT.CONFIG_ERROR);
+  });
+
+  it("forget removes a corrected fact; forgetting again reports nothing to remove", async () => {
+    await cmdMemoryCorrect({ repoPath, memoryDir }, "build", "make");
+
+    const first = await cmdMemoryForget({ repoPath, memoryDir, json: true }, "build");
+    expect(JSON.parse(first.output)).toEqual({ key: "build", removed: true });
+
+    const second = await cmdMemoryForget({ repoPath, memoryDir, json: true }, "build");
+    expect(JSON.parse(second.output)).toEqual({ key: "build", removed: false });
+
+    expect((await cmdMemoryShow({ repoPath, memoryDir, json: true }, "build")).output).toBe("null");
+  });
+
+  it("a real run persists real toolchain memory, readable back through the CLI", async () => {
+    const runResult = await cmdRun({ repoPath, stateDir, memoryDir }, { task: "investigate", providerKind: "fake", model: "n/a", yes: true });
+    expect(runResult.exitCode).toBe(EXIT.SUCCESS);
+
+    const show = await cmdMemoryShow({ repoPath, memoryDir, json: true }, "test");
+    const parsed = JSON.parse(show.output) as { value: string; source: string };
+    expect(parsed.value).toBe("npm run test");
+    expect(parsed.source).toBeTruthy();
+  }, 30_000);
+});
+
 describe("resume (§6.2, §6.3)", () => {
   let repoPath: string;
   let stateDir: string;
@@ -435,6 +512,36 @@ describe("run --scope (§13.4 monorepos)", () => {
     const result = await cmdRun({ repoPath, stateDir }, { task: "investigate", providerKind: "fake", model: "n/a", scope: "packages/nope" });
     expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
     expect(result.output).toMatch(/does not exist/);
+  }, 30_000);
+});
+
+describe("run --workflow (§8.2)", () => {
+  let repoPath: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    repoPath = makeSampleRepo();
+    stateDir = makeTempDir("clutchcode-cli-state-");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("selects review-only through the real CLI command boundary", async () => {
+    const result = await cmdRun(
+      { repoPath, stateDir, json: true },
+      { task: "review the repo", providerKind: "fake", model: "n/a", yes: true, workflowId: "review-only" }
+    );
+    expect(result.exitCode).toBe(EXIT.SUCCESS);
+    expect(JSON.parse(result.output).status).toBe("DONE");
+  }, 30_000);
+
+  it("reports a config error for an unknown workflow id", async () => {
+    const result = await cmdRun({ repoPath, stateDir }, { task: "investigate", providerKind: "fake", model: "n/a", workflowId: "not-a-real-workflow" });
+    expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect(result.output).toMatch(/unknown workflow "not-a-real-workflow"/);
   }, 30_000);
 });
 
