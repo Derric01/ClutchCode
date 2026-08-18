@@ -7,12 +7,18 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-18
 **Branch:** `claude/handoff-prompt-continuation-c2cxh9`
-**Latest commit:** `5614144` — "feat: Workflow Engine — three built-in workflows, load-bearing (§8.2)"
+**Latest commit:** `e647ea9` — "docs: update HANDOFF.md for §8.2 Workflow Engine completion"
 **Test suite:** 538/538 passing, 68 test files, clean `tsc -b`, clean `eslint .`
 
-**PR:** [#5](https://github.com/Derric01/ClutchCode/pull/5) — open, not yet
-merged (continues #4's branch, which merged earlier in this project's
-history).
+**PR:** [#6](https://github.com/Derric01/ClutchCode/pull/6) — open, not yet
+merged. **#5 merged** (at its tip `528a22f`, the seccomp-hardening commit);
+two more features (§10.3 memory, §8.2 workflow engine) landed on this same
+branch *after* #5 merged, so per this project's own rule about a merged
+PR ("it cannot track new work, don't stack onto merged history — rebase
+unmerged commits onto the new base and open a fresh PR instead") the
+branch was rebased onto current `main` and #6 opened fresh for those 4
+commits. Same branch name throughout; no work was dropped, only PR
+numbers change.
 
 ---
 
