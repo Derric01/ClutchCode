@@ -7,8 +7,8 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-18
 **Branch:** `claude/handoff-prompt-continuation-c2cxh9`
-**Latest commit:** `3f185f6` — "feat: project memory correction UX — §10.3, new @clutchcode/memory package"
-**Test suite:** 524/524 passing, 67 test files, clean `tsc -b`, clean `eslint .`
+**Latest commit:** `5614144` — "feat: Workflow Engine — three built-in workflows, load-bearing (§8.2)"
+**Test suite:** 538/538 passing, 68 test files, clean `tsc -b`, clean `eslint .`
 
 **PR:** [#5](https://github.com/Derric01/ClutchCode/pull/5) — open, not yet
 merged (continues #4's branch, which merged earlier in this project's
@@ -156,6 +156,41 @@ proposes an `AGENTS.md` edit, with consent" flow §10.1 also describes,
 and the long-term engineering tier (prior runs/decisions queryable via a
 history database) — both real, separate features.
 
+### Workflow Engine (§8.2) — the three Phase 1 built-ins, load-bearing
+`RunState.workflowId` existed since early in the project (default:
+`"default"`) but nothing ever read it — a stored label with zero effect
+on control flow, called out explicitly (and corrected) in an earlier
+version of this file's "what's left" table. It's now real: `agent run
+--workflow <default|quickfix|review-only>` selects one of three
+behaviorally distinct pipelines, implemented as concrete branches in
+`AgentLoop` gated on `state.workflowId` (Option B from §8.1's comparison —
+additive TS code paths, not a generic stage-pipeline interpreter; that
+interpreter plus the JSON-Schema-validated user-declarative layer on top
+of it is explicitly deferred, see "what's left"). `default` is byte-for-
+byte the pre-existing baseline. `quickfix` forces the §6.7 planning
+heuristic off unconditionally — proven by running the *same* ambiguity-
+tripping task description through both workflows and asserting `PLANNING`
+fires for one, not the other. `review-only` is the interesting one:
+`write_file`/`edit_file` are filtered out of a new `effectiveTools` map
+that backs *both* the tool schema sent to the model and the dispatch
+table `runToolCall` actually executes against, so a model that tries to
+edit anyway (tested directly, not just inferred) gets a real
+`unknown-tool` error rather than a silent no-op — defense in depth, not
+just hiding the schema. It finishes by capturing the model's last reply
+into `RunState.summaryCheckpoints` (a field that existed, unused, since
+the original RunState design) as the "report" and transitioning straight
+to `DONE`, skipping verify/approve/commit — needed one small, narrowly-
+justified state-machine addition (`ACTING → DONE`, only reachable from
+`finishReviewOnly()`; every other workflow's edges are unchanged).
+Unknown `--workflow` values are rejected at the `Agent.run` boundary with
+a clear error listing the valid ids, matching the existing "not a git
+repo" fail-loud style. 14 new tests across `workflow.test.ts` (registry
+shape), `run-state.test.ts` (the new edge + `workflowId` defaulting),
+`agent-loop.test.ts` (quickfix vs. default planning contrast, review-only
+schema filtering, review-only edit-attempt refusal + report capture), and
+`agent.test.ts`/`commands.test.ts` (real end-to-end through the Agent API
+and CLI boundaries, plus the unknown-id rejection).
+
 ### Docs: "MVP" removed everywhere
 The spec used "MVP" to label Phase 1 scope throughout — renamed to
 "Phase 1" (or a non-numeric label where it would collide with the
@@ -181,7 +216,7 @@ loose "MVP" estimate.
 | arm64 seccomp | §12.6 | small, needs an arm64 host | The x86_64 filter is done and verified; arm64 has a different syscall number table with no way to verify it in this (x86_64) environment — needs either an arm64 host/CI runner or a very high-confidence authoritative source cross-checked the same way libseccomp's resolver was used for x86_64. |
 | VS Code extension polish | §18.5 | medium | Native two-sided diff view (needs per-file before/after content, not just the unified diff text `agent diff` returns), a run-picker, resume/rollback/pr commands in the UI. |
 | Full non-git `AgentLoop` execution path | — | large, separate project | Snapshot-backed (not worktree-backed) execution for non-git directories. `Agent.run` currently refuses cleanly with a "run git init" error instead of attempting this. |
-| Workflow engine — built-ins + user-declarative | §8, Phase 6 | medium–large | **Corrected from an earlier, inaccurate note in this file:** no workflow engine exists yet at all — `AgentLoop` always runs one hardcoded pipeline (plan(opt) → implement → verify → approve → commit); `RunState.workflowId` is a stored label with no effect on control flow. The three named built-ins (default/quickfix/review-only, §8.2) and the JSON-Schema-validated user-declarative layer on top are both still to build. |
+| Workflow engine — user-declarative layer | §8.1, Phase 6 | medium–large | The three built-ins now exist and are load-bearing (see "what's done") — what's still missing is the second authoring layer §8.1 describes: a JSON-Schema-validated declarative form for *customizing* the linear pipeline (ordered stages + per-stage enable/skip/params, no arbitrary control flow), plus the dedicated `agent workflow` list/select/validate CLI command (§18.2 marks that command itself Phase 2). Today a workflow is selected by id only (`--workflow <default\|quickfix\|review-only>`); there's no way to author a fourth one without editing `AgentLoop` source. |
 | PageRank repo map | §9, Phase 7 | medium | Tier 0 (ripgrep + on-demand tree-sitter) is what's live; the Aider-style PageRank map is Tier 1, triggered by measured retrieval-accuracy failures on large repos, not built preemptively. |
 | Eval scoreboard | §16, Phase 8 | medium–large | The replay harness (§16.3c) is live and gates every phase; the full SWE-bench-Verified-subset + Terminal-Bench-style scoreboard with published methodology is not. |
 | Multi-agent orchestration | §7, Phase 9 | large | Explicitly out of scope until the §7 rule justifies it — the spec argues *against* building this by default. Don't start it without re-reading §7's reasoning first. |
