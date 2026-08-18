@@ -7,13 +7,13 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-18
 **Branch:** `claude/handoff-prompt-continuation-c2cxh9`
-**Latest commit:** `35e104f` — "feat: VS Code extension polish — native diff, run-picker, resume/rollback/pr (§18.5)"
-**Test suite:** 558/558 passing, 68 test files, clean `tsc -b`, clean `eslint .`
+**Latest commit:** `f3e14b8` — "feat: §8.1 user-declarative workflow layer — real JSON-Schema via ajv"
+**Test suite:** 588/588 passing, 69 test files, clean `tsc -b`, clean `eslint .`
 
-**PR:** [#7](https://github.com/Derric01/ClutchCode/pull/7) — open, not yet
-merged. #6 merged cleanly; this branch was fast-forwarded to `main`'s
-merged tip before this session's VS Code-polish commit landed on it, so
-#7 stacks on genuinely fresh history (nothing rebased this time). Pattern
+**PR:** open, not yet merged — check `git log`/GitHub for its number if
+this note is stale (created right after this snapshot). #7 merged
+cleanly; this branch was fast-forwarded to `main`'s merged tip before
+this session's §8.1 commit landed on it. Pattern
 established across #4/#5/#6/#7: one open PR per phase of work, never
 reused once merged, branch always restarted from `main`'s merged tip
 before new commits land on it.
@@ -195,6 +195,73 @@ schema filtering, review-only edit-attempt refusal + report capture), and
 `agent.test.ts`/`commands.test.ts` (real end-to-end through the Agent API
 and CLI boundaries, plus the unknown-id rejection).
 
+### §8.1 user-declarative workflow layer — real JSON-Schema validation via `ajv`
+The second authoring layer §8.1 describes, on top of the three built-ins
+(previous entry). New `packages/runtime/src/workflow-declaration.ts`:
+`{apiVersion: "clutchcode/v1", id, name, stages: [{id, uses, when?,
+params?}]}`, `uses` restricted to the five stage kinds `AgentLoop`
+actually knows about (`plan`/`implement`/`verify`/`approve`/`commit`).
+Chose a real dependency (`ajv`, ~4 small transitive deps, added to
+`@clutchcode/runtime`) over hand-rolling a JSON-Schema validator — the
+spec explicitly says "JSON-Schema-validated," and a hand-rolled structural
+check dressed up as one would be a real gap dressed as done, not what
+this project's honesty rule allows. A hit an ajv+TypeScript
+`NodeNext`-resolution gotcha along the way: `import Ajv from "ajv"`
+type-errors ("not constructable") under this repo's `moduleResolution:
+NodeNext`; ajv's package also exports the class by name, so `import {
+Ajv } from "ajv"` sidesteps the broken default-export interop path
+entirely — preserved as a gotcha below.
+
+Deliberately **not** a general stage-pipeline interpreter — §8.1's own
+"no arbitrary control flow" line, taken literally. Structural JSON-Schema
+validation is real (via ajv), but a declaration only *resolves* to
+something `AgentLoop` can execute if it matches one of exactly two
+shapes: a "full" pipeline (`implement` + `verify` required, `plan`
+optional with `params.mode: "auto"|"always"`) or a "readonly" one
+(`implement` alone, `params.readonly: true`, mirroring `review-only`).
+Anything else — verify without implement, two `plan` stages, a readonly
+implement combined with other stages — is rejected with a specific error
+naming exactly what's unsupported, not silently misinterpreted.
+
+`AgentLoop` was refactored to stop comparing `state.workflowId` against
+hardcoded strings and instead consume a resolved `WorkflowPlan`
+(`{planMode: "auto"|"always"|"never", readonly: boolean}`) — the built-ins
+now resolve to this same shape via `resolveBuiltinWorkflowPlan`, so
+`AgentLoop` genuinely never needs to know whether a run is on a built-in
+or a custom workflow. Proven directly: a test constructs `AgentLoop` with
+a `workflowPlan: {planMode: "always", readonly: false}` and an
+unrecognized `workflowId`, and shows planning fires unconditionally even
+for a task the §6.7 heuristic would call simple — a real capability none
+of the three built-ins express (`default` defers to the heuristic,
+`quickfix` always skips).
+
+**A real correctness question this surfaced, and how it's resolved:**
+what happens if a paused run's custom workflow *file* is deleted or
+changed before `resume()`? Re-reading it at resume time would be wrong —
+resumability (§6.2) means the run continues as it started, not as
+whatever the file currently says. Fixed by persisting the *resolved*
+`WorkflowPlan` on `RunState` itself (`state.workflowPlan`, always set by
+`createRunState`, round-trips through JSON exactly like
+`budgets`/`consumed` already do) instead of only the workflow id.
+`resume()` never touches the filesystem for this. Proven end to end: a
+test pauses a run on a custom readonly workflow, deletes the declaration
+file, resumes, and confirms the run still finishes via the readonly path
+with zero verification — the deleted file genuinely never gets re-read.
+
+`agent run --workflow-file <path.json>` wires it at the CLI;
+`--workflow`/`--workflow-file` are mutually exclusive (checked at
+`Agent.run`'s boundary, not left to whichever the CLI happened to pass
+last). Not built: the dedicated `agent workflow` CLI command (§18.2 marks
+that Phase 2) — see "what's left".
+
+19 new tests in `workflow-declaration.test.ts` (schema + semantic
+validation, `resolveWorkflowPlan`, real file I/O), 2 new in
+`agent-loop.test.ts` (the novel `planMode: "always"` proof + the
+unrecognized-id defensive-fallback proof), 2 new in `run-state.test.ts`
+(`workflowPlan` resolution + explicit override), 4 new in `agent.test.ts`
+(real end-to-end run, invalid-file rejection, mutual-exclusivity
+rejection, the delete-then-resume proof), 3 new in `commands.test.ts`.
+
 ### VS Code extension polish (§18.5) — native diff, run-picker, resume/rollback/pr
 Three items from the extension's original "not yet built" list, all real
 and tested at the layer that can be:
@@ -274,13 +341,31 @@ loose "MVP" estimate.
 | arm64 seccomp | §12.6 | small, needs an arm64 host | The x86_64 filter is done and verified; arm64 has a different syscall number table with no way to verify it in this (x86_64) environment — needs either an arm64 host/CI runner or a very high-confidence authoritative source cross-checked the same way libseccomp's resolver was used for x86_64. |
 | VS Code multi-file "changes" view | §18.5, minor | small | The extension opens one real `vscode.diff` editor per changed file (done, see "what's done") rather than combining several into VS Code's newer `vscode.changes` command — deliberately skipped since that command isn't universally available across the `^1.85.0` engine range this extension targets. Revisit if the minimum supported VS Code version is ever raised. |
 | Full non-git `AgentLoop` execution path | — | large, separate project | Snapshot-backed (not worktree-backed) execution for non-git directories. `Agent.run` currently refuses cleanly with a "run git init" error instead of attempting this. |
-| Workflow engine — user-declarative layer | §8.1, Phase 6 | medium–large | The three built-ins now exist and are load-bearing (see "what's done") — what's still missing is the second authoring layer §8.1 describes: a JSON-Schema-validated declarative form for *customizing* the linear pipeline (ordered stages + per-stage enable/skip/params, no arbitrary control flow), plus the dedicated `agent workflow` list/select/validate CLI command (§18.2 marks that command itself Phase 2). Today a workflow is selected by id only (`--workflow <default\|quickfix\|review-only>`); there's no way to author a fourth one without editing `AgentLoop` source. |
+| `agent workflow` CLI command | §8.1/§18.2, Phase 2 | small | Both authoring layers exist now (built-ins + `--workflow-file`, see "what's done") — what's missing is the dedicated list/select/validate command §18.2 itself marks Phase 2. `--workflow-file <path>` can validate-and-run today; there's no `agent workflow validate <path>` that checks a file without starting a run, and no `agent workflow list` enumerating built-ins + any locally-referenced custom ones. |
 | PageRank repo map | §9, Phase 7 | medium | Tier 0 (ripgrep + on-demand tree-sitter) is what's live; the Aider-style PageRank map is Tier 1, triggered by measured retrieval-accuracy failures on large repos, not built preemptively. |
 | Eval scoreboard | §16, Phase 8 | medium–large | The replay harness (§16.3c) is live and gates every phase; the full SWE-bench-Verified-subset + Terminal-Bench-style scoreboard with published methodology is not. |
 | Multi-agent orchestration | §7, Phase 9 | large | Explicitly out of scope until the §7 rule justifies it — the spec argues *against* building this by default. Don't start it without re-reading §7's reasoning first. |
 
 ## Known gotchas (read before you hit them again)
 
+- **`import Ajv from "ajv"` type-errors under this repo's `moduleResolution:
+  NodeNext`** ("This expression is not constructable" / a `ValidateFunction
+  | undefined` not assignable error on `.compile()`'s result). ajv ships a
+  single ambiguous `.d.ts` (no separate `.d.cts`/`.d.mts`), and TS's
+  NodeNext default-export interop for that shape resolves to the whole
+  module namespace, not the class. Fix: `import { Ajv } from "ajv"` — ajv
+  also exports the class by name, which sidesteps the broken path
+  entirely. Runtime behavior was never actually broken (Node's own CJS
+  interop handles the real `.js` file fine) — this is purely a
+  compile-time TS quirk, confirmed by testing both import styles against
+  the exact same compiled output.
+- **`git diff <commit>` (no `--cached`) never reports an untracked path,
+  no matter what it's diffed against.** A file the model just wrote that
+  was never `git add`ed is invisible to it — not "shown as added," just
+  absent. `diffFilesAgainstBase` (§18.5) hit this: fixed by staging first
+  (`git add -A`), same as `checkpoint()` already does per step. If a
+  diff-based function mysteriously misses a brand-new file, check whether
+  it's staged.
 - **`git stash push --include-untracked` silently hides new files.**
   `handleDirtyTree`'s default "stash" strategy will stash an uncommitted
   config change (e.g. a test's `saveConfig()` call) before a run starts,
