@@ -49,6 +49,34 @@ describe("fileStoreGet/Set/Clear — real AES-256-GCM encryption, real filesyste
     expect(fileStoreGet("openai-api-key", { configDir })).toBe("sk-openai-value");
   });
 
+  it("refuses to write over a corrupted (undecryptable) store instead of silently overwriting it with just the one account being set — leaving every previously-stored credential unrecoverably gone (real bug caught in round 3 of security review)", () => {
+    fileStoreSet("anthropic-api-key", "sk-ant-original", { configDir });
+    fileStoreSet("openai-api-key", "sk-openai-original", { configDir });
+    // Simulate a partial/killed write leaving a corrupted envelope on disk
+    // — machine.key untouched, so this specifically exercises "file
+    // exists but can't be decrypted," not "wrong key."
+    const filePath = credentialFilePath(configDir);
+    const corruptedBytes = "not valid json at all";
+    fs.writeFileSync(filePath, corruptedBytes, "utf8");
+
+    const result = fileStoreSet("anthropic-api-key", "sk-ant-rotated-after-corruption", { configDir });
+    expect(result).toBe(false);
+    // The corrupted file is left exactly as it was — not silently
+    // overwritten with a fresh, valid-looking, single-account envelope
+    // that would erase any trace the openai-api-key entry ever existed.
+    expect(fs.readFileSync(filePath, "utf8")).toBe(corruptedBytes);
+  });
+
+  it("fileStoreClear also refuses to write over a corrupted store", () => {
+    fileStoreSet("anthropic-api-key", "sk-ant-original", { configDir });
+    const filePath = credentialFilePath(configDir);
+    const corruptedBytes = "also not valid json";
+    fs.writeFileSync(filePath, corruptedBytes, "utf8");
+
+    expect(fileStoreClear("anthropic-api-key", { configDir })).toBe(false);
+    expect(fs.readFileSync(filePath, "utf8")).toBe(corruptedBytes);
+  });
+
   it("a second set for the same account overwrites the first", () => {
     fileStoreSet("anthropic-api-key", "first-value", { configDir });
     fileStoreSet("anthropic-api-key", "second-value", { configDir });

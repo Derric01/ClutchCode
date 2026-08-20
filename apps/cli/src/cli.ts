@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import type { ProviderKind } from "@clutchcode/agent-api";
 import {
   cmdApprove,
@@ -74,6 +74,27 @@ function modelsCtx(opts: ModelsGlobalOpts): CliContext {
   return { repoPath: process.cwd(), json: opts.json, modelsDir: opts.modelsDir };
 }
 
+// Real bug caught in round 3 of security review: `(v) => parseInt(v, 10)`
+// (and `parseFloat`) silently produce `NaN` for a malformed value (e.g. a
+// typo like `--max-steps five`), and `definedBudgets`/callers in
+// commands.ts only check `!== undefined` — true for `NaN` — so a bad flag
+// used to overwrite the real default budget with `NaN`, and every
+// `>=`/`>` comparison against `NaN` in `packages/runtime/src/budget.ts` is
+// always `false`, silently disabling that budget's enforcement for the
+// whole run with no error printed at all. Commander calls a custom parser
+// synchronously and turns a thrown `InvalidArgumentError` into a clean
+// "error: option '...' argument '...' is invalid" CLI failure instead.
+function parseIntArg(v: string): number {
+  const n = parseInt(v, 10);
+  if (Number.isNaN(n)) throw new InvalidArgumentError(`"${v}" is not a valid integer`);
+  return n;
+}
+function parseFloatArg(v: string): number {
+  const n = parseFloat(v);
+  if (Number.isNaN(n)) throw new InvalidArgumentError(`"${v}" is not a valid number`);
+  return n;
+}
+
 const program = new Command();
 program.name("clutchcode").description("A model-agnostic, local-first coding-agent runtime.").version("0.1.0");
 
@@ -93,10 +114,10 @@ baseOptions(program.command("run"))
   .option("--base-url <url>", "override the provider base URL")
   .option("--yes", "auto-approve when the deterministic gate is green and no cheats are flagged (§14.7)", false)
   .option("--models-dir <path>", "capability-profile storage directory (§4.9, default: ~/.config/clutchcode/models)")
-  .option("--max-steps <n>", "override the step budget (§6.3, default: 50)", (v) => parseInt(v, 10))
-  .option("--max-wallclock-ms <n>", "override the wall-clock budget (default: 20 min)", (v) => parseInt(v, 10))
-  .option("--max-tokens <n>", "override the token budget (default: 200000)", (v) => parseInt(v, 10))
-  .option("--cost-ceiling-usd <n>", "override the cost ceiling (overrides agent.toml's policy.costCeilingUsd)", (v) => parseFloat(v))
+  .option("--max-steps <n>", "override the step budget (§6.3, default: 50)", parseIntArg)
+  .option("--max-wallclock-ms <n>", "override the wall-clock budget (default: 20 min)", parseIntArg)
+  .option("--max-tokens <n>", "override the token budget (default: 200000)", parseIntArg)
+  .option("--cost-ceiling-usd <n>", "override the cost ceiling (overrides agent.toml's policy.costCeilingUsd)", parseFloatArg)
   .option("--scope <path>", "monorepo: pin verification (toolchain + pipeline cwd) to this subdir (§13.4)")
   .option("--workflow <id>", "default | quickfix | review-only (§8.2); default \"default\" if neither this nor --workflow-file is given")
   .option("--workflow-file <path>", "a JSON-Schema-validated custom declarative workflow file (§8.1); mutually exclusive with --workflow")
@@ -144,7 +165,15 @@ baseOptions(program.command("diff"))
 
 baseOptions(program.command("approve"))
   .argument("<runId>")
-  .option("--squash", "squash checkpoint commits into one", true)
+  // Real bug caught in round 3 of security review: a plain `--squash`
+  // boolean flag defaulting to `true`, with no `--no-squash` counterpart,
+  // meant `ApproveOptions.squash === false` (a real, meaningfully
+  // different `git merge --no-ff` code path in `approveRun`, preserving
+  // full checkpoint history instead of collapsing it) could never
+  // actually be reached from the CLI — commander errors on an unknown
+  // `--no-squash` flag. `--no-squash` here auto-negates the boolean
+  // (commander's documented convention for a `--no-<x>` pairing).
+  .option("--no-squash", "keep the run's checkpoint commits separate instead of squashing them into one")
   .option("--message <msg>", "commit message")
   .action(async (runId: string, opts: GlobalOpts & { squash: boolean; message?: string }) =>
     emit(await cmdApprove(ctx(opts), runId, { squash: opts.squash, message: opts.message }), opts.json)
@@ -153,7 +182,15 @@ baseOptions(program.command("approve"))
 // `commit` is an alias for `approve` (§13.5 — finalize the reviewed diff).
 baseOptions(program.command("commit"))
   .argument("<runId>")
-  .option("--squash", "squash checkpoint commits into one", true)
+  // Real bug caught in round 3 of security review: a plain `--squash`
+  // boolean flag defaulting to `true`, with no `--no-squash` counterpart,
+  // meant `ApproveOptions.squash === false` (a real, meaningfully
+  // different `git merge --no-ff` code path in `approveRun`, preserving
+  // full checkpoint history instead of collapsing it) could never
+  // actually be reached from the CLI — commander errors on an unknown
+  // `--no-squash` flag. `--no-squash` here auto-negates the boolean
+  // (commander's documented convention for a `--no-<x>` pairing).
+  .option("--no-squash", "keep the run's checkpoint commits separate instead of squashing them into one")
   .option("--message <msg>", "commit message")
   .action(async (runId: string, opts: GlobalOpts & { squash: boolean; message?: string }) =>
     emit(await cmdApprove(ctx(opts), runId, { squash: opts.squash, message: opts.message }), opts.json)
@@ -169,10 +206,10 @@ baseOptions(program.command("inspect"))
 
 baseOptions(program.command("resume"))
   .argument("<runId>")
-  .option("--extend-steps <n>", "raise the step budget by this many steps before continuing (§6.3)", (v) => parseInt(v, 10))
-  .option("--extend-wallclock-ms <n>", "raise the wall-clock budget by this many ms before continuing", (v) => parseInt(v, 10))
-  .option("--extend-tokens <n>", "raise the token budget by this many tokens before continuing", (v) => parseInt(v, 10))
-  .option("--extend-cost-usd <n>", "raise the cost ceiling by this much before continuing", (v) => parseFloat(v))
+  .option("--extend-steps <n>", "raise the step budget by this many steps before continuing (§6.3)", parseIntArg)
+  .option("--extend-wallclock-ms <n>", "raise the wall-clock budget by this many ms before continuing", parseIntArg)
+  .option("--extend-tokens <n>", "raise the token budget by this many tokens before continuing", parseIntArg)
+  .option("--extend-cost-usd <n>", "raise the cost ceiling by this much before continuing", parseFloatArg)
   // No default here (unlike `run`'s --yes): leaving it unset lets `Agent.resume`
   // fall back to the run's own persisted --yes instead of silently forcing false.
   .option("--yes", "override the run's original --yes setting for this resume")
@@ -285,7 +322,7 @@ models
   .option("--provider <kind>", "openai-compatible | anthropic | ollama", "ollama")
   .option("--base-url <url>", "override the provider base URL")
   .option("--force", "re-run the probe even if a cached profile exists", false)
-  .option("--trials <n>", "trials per scored check", (v) => parseInt(v, 10), 3)
+  .option("--trials <n>", "trials per scored check", parseIntArg, 3)
   .option("--json", "machine-readable JSON output", false)
   .option("--models-dir <path>", "override the profile storage directory (default: ~/.config/clutchcode/models)")
   .action(

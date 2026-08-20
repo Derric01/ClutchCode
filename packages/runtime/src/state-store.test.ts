@@ -46,4 +46,14 @@ describe("RunStateStore", () => {
     store.delete("r1");
     expect(store.load("r1")).toBeNull();
   });
+
+  it("rejects a path-traversal runId on load/save/delete instead of reading/writing outside stateDir (real gap caught in round 3 of security review — round 2 only validated runId at worktree creation, not at every RunStateStore entry point)", () => {
+    const evil = "../../../../../../tmp/clutchcode-state-store-poc";
+    expect(() => store.load(evil)).toThrow(/invalid runId/);
+    expect(() =>
+      store.save(createRunState({ runId: evil, task: "a", provider: "fake", model: "fake" }))
+    ).toThrow(/invalid runId/);
+    expect(() => store.delete(evil)).toThrow(/invalid runId/);
+    expect(fs.existsSync("/tmp/clutchcode-state-store-poc")).toBe(false);
+  });
 });

@@ -26,13 +26,29 @@ export interface CheatFlag {
 const TEST_FILE_RE = /(\.test\.|\.spec\.|(^|\/)__tests__\/|(^|\/)tests?\/|(^|\/)test_[^/]+\.py$|_test\.go$)/i;
 const ASSERTION_OR_TEST_DECL_RE =
   /\b(it|test|describe)\s*\(|(^|\s)assert(_equal|equal)?\s*\(|expect\s*\(|self\.assert\w+\s*\(/;
+// Real gap caught in round 3 of security review: the original regex only
+// recognized the literal `true`/`1==1` in specific hard-coded shapes, so a
+// numerically- or syntactically-equivalent tautology slipped through — e.g.
+// `expect(1).toBe(1)`, or even `expect(true).toBe(true)` with extra
+// whitespace inside the parens. Generalized to a whitespace-tolerant
+// self-equality pattern (`expect(X).toBe(X)` for the same literal X) on top
+// of the original hard-coded cases, since a self-equality check is
+// tautological regardless of which literal it repeats — and this doubly
+// matters because `checkRemovedTestAssertions` (below) counts a tautology
+// as an "added assertion", so an undetected one can silently make a
+// removed-real-assertions count look balanced.
 const TRIVIAL_ASSERTION_RE =
-  /assert\s+true\b|assert\s+1\s*==\s*1|expect\(true\)\.toBe\(true\)|\.toBeDefined\(\)\s*;?\s*$|assertTrue\(true\)/i;
+  /assert\s+true\b|assert\s*\(\s*1\s*===?\s*1\s*\)|assert\s+1\s*==\s*1|expect\(\s*true\s*\)\.toBe\(\s*true\s*\)|expect\(\s*(-?\d+(?:\.\d+)?|'[^']*'|"[^"]*")\s*\)\.toBe\(\s*\1\s*\)|\.toBeDefined\(\)\s*;?\s*$|assertTrue\(true\)/i;
 const SKIP_MARKER_RE = /\.skip\s*\(|\.only\s*\(|\bxit\s*\(|\bxdescribe\s*\(|@pytest\.mark\.(skip|xfail)|\bt\.Skip\s*\(/;
-// Matches both a same-line `except: pass` / `catch (e) {}` and Python's
-// usual two-line `except:` / `    pass` shape (checked against the whole
-// added-lines block joined by newlines, not line-by-line).
-const SWALLOWED_ERROR_RE = /except\s*(\w+\s*)?:\s*\n?\s*pass\b|catch\s*\([^)]*\)\s*\{\s*\}/;
+// Matches both a same-line `except: pass` / `catch (e) {}` / `catch {}` and
+// Python's usual two-line `except:` / `    pass` shape (checked against the
+// whole added-lines block joined by newlines, not line-by-line). The
+// no-parenthesis `catch {}` alternative is a real gap caught in round 3 of
+// security review: ES2019+'s optional catch binding makes `catch {}`
+// (no `(e)`) syntactically valid modern JS/TS — the exact same
+// swallow-the-failing-path cheat, just spelled without an identifier, and
+// the original regex's `\([^)]*\)` required the parens to be present.
+const SWALLOWED_ERROR_RE = /except\s*(\w+\s*)?:\s*\n?\s*pass\b|catch\s*(\([^)]*\))?\s*\{\s*\}/;
 const SNAPSHOT_FILE_RE = /(^|\/)__snapshots__\/|\.snap$/i;
 
 function countMatches(lines: string[], re: RegExp): string[] {
@@ -101,7 +117,14 @@ function checkHardcodedOutput(file: FileDiff): CheatFlag | null {
   // not proof of cheating.
   const removedLogicLines = file.removedLines.filter((l) => l.trim().length > 0 && !/^\s*(\/\/|#|\*)/.test(l));
   const addedReturnLiteral = file.addedLines.filter((l) => /^\s*return\s+(['"`].*['"`]|-?\d+(\.\d+)?|true|false)\s*;?\s*$/.test(l));
-  if (removedLogicLines.length >= 3 && addedReturnLiteral.length >= 1 && file.addedLines.filter((l) => l.trim()).length <= 2) {
+  // Real gap caught in round 3 of security review: counting *every*
+  // non-blank added line (including comments) against the `<= 2` threshold
+  // meant padding the replacement with a couple of harmless comment lines
+  // (e.g. "// simplified per review") pushed the count past 2 and silently
+  // defeated the check, even though the actual logic change was identical.
+  // Mirrors `removedLogicLines`' own comment-stripping above.
+  const addedNonCommentLines = file.addedLines.filter((l) => l.trim().length > 0 && !/^\s*(\/\/|#|\*)/.test(l));
+  if (removedLogicLines.length >= 3 && addedReturnLiteral.length >= 1 && addedNonCommentLines.length <= 2) {
     return {
       rule: "possible-hardcoded-output",
       file: file.path,
@@ -112,19 +135,52 @@ function checkHardcodedOutput(file: FileDiff): CheatFlag | null {
   return null;
 }
 
+/**
+ * The bare "subject" a snapshot/test/source file is conventionally named
+ * after — `__snapshots__/Component.test.ts.snap` and `src/Component.tsx`
+ * both reduce to `"component"`. Strips a `.snap` suffix, then a trailing
+ * `.test.<ext>`/`.spec.<ext>`/`_test.<ext>` marker, then any remaining
+ * extension, then lowercases.
+ */
+function baseStem(p: string): string {
+  const base = p.slice(p.lastIndexOf("/") + 1);
+  return base
+    .replace(/\.snap$/i, "")
+    .replace(/\.(test|spec)\.[a-z0-9]+$/i, "")
+    .replace(/_test\.[a-z0-9]+$/i, "")
+    .replace(/\.[a-z0-9]+$/i, "")
+    .toLowerCase();
+}
+
 function checkSnapshotEdit(files: FileDiff[]): CheatFlag[] {
   const snapshotFiles = files.filter((f) => SNAPSHOT_FILE_RE.test(f.path));
   if (snapshotFiles.length === 0) return [];
 
   const nonTestNonSnapshotFiles = files.filter((f) => !SNAPSHOT_FILE_RE.test(f.path) && !TEST_FILE_RE.test(f.path));
-  if (nonTestNonSnapshotFiles.length > 0) return []; // there's a source-code rationale for the snapshot change
 
-  return snapshotFiles.map((f) => ({
-    rule: "unexplained-snapshot-edit" as const,
-    file: f.path,
-    message: "a snapshot/golden file changed with no corresponding non-test source change in the same diff",
-    evidence: [`${f.addedLines.length} line(s) added, ${f.removedLines.length} line(s) removed`]
-  }));
+  // Real gap caught in round 3 of security review: the exemption only
+  // checked that *some* other non-test/non-snapshot file changed anywhere
+  // in the diff — not that it had anything to do with the snapshot. That
+  // let a genuinely unrelated one-line edit bundled into the same diff
+  // (any file, anywhere in the repo) silently exempt a snapshot edit that
+  // was actually masking a deleted assertion. Now require the "rationale"
+  // file to be conventionally *named after* the same subject as the
+  // snapshot (`baseStem` match) — directory layout varies too much across
+  // frameworks (a top-level `__snapshots__/` vs. one nested beside its
+  // source) to use as the relatedness signal, but the naming convention a
+  // snapshot/test/source triad follows is stable across all of them.
+  return snapshotFiles
+    .filter((snap) => {
+      const stem = baseStem(snap.path);
+      const hasRelatedRationale = nonTestNonSnapshotFiles.some((f) => baseStem(f.path) === stem);
+      return !hasRelatedRationale;
+    })
+    .map((f) => ({
+      rule: "unexplained-snapshot-edit" as const,
+      file: f.path,
+      message: "a snapshot/golden file changed with no corresponding non-test source change for the same subject",
+      evidence: [`${f.addedLines.length} line(s) added, ${f.removedLines.length} line(s) removed`]
+    }));
 }
 
 /** Analyze a unified diff (e.g. `git diff base..HEAD`) for the §14.6 cheat patterns. */

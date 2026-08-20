@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { git } from "./git-exec.js";
 import { handleDirtyTree, restoreStash, type DirtyTreeResult, type DirtyTreeStrategy } from "./dirty-tree.js";
+import { assertSafeRunId } from "./run-id.js";
 
 /**
  * Git worktree isolation per run (PROJECT_SPEC.md §13.1).
@@ -46,21 +47,8 @@ function slugify(s: string): string {
   );
 }
 
-// A run id is only ever used as one path segment under `<stateDir>/wt/` —
-// never a directory separator, `..`, or anything else `path.join` would
-// normalize into escaping that prefix. Real vulnerability caught in
-// security review: `path.join(stateDir, "wt", runId)` happily collapses a
-// runId like `"../../../../tmp/pwned"` right out of the intended state
-// directory, and `runId` reaches here straight from JSON-RPC `run` params
-// with zero prior validation (`agent-methods.ts`'s `run` handler does
-// `p.runId ?? newRunId()` over a bare type assertion) — so an RPC caller
-// controlled where the "isolated" worktree actually landed on disk.
-const SAFE_RUN_ID_RE = /^[A-Za-z0-9_-]+$/;
-
 export function createRunWorktree(opts: CreateRunOptions): RunWorktree {
-  if (!SAFE_RUN_ID_RE.test(opts.runId)) {
-    throw new Error(`invalid runId "${opts.runId}" — must match ${SAFE_RUN_ID_RE} (no path separators or "..")`);
-  }
+  assertSafeRunId(opts.runId);
 
   const dirtyResult = handleDirtyTree(opts.repoPath, opts.dirtyTreeStrategy ?? "stash");
   const base =

@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { Agent, type ApproveOptions, type PrOptions, type ResumeOptions, type RunOptions } from "@clutchcode/agent-api";
+import { Agent, assertSafeRunId, type ApproveOptions, type PrOptions, type ResumeOptions, type RunOptions } from "@clutchcode/agent-api";
 import type { RpcHandler } from "./dispatcher.js";
 
 /**
@@ -27,6 +27,14 @@ export function buildAgentRpcMethods(opts: AgentRpcMethodsOptions): { agent: Age
   function requireRunId(params: unknown): string {
     const runId = (params as { runId?: unknown } | undefined)?.runId;
     if (typeof runId !== "string" || runId.length === 0) throw new Error("params.runId is required and must be a non-empty string");
+    // §13.1: reject a malformed runId at the RPC boundary itself, before it
+    // ever reaches `Agent`'s `diff`/`approve`/`reject`/`resume`/`inspect`/
+    // `checkpoints`/`rollback`/`pr` — defense-in-depth on top of (not a
+    // replacement for) the same check now also enforced inside
+    // `RunStateStore`, `worktree-store.ts`, and `events.ts` directly, so a
+    // bad `runId` fails fast with a clear RPC error instead of surfacing as
+    // whatever downstream error the traversed path happens to produce.
+    assertSafeRunId(runId);
     return runId;
   }
 

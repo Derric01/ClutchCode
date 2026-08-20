@@ -31,4 +31,27 @@ describe("selectImpactedTests", () => {
     expect(selected).toEqual([]);
     expect(runFullSuite).toBe(false);
   });
+
+  it("does not treat a same-named test file in an unrelated directory as a confident mapping — falls back to the full suite instead (real gap caught in round 3 of security review: basename-only matching, with no directory relationship check, let an unrelated same-named test file elsewhere in the repo silently satisfy the mapping)", () => {
+    // src/moduleA/helpers.ts changes; its real coverage would be
+    // src/moduleA/moduleA.test.ts (a different basename, so unmapped by
+    // this Phase-1 heuristic either way) — but src/moduleB/helpers.test.ts
+    // must NOT count as "mapped" just because it shares a basename.
+    const crossModuleTestFiles = ["src/moduleB/helpers.test.ts"];
+    const { runFullSuite, selected } = selectImpactedTests(["src/moduleA/helpers.ts"], crossModuleTestFiles);
+    expect(runFullSuite).toBe(true);
+    expect(selected).toEqual([]);
+  });
+
+  it("still maps across a conventional src/ + test/ sibling split (not over-restricted by the directory-relatedness fix)", () => {
+    const { selected, runFullSuite } = selectImpactedTests(["src/math.ts"], ["test/math.test.ts"]);
+    expect(runFullSuite).toBe(false);
+    expect(selected).toEqual(["test/math.test.ts"]);
+  });
+
+  it("still maps into a conventional __tests__ subdirectory beside the changed file", () => {
+    const { selected, runFullSuite } = selectImpactedTests(["src/components/Button.ts"], ["src/components/__tests__/Button.test.ts"]);
+    expect(runFullSuite).toBe(false);
+    expect(selected).toEqual(["src/components/__tests__/Button.test.ts"]);
+  });
 });

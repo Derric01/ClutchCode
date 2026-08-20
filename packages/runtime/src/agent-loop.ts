@@ -360,7 +360,27 @@ export class AgentLoop {
 
       let anyEdit = false;
       for (const call of response.toolCalls) {
-        const repeatWarning = this.loopDetector.recordToolCall(call.name, call.argsJson);
+        // §6.4: `recordToolCall`/`stableStringify` canonicalize by *key
+        // order* so two calls with semantically-identical args (plausible
+        // across independent LLM completions — argument key order in
+        // emitted JSON isn't guaranteed stable) hash the same. Real bug
+        // caught in round 3 of security review: passing the raw
+        // `argsJson` *string* instead of the parsed object defeated that
+        // entirely — `stableStringify` short-circuits to `JSON.stringify`
+        // on a non-object and just re-quotes the string, so `{"a":1,"b":2}`
+        // and `{"b":2,"a":1}` hashed to different keys and the repeated-
+        // call loop detector never fired for a real repeat that merely
+        // varied in key order. Falls back to the raw string only if the
+        // model emitted malformed JSON (still hashed consistently, just
+        // without canonicalization — `runToolCall` below reports the
+        // parse failure to the model on its own).
+        let parsedArgs: unknown = call.argsJson;
+        try {
+          parsedArgs = call.argsJson ? JSON.parse(call.argsJson) : {};
+        } catch {
+          /* fall back to the raw string — still a valid, if uncanonicalized, hash key */
+        }
+        const repeatWarning = this.loopDetector.recordToolCall(call.name, parsedArgs);
         if (repeatWarning) {
           this.emit({ type: "loop.detected", warning: repeatWarning });
           if (repeatWarning.escalate) {

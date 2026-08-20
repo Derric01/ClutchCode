@@ -73,12 +73,27 @@ function mapStopReason(reason: string | null | undefined): "stop" | "tool_use" |
       return "tool_use";
     case "max_tokens":
       return "length";
+    // Real bug caught in round 3 of security review: `refusal` explicitly
+    // signals the model declined mid-generation (the returned text may be
+    // incomplete) — it fell through to `default` and was silently mapped
+    // to a plain "stop", identical to a normal complete turn.
+    case "refusal":
+      return "error";
     case "end_turn":
     case "stop_sequence":
     default:
       return "stop";
   }
 }
+
+/**
+ * Anthropic's documented transient/retryable stream-error types (mirrors
+ * the retryability Anthropic itself signals via HTTP 529 "Overloaded" for
+ * the non-streaming path) — an in-stream `event: error` of this type is a
+ * server-side capacity problem, not a request-shape problem, and should be
+ * retried the same way a 529/429 HTTP response already is a few lines up.
+ */
+const RETRYABLE_ANTHROPIC_ERROR_TYPES = new Set(["overloaded_error", "api_error", "rate_limit_error"]);
 
 interface AnthropicSSEData {
   type: string;
@@ -87,7 +102,7 @@ interface AnthropicSSEData {
   content_block?: { type: string; id?: string; name?: string };
   delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string };
   usage?: { output_tokens?: number };
-  error?: { message?: string };
+  error?: { type?: string; message?: string };
 }
 
 export class AnthropicProvider implements Provider {
@@ -155,6 +170,12 @@ export class AnthropicProvider implements Provider {
 
     const blocksByIndex = new Map<number, { kind: "text" | "tool_use"; id: string }>();
     let inputTokens = 0;
+    // Real bug caught in round 3 of security review: if the stream ends
+    // (connection drop, e.g. a proxy idle-timeout) before a `message_delta`
+    // carrying `stop_reason` ever arrives, this generator just returns —
+    // no `error`, no `done`. `collect()` defaults `finishReason` to
+    // `"stop"`, silently reporting a truncated turn as complete.
+    let sawTerminal = false;
 
     for await (const evt of parseSSE(res.body)) {
       let json: AnthropicSSEData;
@@ -206,18 +227,27 @@ export class AnthropicProvider implements Provider {
           const outputTokens = json.usage?.output_tokens ?? 0;
           yield { type: "usage", inputTokens, outputTokens };
           if (json.delta?.stop_reason) {
+            sawTerminal = true;
             yield { type: "done", finishReason: mapStopReason(json.delta.stop_reason) };
           }
           break;
         }
 
         case "error":
-          yield { type: "error", message: json.error?.message ?? "unknown Anthropic stream error", retryable: false };
+          yield {
+            type: "error",
+            message: json.error?.message ?? "unknown Anthropic stream error",
+            retryable: json.error?.type !== undefined && RETRYABLE_ANTHROPIC_ERROR_TYPES.has(json.error.type)
+          };
           return;
 
         default:
           break;
       }
+    }
+
+    if (!sawTerminal) {
+      yield { type: "error", message: "Anthropic stream ended without a message_delta stop_reason", retryable: true };
     }
   }
 }

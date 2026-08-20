@@ -46,6 +46,23 @@ describe("truncate", () => {
     expect(result.truncated).toBe(true);
     expect(result.shown).toContain("FAIL test_important");
   });
+
+  it("surfaces an omitted failure line even when its exact text also appears in the shown head/tail (real bug caught in round 3 of security review — a repeated error string, very typical in a real CI log, used to make every OTHER occurrence of that same text silently invisible, since dedup was text-based instead of positional)", () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 500; i++) lines.push(`PASS test_${i}`);
+    const REPEATED_ERROR = "Error: connect ECONNREFUSED 127.0.0.1:5432";
+    lines[5] = REPEATED_ERROR; // inside the shown head window (default headLines: 40)
+    lines[250] = REPEATED_ERROR; // deep in the omitted middle — genuinely a distinct failure
+    const text = lines.join("\n");
+
+    const result = truncate(text, { budget: 200, kind: "test", evidenceDir, label: "testlog" });
+    expect(result.truncated).toBe(true);
+    const escaped = REPEATED_ERROR.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const occurrences = (result.shown.match(new RegExp(escaped, "g")) ?? []).length;
+    // Once from the shown head, once from "failure signatures found in the
+    // omitted region" — the pre-fix behavior only ever produced 1.
+    expect(occurrences).toBe(2);
+  });
 });
 
 describe("truncateSearchResults", () => {

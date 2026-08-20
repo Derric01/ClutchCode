@@ -11,6 +11,7 @@ import {
   diffAgainstBase,
   diffFilesAgainstBase,
   diffStat,
+  git,
   githubCompareUrl,
   isGitRepo,
   listCheckpoints,
@@ -243,8 +244,26 @@ export class Agent {
     // point of caching; `detectFrom` still reads the live worktree
     // content, since that's what's actually being verified this run.
     const memoryCacheKeyPath = resolveMemoryCacheKeyPath(this.repoPath, opts.scope);
-    const agentsMdPath = path.join(run.worktreePath, "AGENTS.md");
-    const agentsMdContent = fs.existsSync(agentsMdPath) ? fs.readFileSync(agentsMdPath, "utf8") : undefined;
+    // §10.3 point 4 ("human edits win") only makes sense for content a
+    // human actually wrote — a real gap caught in round 3 of security
+    // review: this used to read AGENTS.md from the *live* worktree
+    // (`run.worktreePath`), which the model itself is actively editing
+    // this very run. `applyAgentsMdOverrides` trusts a `test:`/`build:`/
+    // `lint:`/`typecheck:` line unconditionally with no further check, so
+    // a model asked to "make the tests pass" could simply add `test: echo
+    // ok` to AGENTS.md (not on any denylist) and have the deterministic
+    // verification gate — the entire premise this project is built on —
+    // run a no-op instead of the real suite, with zero cheat-detection
+    // signal (AGENTS.md isn't a test/snapshot file `detectCheats` looks
+    // at). Fixed by reading AGENTS.md from the run's *base commit*
+    // (`run.baseCommit`, via `git show`) instead of the live worktree —
+    // an override only takes effect if it already existed before this
+    // run's own edits, which is what "human-authored" actually means
+    // here. `allowFailure: true` gives an empty string (no override) both
+    // when the file didn't exist at the base commit and when it was
+    // added fresh this run.
+    const agentsMdContent =
+      git(["show", `${run.baseCommit}:AGENTS.md`], { cwd: run.worktreePath, allowFailure: true }) || undefined;
     const memoryOpts = opts.memoryDir ? { configDir: opts.memoryDir } : undefined;
     const { commands: toolchainCommands } = getOrDetectToolchain(verifyCwd, memoryCacheKeyPath, agentsMdContent, memoryOpts);
 

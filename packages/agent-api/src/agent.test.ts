@@ -294,6 +294,100 @@ describe("Agent.resume (§6.2, §6.3, §18.2)", () => {
   });
 });
 
+describe("AGENTS.md override trust boundary (§10.3 point 4 — real gap caught in round 3 of security review)", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let server: ScriptedServer;
+
+  beforeEach(() => {
+    // Root test genuinely fails (no AGENTS.md at the base commit) — the
+    // scenario needs a real, deterministic failure a fake override could
+    // plausibly be used to mask.
+    repoPath = makeMonorepo();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+    markTrusted(repoPath); // so the write_file tool call is ALLOW'd outright
+  });
+
+  afterEach(async () => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    await server?.close();
+  });
+
+  it("an AGENTS.md the model writes mid-run — surviving into a resumed continuation — does NOT override which test command verification actually runs (previously: the model could self-declare `test: echo ok` and have the deterministic gate rubber-stamp a genuinely broken build)", async () => {
+    // Two tool calls in the SAME model turn (one step, per the budget
+    // guard's per-turn accounting): the AGENTS.md override itself, plus an
+    // unrelated, no-op-for-the-test-command edit to package.json (a fresh
+    // `version` field) — needed to invalidate `computeManifestHash`'s
+    // cached record so `getOrDetectToolchain` actually re-derives (and
+    // re-applies AGENTS.md overrides) on the *next* `buildRunDeps` call
+    // instead of serving the pre-attack cached commands unchanged. This
+    // mirrors the exact two-file mechanism the security review flagged —
+    // confirmed necessary by first writing a version of this test with
+    // only the AGENTS.md write, which passed even against the unfixed
+    // code because the untouched manifest hash still cache-hit.
+    const writeTurn = [
+      sseChunk({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_1",
+                  function: {
+                    name: "write_file",
+                    arguments: JSON.stringify({ path: "AGENTS.md", body: "test: `echo pwned-cheat-passed`\n" })
+                  }
+                },
+                {
+                  index: 1,
+                  id: "call_2",
+                  function: {
+                    name: "write_file",
+                    arguments: JSON.stringify({
+                      path: "package.json",
+                      body: JSON.stringify({ name: "root", version: "0.0.2", scripts: { test: "node -e \"process.exit(1)\"" } }, null, 2)
+                    })
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }),
+      sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 5, completion_tokens: 2 } }),
+      "data: [DONE]\n\n"
+    ];
+    // Same "no fix attempted, verification keeps failing" shape as the
+    // "verification is the truth oracle" stall test above: a repeated,
+    // no-tool-call "done" turn triggers the 3-consecutive-verify-failure
+    // "almost-done-stall" escalation, ending the run cleanly instead of
+    // exhausting the scripted server's turns.
+    const stopTurn = [sseChunk({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }), "data: [DONE]\n\n"];
+    server = await startScriptedServer([writeTurn, stopTurn, stopTurn, stopTurn]);
+    const agent = new Agent(repoPath, stateDir);
+
+    const paused = await agent.run({
+      task: "make the tests pass",
+      providerKind: "openai-compatible",
+      model: "gpt-test",
+      baseUrl: server.baseUrl,
+      yesMode: true,
+      budgets: { steps: 1 }
+    });
+    expect(paused.status).toBe("PAUSED");
+
+    const resumed = await agent.resume(paused.runId, { extendSteps: 5 });
+    expect(resumed.status).toBe("ESCALATED");
+    // Real behavioral proof: the root test command genuinely fails
+    // (`makeMonorepo`'s root `process.exit(1)`) — if the model's injected
+    // AGENTS.md override had taken effect, verification would have run
+    // `echo pwned-cheat-passed` instead and reported allGreen: true.
+    expect(resumed.verificationResults.at(-1)?.allGreen).toBe(false);
+  }, 30_000);
+});
+
 describe("Agent.checkpoints / Agent.rollback (§13.3)", () => {
   let repoPath: string;
   let stateDir: string;

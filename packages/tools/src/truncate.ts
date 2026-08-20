@@ -46,17 +46,31 @@ function truncateGeneric(text: string, budget: number, headLines: number, tailLi
 
 function truncateTestLog(text: string, budget: number, headLines: number, tailLines: number): string {
   const lines = text.split("\n");
-  const failureLines = lines.filter((l) => FAILURE_LINE_RE.test(l));
+  const failureLineCount = lines.filter((l) => FAILURE_LINE_RE.test(l)).length;
 
   if (text.length <= budget) return text;
 
-  const head = lines.slice(0, Math.min(headLines, lines.length));
-  const tail = lines.slice(Math.max(0, lines.length - tailLines));
-  const shownSet = new Set([...head, ...tail]);
-  const extraFailures = failureLines.filter((l) => !shownSet.has(l)).slice(0, 50);
+  const headCount = Math.min(headLines, lines.length);
+  const tailStart = Math.max(0, lines.length - tailLines);
+  const head = lines.slice(0, headCount);
+  const tail = lines.slice(tailStart);
+  // Real bug caught in round 3 of security review: dedup used to be a
+  // Set of shown-line *text*, so a failure signature that also happens to
+  // appear verbatim in the shown head/tail (e.g. a common error string
+  // like "Error: connect ECONNREFUSED 127.0.0.1:5432" repeating across
+  // many distinct failures — very typical in a real CI log) got filtered
+  // out of `extraFailures` for every OTHER, genuinely-omitted occurrence
+  // too, since string equality can't tell two identical-looking lines
+  // apart. Now dedup by *position*: a line is "shown" only if its index
+  // falls inside the actual head/tail window, matching the slices above.
+  const extraFailures = lines
+    .map((l, i) => ({ l, i }))
+    .filter(({ l, i }) => FAILURE_LINE_RE.test(l) && !(i < headCount || i >= tailStart))
+    .map(({ l }) => l)
+    .slice(0, 50);
 
   const parts = [
-    `Showing ${head.length + tail.length} of ${lines.length} lines; ${failureLines.length} failure signature(s) detected.`,
+    `Showing ${head.length + tail.length} of ${lines.length} lines; ${failureLineCount} failure signature(s) detected.`,
     ...head,
     "... (passing middle omitted) ...",
     ...tail

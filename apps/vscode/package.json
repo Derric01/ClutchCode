@@ -44,7 +44,8 @@
         "clutchcode.cliPath": {
           "type": "string",
           "default": "clutchcode",
-          "description": "Path to the `clutchcode` binary this extension spawns (`clutchcode serve`, §18.5) — override if it isn't on PATH."
+          "scope": "machine",
+          "description": "Path to the `clutchcode` binary this extension spawns (`clutchcode serve`, §18.5) — override if it isn't on PATH. Machine-scoped (not settable from a workspace's .vscode/settings.json): a repo that redirects this to an attacker-controlled path would get it executed the moment any ClutchCode command runs, with no prompt (real gap caught in round 3 of security review)."
         }
       }
     }

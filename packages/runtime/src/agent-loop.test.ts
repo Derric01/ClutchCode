@@ -177,6 +177,39 @@ describe("AgentLoop (end-to-end with a real worktree + FakeProvider)", () => {
       fx.cleanup();
     }
   }, 30_000);
+
+  it("escalates on a repeated tool call even when the model's emitted JSON key order varies between calls (real bug caught in round 3 of security review — the loop detector was wired with the raw argsJson *string*, not the parsed object, so stableStringify's key-order canonicalization never actually ran on real tool calls)", async () => {
+    const fx = setupAgentLoopFixture("run00000007");
+    try {
+      // Same semantic args (`{path: "math.js", window: {startLine: 1, endLine: 1}}`)
+      // every time, but the raw JSON text alternates key order — exactly
+      // the shape independent LLM completions can plausibly vary in.
+      const orderA = JSON.stringify({ path: "math.js", window: { startLine: 1, endLine: 1 } });
+      const orderB = JSON.stringify({ window: { startLine: 1, endLine: 1 }, path: "math.js" });
+      const provider = new FakeProvider([
+        toolCallTurn("c1", "read_file", orderA),
+        toolCallTurn("c2", "read_file", orderB),
+        toolCallTurn("c3", "read_file", orderA),
+        toolCallTurn("c4", "read_file", orderB)
+      ]);
+      const state = createRunState({ runId: fx.run.runId, task: "stuck task, varying key order", provider: "fake", model: "fake" });
+
+      const loop = new AgentLoop(state, {
+        provider,
+        tools: fx.tools,
+        toolContext: fx.toolContext,
+        run: fx.run,
+        toolchainCommands: fx.toolchainCommands,
+        evidenceDir: fx.evidenceDir
+      });
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("ESCALATED");
+      expect(finalState.escalationReason).toMatch(/loop detected: repeated-call/);
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
 });
 
 describe("AgentLoop capability wiring (§4.2/§4.4/§4.5)", () => {

@@ -115,15 +115,32 @@ function decrypt(envelope: EncryptedEnvelope, machineKey: Buffer, passphrase: st
 }
 
 function readStore(configDir: string, machineKey: Buffer, passphrase: string): StoredAccounts {
+  return readStoreDetailed(configDir, machineKey, passphrase).accounts;
+}
+
+interface ReadStoreResult {
+  accounts: StoredAccounts;
+  /**
+   * True when `credentials.age` exists on disk but couldn't be decrypted
+   * (wrong/rotated machine key, corrupted/truncated file) — distinct from
+   * the file simply not existing yet. `fileStoreGet` doesn't need this
+   * distinction (a read returning "nothing" is the documented fail-closed
+   * contract either way), but a *write* absolutely does — see
+   * `fileStoreSet`/`fileStoreClear` below.
+   */
+  existedButUndecryptable: boolean;
+}
+
+function readStoreDetailed(configDir: string, machineKey: Buffer, passphrase: string): ReadStoreResult {
   const p = credentialFilePath(configDir);
-  if (!fs.existsSync(p)) return {};
+  if (!fs.existsSync(p)) return { accounts: {}, existedButUndecryptable: false };
   try {
     const envelope = JSON.parse(fs.readFileSync(p, "utf8")) as EncryptedEnvelope;
     const plaintext = decrypt(envelope, machineKey, passphrase);
-    if (plaintext === undefined) return {};
-    return JSON.parse(plaintext) as StoredAccounts;
+    if (plaintext === undefined) return { accounts: {}, existedButUndecryptable: true };
+    return { accounts: JSON.parse(plaintext) as StoredAccounts, existedButUndecryptable: false };
   } catch {
-    return {};
+    return { accounts: {}, existedButUndecryptable: true };
   }
 }
 
@@ -141,11 +158,27 @@ export function fileStoreGet(account: string, opts?: FileStoreOptions): string |
   return accounts[account];
 }
 
+/**
+ * Real bug caught in round 3 of security review: `fileStoreSet`/
+ * `fileStoreClear` used to call the always-silent `readStore` and trust
+ * its `{}` result unconditionally — indistinguishable from "nothing was
+ * ever stored" even when the *real* cause was an existing, undecryptable
+ * `credentials.age` (a rotated/deleted `machine.key`, a partial write from
+ * a killed process, disk corruption). Setting one account's key would
+ * then overwrite the whole file with just that one entry, silently and
+ * permanently discarding every other previously-stored credential with no
+ * warning. Both write paths now refuse to proceed (returning `false`, the
+ * same "could not store/remove it" signal the CLI layer already surfaces
+ * for every other write failure here) when the file exists but can't be
+ * read — the account being set/cleared still isn't recoverable from here,
+ * but at least nothing else already stored is destroyed alongside it.
+ */
 export function fileStoreSet(account: string, value: string, opts?: FileStoreOptions): boolean {
   try {
     const configDir = resolveConfigDir(opts);
     const machineKey = ensureMachineKey(configDir);
-    const accounts = readStore(configDir, machineKey, opts?.passphrase ?? "");
+    const { accounts, existedButUndecryptable } = readStoreDetailed(configDir, machineKey, opts?.passphrase ?? "");
+    if (existedButUndecryptable) return false;
     accounts[account] = value;
     writeStore(configDir, accounts, machineKey, opts?.passphrase ?? "");
     return true;
@@ -154,13 +187,14 @@ export function fileStoreSet(account: string, value: string, opts?: FileStoreOpt
   }
 }
 
-/** Returns `false` (not an error) when the account wasn't present — mirrors "nothing to remove" semantics used elsewhere in this codebase's credential commands. */
+/** Returns `false` (not an error) when the account wasn't present, or when the store exists but can't be decrypted — mirrors "nothing to remove"/"couldn't do it" semantics used elsewhere in this codebase's credential commands. */
 export function fileStoreClear(account: string, opts?: FileStoreOptions): boolean {
   try {
     const configDir = resolveConfigDir(opts);
     if (!fs.existsSync(credentialFilePath(configDir))) return false;
     const machineKey = ensureMachineKey(configDir);
-    const accounts = readStore(configDir, machineKey, opts?.passphrase ?? "");
+    const { accounts, existedButUndecryptable } = readStoreDetailed(configDir, machineKey, opts?.passphrase ?? "");
+    if (existedButUndecryptable) return false;
     if (!(account in accounts)) return false;
     delete accounts[account];
     writeStore(configDir, accounts, machineKey, opts?.passphrase ?? "");
