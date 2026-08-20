@@ -200,3 +200,50 @@ otherwise be lost between sessions. Read it at the start of every session
 and keep it current at the end of one. It is not a duplicate of this file:
 `CLAUDE.md` is timeless working conventions; `HANDOFF.md` is the
 time-stamped snapshot of where the project actually is right now.
+
+## Autonomous continuation ("start work" / "refer the handoff and work")
+
+This repo supports a lightweight autonomous-continuation convention, driven
+by two trigger phrases and two matching project skills
+(`.claude/skills/start-work/`, `.claude/skills/refer-handoff/`) that pattern-
+match on them:
+
+- **"start work"** (said any time, mid-session or otherwise) — spawn one
+  background subagent (`general-purpose`) with a self-contained prompt:
+  read this file and `HANDOFF.md`, pick the next unit of work per the
+  priority order below, complete it end to end, then report back. Don't
+  block on it and don't fabricate a result — when its completion
+  notification arrives, relay what it actually did to the user faithfully
+  (what was done, what was verified, what's still open), not just "done."
+- **"refer the handoff and work"** (and close variants — "refer handoff
+  and work", "check the handoff and continue") — typically said to open a
+  fresh session with no other context. Skip the subagent: you're already
+  the fresh executor. Read `HANDOFF.md` and this file yourself right now,
+  pick the next unit of work, and start immediately — no clarifying
+  questions first; the whole point of the phrase is "you already have
+  enough context in HANDOFF.md, go."
+
+Both paths do the *same* work, just with a different executor. Picking the
+next unit of work, in priority order:
+
+1. An explicitly deferred/incomplete item flagged in `HANDOFF.md`'s latest
+   "what's done" entry (e.g. a subagent audit that hit a rate limit
+   mid-round, or a finding documented but not yet fixed) — finish that
+   first.
+2. The top row of `HANDOFF.md`'s "What's left" table.
+3. If neither exists, run another audit round using the methodology
+   documented in `HANDOFF.md`'s most recent review-round write-up (fan out
+   parallel subagents across areas not recently covered, verify every
+   finding empirically before trusting it — see "Fixing a bug or
+   vulnerability" above — fix what's confirmed real).
+
+Do the work following every convention already in this file (real tests,
+the "prove it, don't assume it" fix discipline, the full build/test/lint
+loop before committing) and whatever git branch/commit/PR conventions are
+already in force for the session — don't invent new ones. Finish the same
+way any unit of work in this repo finishes (see above): build/test/lint
+clean, `README.md`'s Status section updated if the work is user-visible,
+`HANDOFF.md` updated (snapshot header + a new "what's done" entry, matching
+the established write-up depth), and — only if the work surfaced a
+genuinely new, durable lesson, not a one-off status update — this file
+updated too.

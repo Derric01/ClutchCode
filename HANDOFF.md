@@ -7,11 +7,11 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-20
 **Branch:** `claude/handoff-prompt-continuation-c2cxh9`
-**Latest commit:** `853a4af` — "fix: eighteen vulnerabilities and correctness bugs from a full-codebase security+correctness review round"
+**Latest commit:** `d2bee22` — "feat: add \"start work\" / \"refer the handoff and work\" autonomous-continuation convention"
 **Test suite:** 653/653 passing, 75 test files, clean `tsc -b`, clean `eslint .`
 
-**PR:** [#11](https://github.com/Derric01/ClutchCode/pull/11) — open,
-not yet merged. #10 merged cleanly, as did #4–#9 before it. Pattern
+**PR:** [#12](https://github.com/Derric01/ClutchCode/pull/12) — open,
+not yet merged. #11 merged cleanly, as did #4–#10 before it. Pattern
 established across every phase so far: one open PR per phase of work,
 never reused once merged, branch always restarted from `main`'s merged
 tip before new commits land on it.
@@ -707,6 +707,35 @@ left."
 608 → 653 tests (45 new), clean `tsc -b`, clean `eslint .`. One review
 agent (sandbox/policy/redaction/tier1) did not complete — hit a session
 API limit — and is genuinely unreviewed this round, not silently skipped.
+
+### Autonomous-continuation convention ("start work" / "refer the handoff and work")
+
+Not a code change — a process convention, requested directly: two trigger
+phrases that let a session pick up this project's own continuation loop
+without needing the exact task re-explained each time.
+
+- **"start work"** spawns a background `general-purpose` subagent that
+  reads `CLAUDE.md` + `HANDOFF.md`, picks the next unit of work, does it
+  end to end (tests, the verify-before-fix discipline, build/test/lint,
+  HANDOFF.md update, commit/push), and reports back — the orchestrating
+  session relays that report to the user rather than fabricating one.
+- **"refer the handoff and work"** (typically the first message of a
+  fresh session) skips the subagent — the session itself reads
+  `HANDOFF.md` + `CLAUDE.md` and starts the same work directly, no
+  clarifying questions.
+
+Implemented as two project skills (`.claude/skills/start-work/SKILL.md`,
+`.claude/skills/refer-handoff/SKILL.md`) that pattern-match the trigger
+phrases and point back at a new `CLAUDE.md` section, "Autonomous
+continuation," which is the actual source of truth: it defines the shared
+priority order for "what's the next unit of work" (an explicitly deferred
+item from this file's latest "what's done" entry first, then the top row
+of "What's left" below, then another audit round per the most recent
+review round's methodology if neither exists) so both trigger phrases stay
+in lockstep with each other and can't drift apart. Kept the actual
+playbook in one place (`CLAUDE.md`) rather than duplicated across both
+skill files, for the same "one shared thing, not two that can drift"
+reason as this session's `assertSafeRunId` fix.
 
 ---
 
