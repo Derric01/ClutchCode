@@ -10,10 +10,11 @@ file is the time-stamped snapshot of where the project actually stands.
 **Latest commit:** `d2bee22` — "feat: add \"start work\" / \"refer the handoff and work\" autonomous-continuation convention"
 **Test suite:** 653/653 passing, 75 test files, clean `tsc -b`, clean `eslint .`
 
-**PR:** to be opened for this round (#11 merged cleanly, as did #4–#10
-before it). Pattern established across every phase so far: one open PR
-per phase of work, never reused once merged, branch always restarted
-from `main`'s merged tip before new commits land on it.
+**PR:** [#12](https://github.com/Derric01/ClutchCode/pull/12) — open,
+not yet merged. #11 merged cleanly, as did #4–#10 before it. Pattern
+established across every phase so far: one open PR per phase of work,
+never reused once merged, branch always restarted from `main`'s merged
+tip before new commits land on it.
 
 ---
 
