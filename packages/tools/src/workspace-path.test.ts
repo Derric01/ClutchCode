@@ -53,4 +53,43 @@ describe("resolveInWorkspace", () => {
     fs.symlinkSync(path.join(workspace, "real-target"), path.join(workspace, "alias"));
     expect(resolveInWorkspace(workspace, "alias/file.txt").inside).toBe(true);
   });
+
+  it("follow-up gap: a DANGLING symlink (target doesn't exist yet) pointing outside the workspace is NOT reported as inside — reproduced for real, confirmed the pre-fix code reports this as inside AND that write_file's own fs.writeFileSync genuinely follows it (see read-write-edit.test.ts)", () => {
+    const outsideDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "clutchcode-workspace-path-dangling-"));
+    try {
+      const target = path.join(outsideDir, "pwned.txt");
+      expect(fs.existsSync(target)).toBe(false); // the target must not exist yet — that's the whole bug
+      fs.symlinkSync(target, path.join(workspace, "link"));
+      const { inside } = resolveInWorkspace(workspace, "link");
+      expect(inside).toBe(false);
+    } finally {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it("a dangling symlink whose target is genuinely inside the workspace is still correctly reported as inside", () => {
+    fs.mkdirSync(path.join(workspace, "sub"));
+    fs.symlinkSync(path.join(workspace, "sub", "not-created-yet.txt"), path.join(workspace, "link"));
+    expect(resolveInWorkspace(workspace, "link").inside).toBe(true);
+  });
+
+  it("`real` resolves a same-workspace symlink alias to its actual target — the follow-up denylist-bypass gap this field exists to close (see the tool-layer test in read-write-edit.test.ts)", () => {
+    fs.writeFileSync(path.join(workspace, ".env"), "SECRET=1\n", "utf8");
+    fs.symlinkSync(path.join(workspace, ".env"), path.join(workspace, "notenv.txt"));
+    const { real, inside } = resolveInWorkspace(workspace, "notenv.txt");
+    expect(inside).toBe(true); // still correctly inside — this was never the escape bug
+    expect(real).toBe(fs.realpathSync(path.join(workspace, ".env")));
+  });
+
+  it("a chain of symlinks (some dangling) that eventually escapes the workspace is NOT reported as inside", () => {
+    const outsideDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "clutchcode-workspace-path-chain-"));
+    try {
+      const finalTarget = path.join(outsideDir, "final.txt");
+      fs.symlinkSync(finalTarget, path.join(workspace, "hop2")); // dangling, points outside
+      fs.symlinkSync(path.join(workspace, "hop2"), path.join(workspace, "hop1")); // points at hop2
+      expect(resolveInWorkspace(workspace, "hop1").inside).toBe(false);
+    } finally {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
 });

@@ -46,9 +46,13 @@ export const readFileTool: Tool<ReadFileArgs, ReadFileData> = {
   },
 
   async run(args, ctx: ToolContext): Promise<ToolResult<ReadFileData>> {
-    const { abs, inside } = resolveInWorkspace(ctx.workspaceRoot, args.path);
+    const { abs, real, inside } = resolveInWorkspace(ctx.workspaceRoot, args.path);
     if (!inside) return fail("path-outside-workspace", `refusing to read outside the workspace: ${args.path}`);
-    if (ctx.denylist.isDenied(abs)) return fail("denylisted", `path is on the secrets denylist: ${args.path}`);
+    // Denylist-check the *real*, symlink-resolved target — not the
+    // requested name — so a same-workspace symlink alias (e.g.
+    // `notenv.txt -> .env`) can't read a denylisted file's content under
+    // an innocuous-looking name (real gap, see workspace-path.ts).
+    if (ctx.denylist.isDenied(real)) return fail("denylisted", `path is on the secrets denylist: ${args.path}`);
 
     const decision = ctx.policy.decide({
       permissionClass: "READ",

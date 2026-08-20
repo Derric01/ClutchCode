@@ -416,6 +416,40 @@ Full breakdown, including the five confirmed-real git-worktree
 correctness findings deferred this round, in `HANDOFF.md`'s "what's
 done"/"what's left."
 
+**The round-3 sandbox/policy/redaction audit that hit a session limit
+mid-run was completed this round** — `policy.ts`, `denylist.ts`,
+`destructive.ts`, `env.ts`, `redactor.ts`, `tier1-linux.ts`,
+`tier1-macos.ts`, and `seccomp-linux.ts` (the syscall table cross-checked
+in full against this host's authoritative kernel header, not just the
+subset the existing real-bwrap tests exercise — all 22 numbers match).
+Three real, independently-reproduced gaps found and fixed, each with a
+regression test proven to fail against the pre-fix code and pass after:
+(1) a **follow-up gap in the round-2 workspace-symlink fix** —
+`resolveInWorkspace` judged "does this exist" with `fs.existsSync`, which
+follows a symlink, so a *dangling* symlink (its target doesn't exist yet)
+reported false exactly like an ordinary not-yet-created path and got
+re-appended unresolved instead of dereferenced; confirmed a dangling
+symlink pointing outside the workspace made `write_file` genuinely create
+a file there, with `inside: true` and no approval prompt. Fixed by
+resolving one symlink hop at a time (tolerating a dangling target) instead
+of a single `existsSync`-gated `realpathSync` call. (2) **`rm -rf`
+detection bypassable by flag order or short/long-form mixing** — the
+pure-regex pattern list only matched a fixed set of concrete spellings;
+`rm -f -r x`, `rm --force -r x`, `rm -f --recursive x`, and `rm --recursive
+x` (alone) are all functionally identical to already-flagged spellings per
+POSIX/GNU option parsing but slipped through untouched. Fixed by
+tokenizing each `rm` invocation's own argument list and checking for
+recursion independent of order/form, closing the whole reordering class at
+once. (3) **the §5.3 secrets denylist checked the requested path's
+basename, never the real target** — a same-workspace symlink alias (e.g.
+`notenv.txt -> .env`, never crossing the workspace boundary) sailed past
+the denylist on both `read_file` and `write_file`/`edit_file`; confirmed
+`read_file` returned a live `.env`'s content verbatim through such an
+alias. Fixed by having `resolveInWorkspace` return the fully-resolved real
+path alongside the existing containment flag, and denylist-checking that
+instead of the requested name at all three call sites. 664 tests total (11
+new), clean `tsc -b`, clean `eslint .`.
+
 ## Repository layout
 
 ```

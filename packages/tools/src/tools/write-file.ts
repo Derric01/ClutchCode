@@ -44,7 +44,7 @@ export const writeFileTool: Tool<WriteFileArgs, WriteFileData> = {
   },
 
   async run(args, ctx: ToolContext): Promise<ToolResult<WriteFileData>> {
-    const { abs, inside } = resolveInWorkspace(ctx.workspaceRoot, args.path);
+    const { abs, real, inside } = resolveInWorkspace(ctx.workspaceRoot, args.path);
     const submodule = inside && isInsideAnySubmodule(args.path, ctx.submodulePaths);
 
     const decision = ctx.policy.decide({
@@ -61,7 +61,11 @@ export const writeFileTool: Tool<WriteFileArgs, WriteFileData> = {
         decision.reason
       );
     }
-    if (ctx.denylist.isDenied(abs)) {
+    // Denylist-check the *real*, symlink-resolved target — not the
+    // requested name — so a same-workspace symlink alias can't overwrite
+    // a denylisted file's real content under an innocuous-looking name
+    // (real gap, see workspace-path.ts).
+    if (ctx.denylist.isDenied(real)) {
       return fail("denylisted", `refusing to write a denylisted path: ${args.path}`);
     }
 

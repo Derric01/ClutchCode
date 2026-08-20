@@ -59,6 +59,23 @@ describe("read_file / write_file / edit_file", () => {
     expect(w.error?.code).toBe("denylisted");
   });
 
+  it("read_file refuses to read a denylisted file through a same-workspace symlink alias with an innocuous name (real gap: the denylist checked the requested name's basename, not the real resolved target, so `notenv.txt -> .env` — both inside the workspace, never an escape — read the real .env content straight through)", async () => {
+    fs.writeFileSync(path.join(workspace, ".env"), "SUPER_SECRET_API_KEY=abc123\n", "utf8");
+    fs.symlinkSync(path.join(workspace, ".env"), path.join(workspace, "notenv.txt"));
+    const r = await readFileTool.run({ path: "notenv.txt" }, ctx);
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe("denylisted");
+  });
+
+  it("write_file refuses to write through a same-workspace symlink alias onto a denylisted file (same mechanism as the read case above, but for tampering with e.g. .env/.netrc/.git-credentials under an innocuous alias name)", async () => {
+    fs.writeFileSync(path.join(workspace, ".env"), "ORIGINAL=1\n", "utf8");
+    fs.symlinkSync(path.join(workspace, ".env"), path.join(workspace, "notenv.txt"));
+    const w = await writeFileTool.run({ path: "notenv.txt", body: "TAMPERED=1\n" }, ctx);
+    expect(w.ok).toBe(false);
+    expect(w.error?.code).toBe("denylisted");
+    expect(fs.readFileSync(path.join(workspace, ".env"), "utf8")).toBe("ORIGINAL=1\n");
+  });
+
   it("read_file returns not-found for a missing file", async () => {
     const r = await readFileTool.run({ path: "nope.txt" }, ctx);
     expect(r.ok).toBe(false);
@@ -93,6 +110,21 @@ describe("read_file / write_file / edit_file", () => {
       const r = await readFileTool.run({ path: "shared/secret.txt" }, ctx);
       expect(r.ok).toBe(false);
       expect(r.error?.code).toBe("path-outside-workspace");
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("write_file refuses to escape the workspace through a DANGLING symlink (follow-up gap in the round-3 fix above, reproduced for real: fs.existsSync follows a symlink to judge existence, so a symlink whose *target* doesn't exist yet reported false — same as an ordinary not-yet-created file — and was re-appended unresolved instead of dereferenced, so resolveInWorkspace said 'inside' and fs.writeFileSync then genuinely created the file outside the workspace by following the broken symlink itself, exactly like a real POSIX open(..., O_CREAT) would)", async () => {
+    const outside = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "clutchcode-symlink-dangling-outside-"));
+    try {
+      const target = path.join(outside, "pwned.txt");
+      expect(fs.existsSync(target)).toBe(false); // the target must not exist yet — that's the whole bug
+      fs.symlinkSync(target, path.join(workspace, "link"));
+      const w = await writeFileTool.run({ path: "link", body: "attacker-controlled content" }, ctx);
+      expect(w.ok).toBe(false);
+      expect(w.error?.code).toBe("path-outside-workspace");
+      expect(fs.existsSync(target)).toBe(false);
     } finally {
       fs.rmSync(outside, { recursive: true, force: true });
     }
