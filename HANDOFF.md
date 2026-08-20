@@ -5,16 +5,15 @@ session; update it before you stop. See `CLAUDE.md` for timeless working
 conventions (build/test/lint, testing philosophy, quality bar) — this
 file is the time-stamped snapshot of where the project actually stands.
 
-**Snapshot as of:** 2026-08-18
+**Snapshot as of:** 2026-08-20
 **Branch:** `claude/handoff-prompt-continuation-c2cxh9`
-**Latest commit:** `5b9c954` — "fix: eight vulnerabilities and correctness bugs found by a full-history security review"
-**Test suite:** 608/608 passing, 69 test files, clean `tsc -b`, clean `eslint .`
+**Latest commit:** `853a4af` — "fix: eighteen vulnerabilities and correctness bugs from a full-codebase security+correctness review round"
+**Test suite:** 653/653 passing, 75 test files, clean `tsc -b`, clean `eslint .`
 
-**PR:** [#10](https://github.com/Derric01/ClutchCode/pull/10) — open,
-not yet merged. #9 merged cleanly, as did #4–#8 before it. Pattern
-established across every phase so far: one open PR per phase of work,
-never reused once merged, branch always restarted from `main`'s merged
-tip before new commits land on it.
+**PR:** to be opened for round 3 (#10 merged cleanly, as did #4–#9 before
+it). Pattern established across every phase so far: one open PR per
+phase of work, never reused once merged, branch always restarted from
+`main`'s merged tip before new commits land on it.
 
 ---
 
@@ -532,6 +531,182 @@ a bug-bounty-grade exhaustive audit — the honest claim is "these eight
 were confirmed real (or, for the ninth, confirmed *not* real) and
 fixed/corrected," not "this codebase now has zero security issues."
 
+### Round 3 — full-codebase security + correctness review, every package not yet reviewed
+Requested as "fix everything and do another round." Fanned out 9 parallel
+subagents (`Agent` tool, `general-purpose`, background) across every
+package the first two rounds hadn't touched: agent-rpc (the untrusted RPC
+boundary), credentials/keychain/config, all tool implementations,
+sandbox/policy/redaction, the rest of the git package, the runtime/
+workflow engine, provider adapters, the CLI + VS Code extension, and
+capability/verification (including cheat-detection — the layer that
+exists specifically to catch a model gaming the deterministic gate). One
+agent (sandbox/policy) hit a session API limit mid-run and never
+completed — genuinely not reviewed this round, listed under "what's
+left." The other 8 returned, in total, ~25 candidate findings; 18 were
+independently reproduced for real and fixed, each with a new regression
+test, 16 of the 18 verified with the full `git stash` revert-and-recheck
+cycle (the CLI fixes and the VS Code `package.json` scope fix are the two
+whose correctness is unambiguous from their own assertions — spawning the
+real compiled binary and reading the raw JSON schema respectively, no
+ambiguity to double-check). A handful of git-worktree/dirty-tree
+correctness findings were confirmed real but deferred — see "what's
+left."
+
+**Most severe, in order:**
+
+1. **§13.1 `runId` path traversal beyond `createRunWorktree`** — round 2
+   validated `runId` only at worktree *creation*; three independent
+   subagents (credentials, runtime, agent-rpc audits) converged on the
+   same finding: every *read/mutate* path — `RunStateStore.load/save/
+   delete`, `worktree-store.ts`'s `loadRunWorktree`/`saveRunWorktree`,
+   `events.ts`'s `appendEvent`/`readEvents`, and `agent-rpc`'s
+   `requireRunId` — built a path from a caller-supplied `runId` with zero
+   validation, reachable via `diff`/`approve`/`reject`/`resume`/`inspect`/
+   `checkpoints`/`rollback`/`pr`, several of which chain into real,
+   destructive `git` operations (`reset --hard`, `clean -fd`, `worktree
+   remove --force`) against whatever `worktreePath` a traversed-to file
+   happened to name. Fixed by extracting one shared validator
+   (`assertSafeRunId`, `@clutchcode/git`'s new `run-id.ts`) and wiring it
+   into every one of those choke points, plus the RPC boundary itself as
+   defense-in-depth — this is also the concrete story behind the new
+   "fix the class, not the instance" convention in `CLAUDE.md`.
+2. **Workspace-path symlink escape** — `resolveInWorkspace` (used by
+   `read_file`/`write_file`/`edit_file`) decided "inside the workspace"
+   by pure string-prefix matching on `path.resolve()` output, never
+   resolving a symlink. A symlinked directory inside the workspace
+   pointing outside it (checked into a repo, or created via `shell`
+   earlier in the same run) made `inside: true` — reproduced for real: a
+   `write_file` through such a symlink genuinely wrote outside the
+   workspace, with the `PolicyEngine` granting a bare `ALLOW` and no
+   approval prompt at all, since the flag it decides on was already
+   wrong. Same mechanism gives `read_file` an arbitrary-file-read
+   primitive. Fixed by resolving the real path of the deepest *existing*
+   ancestor (the leaf usually doesn't exist yet — that's the whole point
+   of `write_file`) and checking containment against that.
+3. **AGENTS.md override trust boundary (§10.3 point 4)** — `agentsMdContent`
+   was read from the *live* worktree, which the model itself is actively
+   editing. Reproduced precisely: a scripted model turn writes `AGENTS.md`
+   with `test: echo pwned-cheat-passed` plus an unrelated `package.json`
+   touch (needed to invalidate `computeManifestHash`'s cache — the exact
+   two-file mechanism the review flagged), the run pauses on its step
+   budget, and a subsequent `resume()` — which re-derives toolchain
+   commands from the now-modified worktree — genuinely ran the fake
+   `echo` command instead of the real, failing root test and reached
+   `DONE` with the broken build auto-committed (`--yes` mode). This is a
+   full bypass of the deterministic verification gate the whole project
+   is built around. Fixed by reading `AGENTS.md` from the run's *base
+   commit* (`git show <baseCommit>:AGENTS.md`) instead of the live
+   worktree — an override only takes effect if it existed before this
+   run's own edits, which is what "human-authored" actually means here.
+4. **Cheat-detection gaps** (`packages/verification/src/cheat-detection.ts`,
+   the layer that exists specifically to catch a model gaming the
+   deterministic gate) — four separate, independently-reproduced holes: a
+   bare `catch {}` (ES2019+ optional catch binding, no parens) wasn't
+   matched by the swallowed-error regex, which required `(...)`; the
+   trivial-assertion detector only recognized literal `true`/`1==1`
+   shapes, missing e.g. `expect(1).toBe(1)`; `checkHardcodedOutput`'s
+   `<=2` added-line threshold counted comment lines, so two harmless
+   `// comment` lines padded past a real hardcoded-literal collapse
+   undetected; and `checkSnapshotEdit`'s "there's a source rationale"
+   exemption fired for *any* other non-test file changed anywhere in the
+   diff, not one actually related to the snapshot's subject. Fixed with a
+   no-paren regex alternative, a whitespace-tolerant self-equality
+   pattern, comment-stripping before the threshold check, and a
+   `baseStem`-based subject-relatedness check for the snapshot exemption.
+5. **Diff-parser content-loss bug** (`diff-parser.ts`) — the file-header
+   skip (`line.startsWith("+++") || line.startsWith("---")`) matched any
+   line with that prefix, not just the genuine `+++ b/path`/`--- a/path`
+   header lines — an added line whose real content starts with `++`
+   (renders `+++x; ...`) or a removed line starting with `--` was
+   silently dropped before any cheat check ever saw it, letting e.g. a
+   skip-marker addition hide inside a line shaped that way. Fixed by
+   tracking whether a hunk (`@@ ... @@`) has been seen yet per file —
+   header lines only ever appear before the first hunk.
+6. **`classifyFailure` lint/typecheck `ENV_ERROR_RE` gap** — `build`/`test`
+   both check `ENV_ERROR_RE` before trusting their own stage name (an
+   environment failure — `ECONNREFUSED`, disk-full — isn't a task the
+   model can fix by editing code); `lint`/`typecheck` skipped that check
+   entirely, exactly the misclassification the surrounding comment warns
+   against for the other two stages. Fixed by mirroring the check.
+7. **Loop-detector key-order blind spot** (`agent-loop.ts` →
+   `loop-detector.ts`) — `recordToolCall` was wired with the raw
+   `argsJson` *string*, not the parsed object, so `stableStringify`'s
+   whole documented purpose (canonicalize by sorted key order, so two
+   calls with the same semantic args but differently-ordered JSON hash
+   identically) never actually ran — it short-circuits to
+   `JSON.stringify` on a non-object. Fixed by parsing `argsJson` before
+   handing it to the detector, falling back to the raw string only on a
+   parse failure.
+8. **Provider stream-failure masking** (`openai-compatible.ts` +
+   `anthropic.ts`) — three sub-bugs each, same root cause: a stream that
+   ends (connection drop, in-band `{error:...}`/`event: error` with no
+   `choices`/prior `stop_reason`) without ever producing a chunk the loop
+   recognizes as terminal used to fall through silently, and `collect()`
+   defaults `finishReason` to `"stop"` — a truncated or failed turn was
+   reported as a normal, complete one. Also: OpenAI's `content_filter`
+   and Anthropic's `refusal` finish/stop reasons fell through to `default`
+   → `"stop"` instead of `"error"`; Anthropic's in-stream `error` event
+   was hardcoded `retryable: false` regardless of the error's actual
+   type (`overloaded_error` is Anthropic's own documented transient
+   condition, same tier as an HTTP 529). Fixed with a `sawTerminal` flag
+   yielding an explicit error if the stream ends without one, explicit
+   `content_filter`/`refusal` → `"error"` mappings, and a
+   `RETRYABLE_ANTHROPIC_ERROR_TYPES` set driving `retryable` from the
+   error's real type.
+9. **CLI `NaN` budget bypass** — `(v) => parseInt(v, 10)`/`parseFloat`
+   silently produce `NaN` for a typo'd flag value, and the only check
+   downstream is `!== undefined` (true for `NaN`) — reproduced for real:
+   `clutchcode run ... --max-steps five` genuinely ran with the step
+   budget silently set to `NaN` (visible verbatim in the CLI's own status
+   output as `steps: 1/NaN`), since every `>=` comparison against `NaN`
+   is `false`. Fixed with `parseIntArg`/`parseFloatArg` wrappers that
+   throw `InvalidArgumentError` on `NaN`, giving a clean CLI rejection.
+10. **CLI `--squash` always-on** — a plain `--squash` boolean defaulting
+    to `true` had no `--no-squash` counterpart, so `ApproveOptions.squash
+    === false` (a real, different `git merge --no-ff` code path in
+    `approveRun`, preserving full checkpoint history) could never
+    actually be reached from the CLI — reproduced: `--no-squash` errored
+    "unknown option." Fixed by registering `--no-squash` instead (commander
+    auto-negates the same underlying boolean).
+11. **VS Code `cliPath` workspace-setting hijack** — `clutchcode.cliPath`
+    had no `scope` declared (defaulting to `window`, settable from a
+    workspace's own `.vscode/settings.json`), so any repo could redirect
+    which binary the extension spawns with no prompt. Fixed by declaring
+    `"scope": "machine"` — can only be set in User/Remote settings per
+    VS Code's own documented contract. **Caveat, stated plainly:** no
+    real VS Code extension host exists in this environment, so this can't
+    be exercised end-to-end; the new test only proves the schema
+    declaration itself is present and hasn't regressed.
+12. **Credential-file-store silent data loss** — `fileStoreSet`/
+    `fileStoreClear` treated any decrypt/parse failure of an *existing*
+    `credentials.age` (rotated machine key, corrupted/truncated file)
+    identically to "nothing stored yet," then silently overwrote the
+    file with just the one account being touched — reproduced by
+    corrupting a two-account store and confirming the corrupted bytes
+    used to get clobbered by a fresh single-account envelope. Fixed by
+    threading through an `existedButUndecryptable` flag from a new
+    `readStoreDetailed` and refusing to write when it's set — `fileStoreGet`'s
+    documented always-silent read contract is untouched.
+13. **Truncate.ts positional-dedup bug** — `extraFailures` deduped shown
+    vs. omitted failure lines by *text*, not position, so a repeated
+    error string (very typical in a real CI log) appearing once in the
+    shown head and again, genuinely distinctly, deep in the omitted
+    middle made the omitted occurrence invisible. Fixed by tracking shown
+    line *indices* instead of a text `Set`.
+14. **Test-selection basename-only matching** — `selectImpactedTests`
+    matched a changed file to a test file by basename alone, no
+    directory relationship check, so an unrelated same-named test file
+    anywhere else in the repo satisfied "this file was mapped" and
+    suppressed the full-suite fallback while the real (different-
+    basename) test never ran. Fixed with a `relatedDirs` check (same
+    directory, a conventional test subdirectory, or a top-level `src/`+
+    `test/`-style sibling split) — deliberately conservative so two
+    same-parent module directories with unrelated names don't count.
+
+608 → 653 tests (45 new), clean `tsc -b`, clean `eslint .`. One review
+agent (sandbox/policy/redaction/tier1) did not complete — hit a session
+API limit — and is genuinely unreviewed this round, not silently skipped.
+
 ---
 
 ## What's left
@@ -552,6 +727,9 @@ loose "MVP" estimate.
 | PageRank repo map | §9, Phase 7 | medium | Tier 0 (ripgrep + on-demand tree-sitter) is what's live; the Aider-style PageRank map is Tier 1, triggered by measured retrieval-accuracy failures on large repos, not built preemptively. |
 | Eval scoreboard | §16, Phase 8 | medium–large | The replay harness (§16.3c) is live and gates every phase; the full SWE-bench-Verified-subset + Terminal-Bench-style scoreboard with published methodology is not. |
 | Multi-agent orchestration | §7, Phase 9 | large | Explicitly out of scope until the §7 rule justifies it — the spec argues *against* building this by default. Don't start it without re-reading §7's reasoning first. |
+| Sandbox/policy/redaction security audit | §12/§5.2 | small–medium, do first | The round-3 review's 9th subagent (`packages/sandbox/src/policy.ts`, `denylist.ts`, `destructive.ts`, `env.ts`, `redactor.ts`, `tier1-linux.ts`, `tier1-macos.ts`, plus `seccomp-linux.ts` beyond the already-fixed temp-path issue) hit a session API limit mid-run and never completed. Genuinely unreviewed, not silently skipped — this is one of the highest-value places to point the next review round, since it's the OS-confinement + secret-redaction layer. |
+| Git worktree/dirty-tree correctness findings (round 3, confirmed real, not yet fixed) | §13.1/§13.3 | small each | Five confirmed-real correctness bugs from the round-3 git-package audit, deferred for scope: (1) `checkpoint()`'s `git status --porcelain` call uses `allowFailure: true` right after `add -A`, so a real git error (index lock, disk error) is swallowed and misread as "nothing changed," silently skipping a checkpoint that should have been created — fix by not using `allowFailure` there. (2) `approveRun`/`discardRun` call `restoreStash` with no error handling *after* the merge/discard already succeeded — a stash-pop conflict then throws an exception for an operation that actually completed, potentially leaving literal conflict markers in the just-merged tree. (3) `dirty-tree.ts` identifies the auto-stash by the positional ref `stash@{0}`, captured once at push time and reused verbatim at restore time — if any other `git stash` happens on the repo in between (a plausible manual stash by the user during a long-running agent run), `restoreStash` pops the wrong entry. Fix by capturing `git rev-parse stash@{0}` (a stable SHA) at push time and resolving it back to its current position at restore time. (4) Neither dirty-tree strategy preserves the original staged/unstaged split (`stash pop` without `--index`; temp-commit's `add -A` stages everything) despite a code comment claiming the tree is "left exactly as it was" — fix with `stash pop --index` and a staged-set-preserving temp-commit path. (5) `createRunWorktree` runs `handleDirtyTree` (destructive: stashes/temp-commits) before the still-fallible `git worktree add` — a failure there (branch collision, disk error) leaves an orphaned stash with no automatic recovery path, since the `RunWorktree` object that would carry `dirtyTreeResult.stashRef` back to the caller is never constructed. Fix by wrapping the post-stash steps in try/catch and surfacing/restoring the stash on failure. |
+| `snapshot-backup.ts` `relPath` traversal (round 3, confirmed real, currently unreachable) | §13.4 | small | `snapshotBeforeFirstEdit`/`rollback` join a caller-supplied `relPath` into `workspaceRoot`/`backupDir` with no traversal guard — the same class of bug fixed for `runId` elsewhere. Currently dead code (`agent.ts`'s `run()` throws before ever constructing a `SnapshotBackup` — the non-git execution path isn't wired up yet, see the "Full non-git AgentLoop execution path" row above), but it's an exported public API with no traversal test coverage, and the code comments explicitly plan to wire it up later. Fix with the same `assertSafeRunId`-style pattern before that wiring happens, not after. |
 
 ## Known gotchas (read before you hit them again)
 
@@ -679,6 +857,51 @@ loose "MVP" estimate.
   to validate the value's *shape* (e.g. "must be a bare digit string"),
   not just its absence of malice — a value that's merely "not obviously
   a flag" can still smuggle one in via its own leading dash.
+- **`getOrDetectToolchain`'s cache means an AGENTS.md-content change alone
+  is invisible to it mid-run — you need a manifest-file change too.**
+  `computeManifestHash` only hashes `MANIFEST_FILES` (`package.json`,
+  lockfiles, etc.), not `AGENTS.md` itself, so writing a new `AGENTS.md`
+  with nothing else changed leaves the cached record's hash matching and
+  the cache hit returns the *old* (pre-edit) derived commands unchanged —
+  the AGENTS.md override never gets re-applied. This bit reproducing the
+  round-3 AGENTS.md trust-boundary exploit directly: a first test version
+  that only wrote `AGENTS.md` passed even against the pre-fix code, for
+  the wrong reason (cache hit, not the fix). The real trigger needs a
+  manifest-file touch alongside the AGENTS.md edit (a `package.json`
+  field bump is enough) to force `getOrDetectToolchain` to actually
+  re-derive. If a fix "doesn't seem to do anything" in a toolchain-memory-
+  adjacent test, check whether the scenario ever invalidates the cache at
+  all.
+- **A resumed run's `buildRunDeps` runs a second time; a plain `run()`'s
+  doesn't, mid-loop.** `toolchainCommands` (and everything else
+  `buildRunDeps` derives) is computed once at the top of `run()` and
+  reused unchanged for every repair iteration within that same call — a
+  model editing something `buildRunDeps` reads (AGENTS.md, config) mid-run
+  has no effect on that run's own remaining verification. `resume()` is a
+  *separate* top-level call that re-invokes `buildRunDeps` against
+  whatever the worktree now contains. Any exploit/bug hypothesis of the
+  shape "the model edits X mid-run, does that affect verification this
+  run?" needs tracing against this fact before assuming the answer is
+  yes — the round-3 AGENTS.md finding's real reachability is specifically
+  through `resume()`, not a single uninterrupted `run()` call, despite
+  reading at first like the latter.
+- **Commander's `.option("--no-<x>", ...)` registered *alone* (no separate
+  plain `--<x>` registration) auto-creates a boolean option named `<x>`
+  defaulting to `true`.** This is the correct, minimal way to add a
+  `--no-squash` counterpart to an existing `--squash`-flavored default:
+  replace the old `.option("--squash", ..., true)` registration entirely
+  with `.option("--no-squash", ...)` — don't register both, commander
+  treats them as the same underlying boolean either way and registering
+  both is redundant at best, contradictory at worst.
+- **A VS Code `contributes.configuration` property with no explicit
+  `"scope"` defaults to `window`-scoped — settable from a workspace's own
+  `.vscode/settings.json`.** Any setting whose value gets used as a path,
+  command, or URL to execute/fetch needs `"scope": "machine"` (or
+  `"application"`) explicitly, or any repo the user opens can silently
+  redirect it. No real VS Code extension host exists in this environment
+  to prove enforcement end-to-end — the fix (and its test) can only prove
+  the schema declaration is correct, not that VS Code honors it; that's
+  an honest, stated limit, not a gap to paper over.
 
 ## How to resume
 

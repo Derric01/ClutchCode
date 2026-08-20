@@ -383,6 +383,39 @@ pass above — `git stash` the fix, confirm the new test fails, `git
 stash pop`, confirm it passes — see `HANDOFF.md`'s "what's done" for the
 full breakdown, including the rejected false positive.
 
+**A third review round covered every package the first two hadn't
+reached yet** — the untrusted JSON-RPC boundary, credentials/keychain,
+every tool implementation, the rest of the git package, the runtime/
+workflow engine, provider adapters, the CLI + VS Code extension, and
+cheat-detection — and found 18 more real, independently-reproduced
+issues, fixed with 45 new tests (16 of 18 verified with the same
+stash-revert-recheck cycle). The most severe: a `runId` path-traversal
+gap that survived round 2's fix at *creation* but was still open at
+every *read/mutate* entry point (`RunStateStore`, `worktree-store.ts`,
+`events.ts`, the RPC boundary itself), reachable into real destructive
+git operations — closed with one shared validator instead of another
+per-call-site patch; a symlink-based workspace-escape in
+`resolveInWorkspace` that let `write_file`/`read_file` cross the
+sandbox boundary with no approval prompt at all, confirmed by actually
+writing outside the workspace through a planted symlink; and an
+AGENTS.md trust-boundary gap where a model could self-declare a fake
+passing test command and have `resume()`'s re-derivation trust it,
+reproduced end-to-end (a scripted run wrote `AGENTS.md` + a manifest
+touch, paused, and the resumed continuation genuinely auto-committed a
+broken build) — closed by reading AGENTS.md from the run's base commit
+instead of the live, model-editable worktree. Four cheat-detection
+gaps (a no-parenthesis `catch {}`, a non-literal self-equality
+tautology, comment-padding around a hardcoded-output collapse, and an
+overly-loose snapshot-edit exemption), a diff-parser content-loss bug,
+a loop-detector canonicalization bug, provider-adapter stream-failure
+masking, and several CLI/credential-store/output-truncation
+correctness bugs round out the list. One review agent (sandbox/policy/
+redaction) hit a session limit and never completed — genuinely
+unreviewed, not silently skipped; see `HANDOFF.md`'s "what's left."
+Full breakdown, including the five confirmed-real git-worktree
+correctness findings deferred this round, in `HANDOFF.md`'s "what's
+done"/"what's left."
+
 ## Repository layout
 
 ```

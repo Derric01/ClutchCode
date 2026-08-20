@@ -117,6 +117,51 @@ Concretely:
 - Prefer fixing a real bug you find along the way (cite it, fix it, test
   it) over working around it.
 
+## Fixing a bug or vulnerability: prove it, don't assume it
+
+Three rounds of review on this codebase (a correctness-focused code-review
+pass, then two full-history security reviews) converged on the same
+working discipline, and it's now the standing expectation for *any* bug
+or vulnerability fix, not just ones a review round happens to surface:
+
+1. **Reproduce it for real before trusting it.** A finding — your own, a
+   subagent's, a linter's — is a hypothesis until you've made the bad
+   thing actually happen: a real throwaway git repo, a real symlink, a
+   real RPC call, a real malformed CLI flag. Read-the-code confidence is
+   not the same as watched-it-fail confidence, and the two disagree often
+   enough to matter — a claim about git's `protocol.ext.allow` default
+   turned out to be wrong until it was actually run against a live `git
+   push`; a claimed single-run AGENTS.md exploit turned out to only be
+   reachable via `resume()` until traced end to end. Reproducing first is
+   what catches both directions of error: a real bug you'd otherwise
+   under-rate, and a plausible-sounding claim that isn't actually true.
+2. **Fix it, then flip the fix off and re-run your new test.** `git stash
+   push -- <file>` the fix (not the test), confirm the new test now
+   fails against the pre-fix code, `git stash pop` to restore the fix,
+   confirm it passes again. This is the single strongest evidence a fix
+   is real: the test doesn't just assert plausible-looking behavior, it's
+   proven to actually discriminate fixed from broken. Skip this only for
+   a fix whose correctness is unambiguous from its own assertions with no
+   real risk of a false-positive test (a pure input-validation regex, a
+   static config value) — and say so explicitly when you do.
+3. **When a fix touches a shared vulnerability class, fix the class, not
+   just the instance.** `runId` path-traversal validation was added at
+   `createRunWorktree` in one round and found *still missing* at three
+   other entry points (`RunStateStore`, `worktree-store.ts`, `events.ts`,
+   plus the RPC boundary itself) in the next — because the first fix
+   patched one call site instead of exporting one shared validator
+   (`assertSafeRunId` in `@clutchcode/git`) for every caller to use. When
+   a fix is "validate this untrusted value before it becomes a path/
+   command/trust decision," grep for every other place the same kind of
+   value enters the same kind of sink before calling it done.
+4. **A finding can be real and mis-scoped at the same time.** Don't just
+   bucket things "confirmed" or "false positive" — a subagent's `ext::`
+   RCE claim was a real gap (an unvalidated remote-name parameter) wrapped
+   in an inflated severity claim (git's actual default blocks that
+   specific protocol). Reproduce the *specific* claim, not just the
+   general shape of it, and correct the framing rather than either
+   accepting or discarding the finding wholesale.
+
 ## Conventions specific to this repo
 
 - **Section citations**: reference `PROJECT_SPEC.md §N.M` in comments and
