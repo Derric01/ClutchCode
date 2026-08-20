@@ -1,4 +1,5 @@
 export { git, isGitRepo, GitError } from "./git-exec.js";
+export { SAFE_RUN_ID_RE, isSafeRunId, assertSafeRunId } from "./run-id.js";
 export type { GitExecOptions } from "./git-exec.js";
 export { isDirty, handleDirtyTree, restoreStash } from "./dirty-tree.js";
 export type { DirtyTreeStrategy, DirtyTreeResult } from "./dirty-tree.js";

@@ -64,6 +64,13 @@ describe("classifyFailure", () => {
     expect(classifyFailure(stage({ stage: "typecheck", exitCode: 2, stderr: "error TS2322: Type 'string' is not assignable" }))).toBe("typecheck");
   });
 
+  it("an environment failure during lint/typecheck classifies as test-error-env, not lint/typecheck (real bug caught in round 3 of security review — build/test already checked ENV_ERROR_RE before trusting their own stage name; lint/typecheck used to skip that check entirely)", () => {
+    expect(classifyFailure(stage({ stage: "lint", exitCode: 1, stderr: "ECONNREFUSED: could not reach the config server" }))).toBe(
+      "test-error-env"
+    );
+    expect(classifyFailure(stage({ stage: "typecheck", exitCode: 1, stderr: "ENOSPC: no space left on device" }))).toBe("test-error-env");
+  });
+
   it("command-not-found takes precedence over compile-error/test-assertion/test-error-env too", () => {
     const result = stage({ stage: "test", exitCode: 127, stderr: "bash: cargo: command not found" });
     expect(classifyFailure(result)).toBe("command-not-found");

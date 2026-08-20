@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { RunWorktree } from "@clutchcode/git";
+import { assertSafeRunId, type RunWorktree } from "@clutchcode/git";
 
 /**
  * Persists the `RunWorktree` handle (branch, base commit, worktree path)
@@ -10,6 +10,12 @@ import type { RunWorktree } from "@clutchcode/git";
  */
 
 function worktreeMetaPath(stateDir: string, runId: string): string {
+  // §13.1: same shared-choke-point fix as `RunStateStore` — see its
+  // `runDir` comment. `loadRunWorktree` in particular is the entry point
+  // `approve`/`reject`/`rollback`/`pr` use to resolve a caller-supplied
+  // `runId` into a real `worktreePath`/`repoPath` that real, sometimes
+  // destructive `git` operations then run against.
+  assertSafeRunId(runId);
   return path.join(stateDir, "runs", runId, "worktree.json");
 }
 

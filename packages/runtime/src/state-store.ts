@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { assertSafeRunId } from "@clutchcode/git";
 import type { RunState } from "./run-state.js";
 
 /**
@@ -21,6 +22,14 @@ export class RunStateStore {
   constructor(private readonly stateDir: string) {}
 
   private runDir(runId: string): string {
+    // §13.1: real gap caught in round 3 of security review — `createRunWorktree`
+    // (round 2) validated `runId` at creation time, but every *read/write*
+    // path through this store (`load`/`save`/`delete`, reachable with a
+    // caller-supplied `runId` straight from the RPC/CLI boundary via
+    // `approve`/`reject`/`rollback`/`resume`/`inspect`) built a path from it
+    // with no check of its own. One shared validator, checked here since
+    // every public method funnels through this single choke point.
+    assertSafeRunId(runId);
     return path.join(this.stateDir, "runs", runId);
   }
 

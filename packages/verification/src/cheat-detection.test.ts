@@ -84,4 +84,36 @@ describe("detectCheats", () => {
     const flags = detectCheats(diff);
     expect(flags.some((f) => f.rule === "removed-test-assertions")).toBe(false);
   });
+
+  it("flags a bare no-parenthesis `catch {}` the same as `catch (e) {}` (real gap caught in round 3 of security review — ES2019+'s optional catch binding makes this syntactically valid modern JS/TS, the exact same swallow-the-failing-path cheat)", () => {
+    const diff = fileDiff("src/worker.ts", ["riskyCall();"], ["try { riskyCall(); } catch {}"]);
+    expect(detectCheats(diff).some((f) => f.rule === "swallowed-error")).toBe(true);
+  });
+
+  it("flags a self-equality tautology beyond the literal true/1==1 cases (real gap caught in round 3 of security review — expect(1).toBe(1) is just as trivially-true as expect(true).toBe(true))", () => {
+    const diff = fileDiff("src/math.test.ts", ["expect(add(1, 2)).toBe(3);"], ["expect(1).toBe(1);"]);
+    expect(detectCheats(diff).some((f) => f.rule === "weakened-assertion")).toBe(true);
+  });
+
+  it("still flags a real self-equality removal even when it's disguised by extra whitespace inside the parens (real gap caught in round 3 of security review)", () => {
+    const diff = fileDiff("src/math.test.ts", ["expect(add(1, 2)).toBe(3);"], ["expect( true ).toBe( true );"]);
+    expect(detectCheats(diff).some((f) => f.rule === "weakened-assertion")).toBe(true);
+  });
+
+  it("flags a hardcoded-output collapse even when padded with harmless comment lines (real gap caught in round 3 of security review — counting comment lines toward the <=2 threshold let padding move the count past it)", () => {
+    const diff = fileDiff(
+      "src/calc.ts",
+      ["let total = 0;", "for (const n of numbers) {", "  total += n * weight(n);", "}", "return total;"],
+      ["// simplified per review", "// TODO revisit", "return 42;"]
+    );
+    expect(detectCheats(diff).some((f) => f.rule === "possible-hardcoded-output")).toBe(true);
+  });
+
+  it("still flags a snapshot edit when the accompanying change is to a genuinely unrelated file (real gap caught in round 3 of security review — the exemption used to fire for ANY other non-test/non-snapshot file in the diff, regardless of subject)", () => {
+    const diff = [
+      fileDiff("README.md", ["old docs"], ["new docs, unrelated to Component"]),
+      fileDiff("__snapshots__/Component.test.ts.snap", ["exports[`renders`] = `<div>old</div>`;"], ["exports[`renders`] = `<div>new</div>`;"])
+    ].join("\n");
+    expect(detectCheats(diff).some((f) => f.rule === "unexplained-snapshot-edit")).toBe(true);
+  });
 });

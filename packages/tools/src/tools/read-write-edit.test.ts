@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeTempWorkspace, makeTestContext } from "../test-helpers.js";
@@ -69,6 +70,32 @@ describe("read_file / write_file / edit_file", () => {
     expect(r.ok).toBe(false);
     expect(r.error?.code).toBe("path-outside-workspace");
     expect(fs.existsSync(path.join(workspace, "..", "outside.txt"))).toBe(false);
+  });
+
+  it("write_file refuses to escape the workspace through a symlinked directory (real vulnerability caught in round 3 of security review — a string-only containment check reported this as 'inside', so the PolicyEngine granted a bare ALLOW with no approval prompt at all, and fs.writeFileSync then genuinely followed the symlink outside the workspace)", async () => {
+    const outside = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "clutchcode-symlink-escape-outside-"));
+    try {
+      fs.symlinkSync(outside, path.join(workspace, "shared"));
+      const w = await writeFileTool.run({ path: "shared/pwned.txt", body: "attacker-controlled content" }, ctx);
+      expect(w.ok).toBe(false);
+      expect(w.error?.code).toBe("path-outside-workspace");
+      expect(fs.existsSync(path.join(outside, "pwned.txt"))).toBe(false);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("read_file refuses to read through a symlinked directory that escapes the workspace (same mechanism as the write_file case above, but for arbitrary-file-read)", async () => {
+    const outside = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "clutchcode-symlink-escape-read-"));
+    try {
+      fs.writeFileSync(path.join(outside, "secret.txt"), "top secret content", "utf8");
+      fs.symlinkSync(outside, path.join(workspace, "shared"));
+      const r = await readFileTool.run({ path: "shared/secret.txt" }, ctx);
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe("path-outside-workspace");
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it("edit_file applies a SEARCH/REPLACE block to an existing file", async () => {

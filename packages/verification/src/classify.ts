@@ -66,8 +66,22 @@ export function classifyFailure(result: StageResult): FailureClass {
     result.exitCode === 127 || COMMAND_NOT_FOUND_RE.test(output) || (BARE_NO_SUCH_FILE_RE.test(output) && !NODE_ENOENT_RE.test(output));
   if (isCommandNotFound) return "command-not-found";
 
-  if (result.stage === "lint") return "lint";
-  if (result.stage === "typecheck") return "typecheck";
+  // Real bug caught in round 3 of security review: `build`/`test` both
+  // check `ENV_ERROR_RE` before trusting their own stage name (a lint/
+  // typecheck run that failed with `ECONNREFUSED`/`no space left on
+  // device`/`permission denied` — e.g. a plugin fetching a remote config,
+  // or a disk-full write — is an environment problem, not something a
+  // code edit can fix) but `lint`/`typecheck` used to skip that check
+  // entirely and return immediately, exactly the misclassification the
+  // comment above warns against for the other two stages.
+  if (result.stage === "lint") {
+    if (ENV_ERROR_RE.test(output)) return "test-error-env";
+    return "lint";
+  }
+  if (result.stage === "typecheck") {
+    if (ENV_ERROR_RE.test(output)) return "test-error-env";
+    return "typecheck";
+  }
 
   if (result.stage === "build") {
     if (ENV_ERROR_RE.test(output)) return "test-error-env";

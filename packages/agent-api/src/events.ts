@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { assertSafeRunId } from "@clutchcode/git";
 import type { RuntimeEvent } from "@clutchcode/runtime";
 
 /**
@@ -12,6 +13,10 @@ import type { RuntimeEvent } from "@clutchcode/runtime";
  */
 
 function eventsPath(stateDir: string, runId: string): string {
+  // §13.1: same shared choke-point fix as `RunStateStore`/`worktree-store.ts`
+  // — `readEvents` is reachable with a caller-supplied `runId` via `agent
+  // inspect` / the RPC `inspect` method.
+  assertSafeRunId(runId);
   return path.join(stateDir, "runs", runId, "events.jsonl");
 }
 

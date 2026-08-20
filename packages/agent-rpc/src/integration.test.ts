@@ -112,4 +112,12 @@ describe("agent-rpc client↔server round trip (§18.1/§18.5)", () => {
     ).rejects.toThrow(/invalid runId/);
     expect(fs.existsSync("/tmp/pwned-worktree")).toBe(false);
   }, 30_000);
+
+  it("rejects a path-traversal runId on every OTHER RPC method too, not just `run` (real gap caught in round 3 of security review: round 2 only proved the fix at `run`'s create path — `diff`/`approve`/`reject`/`resume`/`inspect`/`checkpoints`/`rollback`/`pr` all go through the same `requireRunId` with no format check of their own until this round)", async () => {
+    const evil = "../../../../../../tmp/pwned-via-diff";
+    for (const method of ["diff", "diffFiles", "approve", "reject", "resume", "inspect", "checkpoints", "rollback", "pr"]) {
+      await expect(client.request(method, { runId: evil })).rejects.toThrow(/invalid runId/);
+    }
+    expect(fs.existsSync("/tmp/pwned-via-diff")).toBe(false);
+  }, 30_000);
 });

@@ -66,6 +66,37 @@ describe("AnthropicProvider", () => {
     expect(result.toolCalls).toEqual([{ id: "toolu_1", name: "read_file", argsJson: '{"path":"a.ts"}' }]);
   });
 
+  it("maps a refusal stop_reason to an error finishReason instead of a plain stop (real bug caught in round 3 of security review)", async () => {
+    server = await startMockSSEServer([
+      sse("message_start", { type: "message_start", message: { usage: { input_tokens: 5 } } }),
+      sse("message_delta", { type: "message_delta", delta: { stop_reason: "refusal" }, usage: { output_tokens: 1 } })
+    ]);
+    const provider = new AnthropicProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+    const result = await collect(provider.chat({ model: "claude-test", messages: [] }));
+    expect(result.finishReason).toBe("error");
+  });
+
+  it("reports an in-stream overloaded_error as retryable, unlike a generic in-stream error (real bug caught in round 3 of security review — every in-stream error used to be hardcoded retryable: false, discarding the error's actual type)", async () => {
+    let capturedRetryable: boolean | undefined;
+    server = await startMockSSEServer([sse("error", { type: "error", error: { type: "overloaded_error", message: "Overloaded" } })]);
+    const provider = new AnthropicProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+    for await (const delta of provider.chat({ model: "claude-test", messages: [] })) {
+      if (delta.type === "error") capturedRetryable = delta.retryable;
+    }
+    expect(capturedRetryable).toBe(true);
+  });
+
+  it("reports an error when the stream ends with no message_delta stop_reason (real bug caught in round 3 of security review — a bare connection drop, e.g. a proxy idle-timeout, used to be silently reported as a normal 'stop')", async () => {
+    server = await startMockSSEServer([
+      sse("message_start", { type: "message_start", message: { usage: { input_tokens: 5 } } }),
+      sse("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text" } }),
+      sse("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "cut off mid-" } })
+    ]);
+    const provider = new AnthropicProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+    const result = await collect(provider.chat({ model: "claude-test", messages: [] }));
+    expect(result.finishReason).toBe("error");
+  });
+
   it("puts system messages in the top-level `system` field, not the messages array", async () => {
     server = await startMockSSEServer([
       sse("message_start", { type: "message_start", message: { usage: { input_tokens: 1 } } }),

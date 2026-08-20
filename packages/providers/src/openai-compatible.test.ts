@@ -45,6 +45,31 @@ describe("OpenAICompatibleProvider", () => {
     expect(result.toolCalls).toEqual([{ id: "call_abc", name: "read_file", argsJson: '{"path":"a.ts"}' }]);
   });
 
+  it("maps content_filter to an error finishReason instead of a plain stop (real bug caught in round 3 of security review — content_filter explicitly signals the returned text may be incomplete/filtered)", async () => {
+    server = await startMockSSEServer([
+      'data: {"choices":[{"delta":{"content":"partial answer"}}]}\n\n',
+      'data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}\n\n',
+      "data: [DONE]\n\n"
+    ]);
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    const result = await collect(provider.chat({ model: "gpt-test", messages: [] }));
+    expect(result.finishReason).toBe("error");
+  });
+
+  it("surfaces an in-band {error:...} payload (no choices key) instead of silently continuing (real bug caught in round 3 of security review)", async () => {
+    server = await startMockSSEServer(['data: {"error":{"message":"rate limited","code":"429"}}\n\n']);
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    const result = await collect(provider.chat({ model: "gpt-test", messages: [] }));
+    expect(result.finishReason).toBe("error");
+  });
+
+  it("reports an error when the stream ends with no finish_reason and no [DONE] (real bug caught in round 3 of security review — a bare connection close used to be silently reported as a normal 'stop')", async () => {
+    server = await startMockSSEServer(['data: {"choices":[{"delta":{"content":"cut off mid-"}}]}\n\n']);
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    const result = await collect(provider.chat({ model: "gpt-test", messages: [] }));
+    expect(result.finishReason).toBe("error");
+  });
+
   it("surfaces a non-2xx response as a retryable error for 5xx", async () => {
     const http = await import("node:http");
     const errServer = http.createServer((_req, res) => {
