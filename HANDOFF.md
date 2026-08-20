@@ -7,7 +7,7 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-20
 **Branch:** `claude/handoff-prompt-continuation-c2cxh9`
-**Latest commit:** `853a4af` — "fix: eighteen vulnerabilities and correctness bugs from a full-codebase security+correctness review round"
+**Latest commit:** `d2bee22` — "feat: add \"start work\" / \"refer the handoff and work\" autonomous-continuation convention"
 **Test suite:** 653/653 passing, 75 test files, clean `tsc -b`, clean `eslint .`
 
 **PR:** to be opened for this round (#11 merged cleanly, as did #4–#10
