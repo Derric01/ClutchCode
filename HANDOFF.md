@@ -5,10 +5,10 @@ session; update it before you stop. See `CLAUDE.md` for timeless working
 conventions (build/test/lint, testing philosophy, quality bar) — this
 file is the time-stamped snapshot of where the project actually stands.
 
-**Snapshot as of:** 2026-08-20
+**Snapshot as of:** 2026-08-21
 **Branch:** `claude/start-work-handoff-referral-52eyj1`
-**Latest commit:** `a9d4796` — "fix: close 3 sandbox/policy/redaction gaps from the deferred round-3 audit"
-**Test suite:** 664/664 passing, 75 test files, clean `tsc -b`, clean `eslint .`
+**Latest commit:** (pending — see the commit this snapshot update ships in)
+**Test suite:** 670/670 passing, 75 test files, clean `tsc -b`, clean `eslint .`
 
 **PR:** none opened yet for this branch — PR #12 (the prior branch) merged
 cleanly, as did #4–#11 before it. Pattern established across every phase so
@@ -832,6 +832,101 @@ This closes the "do first" row in "what's left" below — the sandbox/
 policy/redaction subsystem now has a complete review pass, not a partial
 one.
 
+### Git worktree/dirty-tree correctness findings (§13.1/§13.3) — the five round-3-deferred fixes
+
+Picked up per the autonomous-continuation priority order: nothing was
+deferred in the prior session's own "what's done" entry, so this is the
+row tagged "do first" in "what's left" (the table's literal top-to-bottom
+order hadn't been re-sorted after the sandbox/policy/redaction row above
+was completed and removed — treated the explicit "do first" tag as the
+actual priority signal, consistent with how the *previous* session picked
+its own "do first"-tagged row over the table's literal position). All five
+confirmed-real findings from round 3's git-package audit, each reproduced
+for real before fixing and proven with the full `git stash push -- <file>`
+/ confirm-new-test-fails / `git stash pop` / confirm-passes cycle:
+
+1. **`checkpoint()`'s post-`add -A` status check swallowed real git
+   errors as "nothing to commit."** `git status --porcelain` genuinely
+   exits 0 for a clean tree — it only exits non-zero for an actual
+   failure (index lock, disk error, corruption) — so the existing
+   `allowFailure: true` on that call meant a real error and a clean tree
+   were indistinguishable to `checkpoint()`, silently skipping a
+   checkpoint that should have existed right after `add -A` staged real
+   content. Reproduced without mocking `checkpoint()` itself: a thin PATH
+   shim intercepts exactly `git status --porcelain` (every other
+   invocation, including the preceding `add -A`, still goes to the real
+   binary) and fails it with a simulated "index file smaller than
+   expected"-style error; pre-fix, `checkpoint()` returned `null` as if
+   nothing changed, post-fix it throws. Fixed by removing `allowFailure`
+   from that one call.
+2. **`approveRun`/`discardRun` let a `restoreStash` failure read as "the
+   whole operation failed," even after the merge/discard had already
+   genuinely completed.** Reproduced for real: a user's local edit to a
+   file gets auto-stashed, the run edits the *same* file differently and
+   gets merged in cleanly (no merge conflict — the stash means
+   `repoPath`'s copy is clean at merge time), then restoring the stash
+   conflicts with the merge's own result — confirmed directly with a
+   throwaway repo that a failed `git stash pop` leaves literal conflict
+   markers in the file and, per git's own documented behavior ("The stash
+   entry is kept in case you need it again"), never drops the stash
+   either. Pre-fix, that pop's `GitError` propagated straight out of
+   `approveRun` with no indication the merge itself had already succeeded.
+   Fixed by catching just that failure and returning it as an optional
+   `stashRestoreWarning` on `approveRun`'s/`discardRun`'s result instead of
+   throwing — `mergedSha` is still returned normally either way.
+3. **The auto-stash was identified by a positional `stash@{0}`, captured
+   once at push time and reused verbatim at restore time.** A plausible
+   manual `git stash` elsewhere on the same repo during a long-running run
+   shifts every existing entry's position, so a later `restoreStash` could
+   pop the wrong one. Reproduced directly: push the auto-stash, then push
+   a second, unrelated manual stash (moving the auto-stash from position 0
+   to 1); pre-fix, `discardRun` popped the *manual* stash's content instead
+   of the auto-stash's, leaving the real auto-stash orphaned in the stash
+   list forever. Fixed by capturing the stash's own commit SHA
+   (`git rev-parse stash@{0}`, resolved right after the push) instead of a
+   positional name, and resolving that SHA back to whatever position it
+   currently occupies (`git stash list --format=%H`) at restore time.
+4. **Neither dirty-tree strategy actually preserved the original
+   staged/unstaged split**, despite a code comment on the temp-commit path
+   claiming the tree was "left exactly as it was." For the stash strategy,
+   reproduced with a fully-staged modification to a tracked file: plain
+   `git stash pop` collapses it to unstaged (` M`) on restore, losing the
+   staged bit entirely — confirmed empirically that git's own `--index`
+   flag exists precisely to prevent this and does; fixed by adding
+   `--index` to the pop. For the temp-commit strategy, `git add -A`
+   unavoidably stages everything to capture untracked files in the temp
+   commit, and `reset --soft HEAD~1` only moves HEAD back — it doesn't
+   restore the index's prior split, so every file ended up staged
+   afterward regardless of its original state. Fixed with a precise
+   fix rather than a partial one: capture the index as a tree object via
+   `git write-tree` *before* touching anything, then restore it verbatim
+   via `git read-tree` afterward — both operate purely on the index, never
+   the working tree, so this reproduces the original split exactly, proven
+   with a file that was genuinely *partially* staged (some hunks staged,
+   some not — the case `git stash --index` itself can't always get
+   perfectly right, confirmed by direct comparison in a throwaway repo).
+5. **`createRunWorktree` ran the destructive dirty-tree handling (stash/
+   temp-commit) before the still-fallible `git worktree add`,** with no
+   recovery path if anything after it failed — the `RunWorktree` object
+   that would have carried `dirtyTreeResult.stashRef` back to a caller is
+   only ever constructed on the success path. Reproduced with a real,
+   plausible failure (a leftover branch from an earlier run reusing the
+   same runId/slug, so `git worktree add -b <branch>` collides): pre-fix,
+   the function just threw, leaving the user's auto-stashed changes
+   invisible to anything downstream. Fixed by wrapping the post-
+   `handleDirtyTree` logic in try/catch and auto-restoring the stash on
+   failure (temp-commit needs no recovery — its own `reset --soft` +
+   index-restore already leaves the working tree untouched), narrating the
+   outcome either way (restored automatically, or — if even that
+   fails — exactly which stash to recover by hand) in the thrown error so
+   nothing is silently orphaned.
+
+670 tests total (up from 664; 6 new — one per finding), clean `tsc -b`,
+clean `eslint .`. This closes the "Git worktree/dirty-tree correctness
+findings" row in "what's left" below; the `snapshot-backup.ts` `relPath`
+traversal row (also round-3-deferred, currently unreachable dead code) is
+untouched and still open.
+
 ---
 
 ## What's left
@@ -852,8 +947,7 @@ loose "MVP" estimate.
 | PageRank repo map | §9, Phase 7 | medium | Tier 0 (ripgrep + on-demand tree-sitter) is what's live; the Aider-style PageRank map is Tier 1, triggered by measured retrieval-accuracy failures on large repos, not built preemptively. |
 | Eval scoreboard | §16, Phase 8 | medium–large | The replay harness (§16.3c) is live and gates every phase; the full SWE-bench-Verified-subset + Terminal-Bench-style scoreboard with published methodology is not. |
 | Multi-agent orchestration | §7, Phase 9 | large | Explicitly out of scope until the §7 rule justifies it — the spec argues *against* building this by default. Don't start it without re-reading §7's reasoning first. |
-| Git worktree/dirty-tree correctness findings (round 3, confirmed real, not yet fixed) | §13.1/§13.3 | small each, do first | Five confirmed-real correctness bugs from the round-3 git-package audit, deferred for scope: (1) `checkpoint()`'s `git status --porcelain` call uses `allowFailure: true` right after `add -A`, so a real git error (index lock, disk error) is swallowed and misread as "nothing changed," silently skipping a checkpoint that should have been created — fix by not using `allowFailure` there. (2) `approveRun`/`discardRun` call `restoreStash` with no error handling *after* the merge/discard already succeeded — a stash-pop conflict then throws an exception for an operation that actually completed, potentially leaving literal conflict markers in the just-merged tree. (3) `dirty-tree.ts` identifies the auto-stash by the positional ref `stash@{0}`, captured once at push time and reused verbatim at restore time — if any other `git stash` happens on the repo in between (a plausible manual stash by the user during a long-running agent run), `restoreStash` pops the wrong entry. Fix by capturing `git rev-parse stash@{0}` (a stable SHA) at push time and resolving it back to its current position at restore time. (4) Neither dirty-tree strategy preserves the original staged/unstaged split (`stash pop` without `--index`; temp-commit's `add -A` stages everything) despite a code comment claiming the tree is "left exactly as it was" — fix with `stash pop --index` and a staged-set-preserving temp-commit path. (5) `createRunWorktree` runs `handleDirtyTree` (destructive: stashes/temp-commits) before the still-fallible `git worktree add` — a failure there (branch collision, disk error) leaves an orphaned stash with no automatic recovery path, since the `RunWorktree` object that would carry `dirtyTreeResult.stashRef` back to the caller is never constructed. Fix by wrapping the post-stash steps in try/catch and surfacing/restoring the stash on failure. |
-| `snapshot-backup.ts` `relPath` traversal (round 3, confirmed real, currently unreachable) | §13.4 | small | `snapshotBeforeFirstEdit`/`rollback` join a caller-supplied `relPath` into `workspaceRoot`/`backupDir` with no traversal guard — the same class of bug fixed for `runId` elsewhere. Currently dead code (`agent.ts`'s `run()` throws before ever constructing a `SnapshotBackup` — the non-git execution path isn't wired up yet, see the "Full non-git AgentLoop execution path" row above), but it's an exported public API with no traversal test coverage, and the code comments explicitly plan to wire it up later. Fix with the same `assertSafeRunId`-style pattern before that wiring happens, not after. |
+| `snapshot-backup.ts` `relPath` traversal (round 3, confirmed real, currently unreachable) | §13.4 | small, do first | `snapshotBeforeFirstEdit`/`rollback` join a caller-supplied `relPath` into `workspaceRoot`/`backupDir` with no traversal guard — the same class of bug fixed for `runId` elsewhere. Currently dead code (`agent.ts`'s `run()` throws before ever constructing a `SnapshotBackup` — the non-git execution path isn't wired up yet, see the "Full non-git AgentLoop execution path" row above), but it's an exported public API with no traversal test coverage, and the code comments explicitly plan to wire it up later. Fix with the same `assertSafeRunId`-style pattern before that wiring happens, not after. |
 
 ## Known gotchas (read before you hit them again)
 

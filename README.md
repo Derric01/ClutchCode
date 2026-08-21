@@ -450,6 +450,41 @@ path alongside the existing containment flag, and denylist-checking that
 instead of the requested name at all three call sites. 664 tests total (11
 new), clean `tsc -b`, clean `eslint .`.
 
+**The five confirmed-real git-worktree/dirty-tree correctness findings
+deferred from round 3 are now fixed**, all reproduced for real and proven
+against the `git stash`-revert-recheck cycle (each new test fails against
+the pre-fix code, passes after): (1) `checkpoint()`'s post-`add -A` status
+check used `allowFailure: true`, so a genuine git error (index lock, disk
+error, corruption) read identically to "nothing changed" and silently
+skipped a checkpoint right after real content was staged — reproduced with
+a PATH-shimmed `git` that fails exactly `status --porcelain` and nothing
+else; fixed by not swallowing that call's failures. (2) `approveRun`/
+`discardRun` let a `restoreStash` conflict throw *after* the merge/discard
+had already genuinely completed — reproduced with a real merge that lands
+cleanly followed by a stash pop that conflicts with the just-merged
+content (git itself leaves literal conflict markers and never drops the
+stash on a failed pop); fixed by catching that specific failure and
+returning it as a `stashRestoreWarning` instead of masking a successful
+operation as a thrown exception. (3) the auto-stash was identified by a
+positional `stash@{0}` captured once at push time and reused verbatim
+later, so a manual `git stash` elsewhere on the repo in between (plausible
+during a long-running run) made restore pop the wrong entry — fixed by
+capturing the stash's own commit SHA instead and resolving it back to its
+current position at restore time. (4) neither dirty-tree strategy actually
+preserved the original staged/unstaged split despite a comment claiming
+the tree was "left exactly as it was" — the stash strategy now uses `stash
+pop --index`; the temp-commit strategy now captures the index as a tree
+object via `git write-tree` before touching anything and restores it
+byte-exact via `git read-tree` afterward, proven to survive even a
+genuinely partially-staged (mixed-hunk) file, which `--index` itself can't
+always do perfectly. (5) `createRunWorktree` ran the destructive dirty-tree
+handling *before* the still-fallible `git worktree add`, so a branch-name
+collision or disk error left an orphaned stash with no return path back to
+the caller — reproduced with a real pre-existing branch-name collision;
+fixed by wrapping the rest of the function in try/catch and auto-restoring
+the stash on failure, narrating the outcome in the thrown error either
+way. 670 tests total (6 new), clean `tsc -b`, clean `eslint .`.
+
 ## Repository layout
 
 ```
