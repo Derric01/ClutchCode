@@ -7,7 +7,7 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-21
 **Branch:** `claude/start-work-handoff-referral-52eyj1`
-**Latest commit:** (pushed below — see "what's done" for this session's commit)
+**Latest commit:** `2f0ae24` — "fix: close the last round-3-deferred snapshot-backup relPath traversal bug"
 **Test suite:** 687/687 passing, 76 test files, clean `tsc -b`, clean `eslint .`
 
 **PR:** none opened yet for this branch — PR #12 (the prior branch) merged
