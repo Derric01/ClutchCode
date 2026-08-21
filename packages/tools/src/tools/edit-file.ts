@@ -60,7 +60,7 @@ export const editFileTool: Tool<EditFileArgs, EditFileData> = {
   },
 
   async run(args, ctx: ToolContext): Promise<ToolResult<EditFileData>> {
-    const { abs, inside } = resolveInWorkspace(ctx.workspaceRoot, args.path);
+    const { abs, real, inside } = resolveInWorkspace(ctx.workspaceRoot, args.path);
     const submodule = inside && isInsideAnySubmodule(args.path, ctx.submodulePaths);
 
     const decision = ctx.policy.decide({
@@ -77,7 +77,8 @@ export const editFileTool: Tool<EditFileArgs, EditFileData> = {
         decision.reason
       );
     }
-    if (ctx.denylist.isDenied(abs)) return fail("denylisted", `refusing to edit a denylisted path: ${args.path}`);
+    // Denylist-check the *real*, symlink-resolved target — see write-file.ts.
+    if (ctx.denylist.isDenied(real)) return fail("denylisted", `refusing to edit a denylisted path: ${args.path}`);
     if (!fs.existsSync(abs)) return fail("not-found", `no such file: ${args.path} (use write_file to create it)`);
 
     const original = fs.readFileSync(abs, "utf8");

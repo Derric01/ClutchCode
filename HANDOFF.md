@@ -6,15 +6,16 @@ conventions (build/test/lint, testing philosophy, quality bar) — this
 file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-20
-**Branch:** `claude/handoff-prompt-continuation-c2cxh9`
-**Latest commit:** `d2bee22` — "feat: add \"start work\" / \"refer the handoff and work\" autonomous-continuation convention"
-**Test suite:** 653/653 passing, 75 test files, clean `tsc -b`, clean `eslint .`
+**Branch:** `claude/start-work-handoff-referral-52eyj1`
+**Latest commit:** `a9d4796` — "fix: close 3 sandbox/policy/redaction gaps from the deferred round-3 audit"
+**Test suite:** 664/664 passing, 75 test files, clean `tsc -b`, clean `eslint .`
 
-**PR:** [#12](https://github.com/Derric01/ClutchCode/pull/12) — open,
-not yet merged. #11 merged cleanly, as did #4–#10 before it. Pattern
-established across every phase so far: one open PR per phase of work,
-never reused once merged, branch always restarted from `main`'s merged
-tip before new commits land on it.
+**PR:** none opened yet for this branch — PR #12 (the prior branch) merged
+cleanly, as did #4–#11 before it. Pattern established across every phase so
+far: one PR per phase of work, never reused once merged, branch always
+restarted from `main`'s merged tip before new commits land on it. This
+session's work is pushed to the branch above; open a PR from it when
+ready.
 
 ---
 
@@ -737,6 +738,100 @@ playbook in one place (`CLAUDE.md`) rather than duplicated across both
 skill files, for the same "one shared thing, not two that can drift"
 reason as this session's `assertSafeRunId` fix.
 
+### Sandbox/policy/redaction security audit (§12/§5.2) — the round-3 subagent that hit a session limit, completed
+
+Picked up per the autonomous-continuation priority order above: the
+round-3 review's 9th subagent (sandbox/policy/redaction) never finished —
+genuinely unreviewed, flagged "do first" in "what's left," not silently
+skipped. Reviewed every file in that scope directly: `policy.ts`,
+`denylist.ts`, `destructive.ts`, `env.ts`, `redactor.ts`, `tier1-linux.ts`,
+`tier1-macos.ts`, `seccomp-linux.ts` (beyond the temp-path issue round 3
+already fixed), plus the tool-layer callers that consume them
+(`read-file.ts`/`write-file.ts`/`edit-file.ts`/`shell.ts`/
+`workspace-path.ts`). Before any of that: this session's container had
+neither `bubblewrap` nor `secret-tool`/`gnome-keyring` installed (a fresh
+container, not the same one prior sessions configured) — 9 tests were
+failing for that reason alone. Reinstalled both (`apt-get install
+bubblewrap libsecret-tools gnome-keyring dbus-x11`) so the baseline is
+genuinely verified against the real backends again, not skipped/mocked,
+before starting the audit. Also cross-checked the full x86_64 seccomp
+syscall table (`DENIED_SYSCALLS_X86_64`, all 22 entries) against this
+host's own authoritative kernel header
+(`/usr/include/x86_64-linux-gnu/asm/unistd_64.h`) — the existing real-bwrap
+tests only empirically exercise 4 of the 22 syscalls; all 22 numbers match,
+and the BPF jump-offset arithmetic was hand-traced for both boundary
+indices (first/last denied syscall) and checks out. No bug there.
+
+Three real findings, each reproduced for real before fixing and proven
+with a test that fails against the pre-fix code and passes after (`git
+stash push -- <file>`, confirm the new test fails, `git stash pop`,
+confirm it passes):
+
+1. **Follow-up gap in the round-2 `resolveInWorkspace` symlink fix** —
+   that fix walked up to the deepest *existing* ancestor using
+   `fs.existsSync`, which *follows* a symlink to decide existence. A
+   **dangling** symlink (its target doesn't exist yet) therefore reported
+   `existsSync === false` for its own path — indistinguishable, to that
+   check, from an ordinary not-yet-created file — so the walk skipped
+   straight past the symlink itself and re-appended it *unresolved* onto
+   whatever ancestor existed above it. Reproduced for real: a dangling
+   symlink `workspace/link -> /tmp/outside/pwned.txt` (the target
+   directory exists, the target file does not) made `resolveInWorkspace`
+   report `inside: true`, and `fs.writeFileSync(abs, ...)` — where `abs`
+   is still the unresolved `workspace/link` — genuinely created
+   `/tmp/outside/pwned.txt`, following the symlink exactly the way a real
+   POSIX `open(..., O_CREAT)` does for a broken symlink whose parent
+   directory exists. Fixed by replacing the single end-of-walk
+   `realpathSync` call with a per-component resolver
+   (`resolveRealAsFarAsPossible`) that walks via `fs.lstatSync` (reports a
+   symlink's own existence without dereferencing it) and follows each
+   symlink hop — including a dangling one — via `fs.readlinkSync`, only
+   stopping at a component that doesn't exist *at all*. Six new tests
+   across `workspace-path.test.ts` (the dangling-outside case, a dangling-
+   but-inside control, a multi-hop chain with a dangling link mid-chain)
+   and `read-write-edit.test.ts` (the same exploit through the real
+   `write_file` tool).
+2. **`isDestructiveCommand`'s `rm` detection bypassable by flag order or
+   short/long-form mixing.** The pattern list was a fixed set of regex
+   alternatives (`-rf`, `-fr`, `--recursive .. --force`, `--force ..
+   --recursive`, bare short `-r`) — reproduced for real that `rm -f -r x`,
+   `rm --force -r x`, `rm -f --recursive x`, and `rm --recursive x` (alone)
+   are all functionally identical to already-flagged spellings per
+   POSIX/GNU option parsing (order and short/long form don't change
+   semantics) but matched none of the alternatives. This is directly
+   reachable, not adversarial — an LLM has no reason to prefer the exact
+   spellings the regex list happened to enumerate. Fixed by replacing the
+   `rm`-specific regexes with `isDestructiveRm`: tokenizes each `rm`
+   invocation's own argument list (segmented from any other command in a
+   `;`/`&&`/`||`/`|`/newline-separated pipeline, so flags on one command
+   never bleed into another) and checks for recursion independent of
+   order or form — closing the whole reordering/mixing class at once
+   instead of enumerating more concrete spellings. Six new tests in
+   `destructive.test.ts`.
+3. **§5.3 secrets denylist bypassable via a same-workspace symlink
+   alias.** `Denylist.isDenied` does pure basename/suffix matching, and
+   every call site (`read_file`, `write_file`, `edit_file`) checked it
+   against `abs` — the *requested*, unresolved path — never the real
+   target. A symlink entirely *inside* the workspace aliasing a
+   denylisted file under an innocuous name (`notenv.txt -> .env`, both
+   inside the workspace — `inside` was already correctly `true`, this is
+   not the escape bug above) sailed straight past the denylist on both
+   read and write. Reproduced for real: `read_file({path:
+   "notenv.txt"})` returned the live `.env`'s content verbatim, and
+   `write_file` through the same alias would have overwritten it. Fixed
+   by having `resolveInWorkspace` also return `real` (the fully
+   symlink-resolved target — the same value already computed internally
+   for the containment check, just not previously exposed) and switching
+   all three call sites to denylist-check `real` instead of `abs`. Four
+   new tests (one at the `workspace-path.ts` unit level, two at the
+   tool level for read and write, one asserting the original file's
+   content survives the blocked write attempt).
+
+664 tests total (up from 653; 11 new), clean `tsc -b`, clean `eslint .`.
+This closes the "do first" row in "what's left" below — the sandbox/
+policy/redaction subsystem now has a complete review pass, not a partial
+one.
+
 ---
 
 ## What's left
@@ -757,8 +852,7 @@ loose "MVP" estimate.
 | PageRank repo map | §9, Phase 7 | medium | Tier 0 (ripgrep + on-demand tree-sitter) is what's live; the Aider-style PageRank map is Tier 1, triggered by measured retrieval-accuracy failures on large repos, not built preemptively. |
 | Eval scoreboard | §16, Phase 8 | medium–large | The replay harness (§16.3c) is live and gates every phase; the full SWE-bench-Verified-subset + Terminal-Bench-style scoreboard with published methodology is not. |
 | Multi-agent orchestration | §7, Phase 9 | large | Explicitly out of scope until the §7 rule justifies it — the spec argues *against* building this by default. Don't start it without re-reading §7's reasoning first. |
-| Sandbox/policy/redaction security audit | §12/§5.2 | small–medium, do first | The round-3 review's 9th subagent (`packages/sandbox/src/policy.ts`, `denylist.ts`, `destructive.ts`, `env.ts`, `redactor.ts`, `tier1-linux.ts`, `tier1-macos.ts`, plus `seccomp-linux.ts` beyond the already-fixed temp-path issue) hit a session API limit mid-run and never completed. Genuinely unreviewed, not silently skipped — this is one of the highest-value places to point the next review round, since it's the OS-confinement + secret-redaction layer. |
-| Git worktree/dirty-tree correctness findings (round 3, confirmed real, not yet fixed) | §13.1/§13.3 | small each | Five confirmed-real correctness bugs from the round-3 git-package audit, deferred for scope: (1) `checkpoint()`'s `git status --porcelain` call uses `allowFailure: true` right after `add -A`, so a real git error (index lock, disk error) is swallowed and misread as "nothing changed," silently skipping a checkpoint that should have been created — fix by not using `allowFailure` there. (2) `approveRun`/`discardRun` call `restoreStash` with no error handling *after* the merge/discard already succeeded — a stash-pop conflict then throws an exception for an operation that actually completed, potentially leaving literal conflict markers in the just-merged tree. (3) `dirty-tree.ts` identifies the auto-stash by the positional ref `stash@{0}`, captured once at push time and reused verbatim at restore time — if any other `git stash` happens on the repo in between (a plausible manual stash by the user during a long-running agent run), `restoreStash` pops the wrong entry. Fix by capturing `git rev-parse stash@{0}` (a stable SHA) at push time and resolving it back to its current position at restore time. (4) Neither dirty-tree strategy preserves the original staged/unstaged split (`stash pop` without `--index`; temp-commit's `add -A` stages everything) despite a code comment claiming the tree is "left exactly as it was" — fix with `stash pop --index` and a staged-set-preserving temp-commit path. (5) `createRunWorktree` runs `handleDirtyTree` (destructive: stashes/temp-commits) before the still-fallible `git worktree add` — a failure there (branch collision, disk error) leaves an orphaned stash with no automatic recovery path, since the `RunWorktree` object that would carry `dirtyTreeResult.stashRef` back to the caller is never constructed. Fix by wrapping the post-stash steps in try/catch and surfacing/restoring the stash on failure. |
+| Git worktree/dirty-tree correctness findings (round 3, confirmed real, not yet fixed) | §13.1/§13.3 | small each, do first | Five confirmed-real correctness bugs from the round-3 git-package audit, deferred for scope: (1) `checkpoint()`'s `git status --porcelain` call uses `allowFailure: true` right after `add -A`, so a real git error (index lock, disk error) is swallowed and misread as "nothing changed," silently skipping a checkpoint that should have been created — fix by not using `allowFailure` there. (2) `approveRun`/`discardRun` call `restoreStash` with no error handling *after* the merge/discard already succeeded — a stash-pop conflict then throws an exception for an operation that actually completed, potentially leaving literal conflict markers in the just-merged tree. (3) `dirty-tree.ts` identifies the auto-stash by the positional ref `stash@{0}`, captured once at push time and reused verbatim at restore time — if any other `git stash` happens on the repo in between (a plausible manual stash by the user during a long-running agent run), `restoreStash` pops the wrong entry. Fix by capturing `git rev-parse stash@{0}` (a stable SHA) at push time and resolving it back to its current position at restore time. (4) Neither dirty-tree strategy preserves the original staged/unstaged split (`stash pop` without `--index`; temp-commit's `add -A` stages everything) despite a code comment claiming the tree is "left exactly as it was" — fix with `stash pop --index` and a staged-set-preserving temp-commit path. (5) `createRunWorktree` runs `handleDirtyTree` (destructive: stashes/temp-commits) before the still-fallible `git worktree add` — a failure there (branch collision, disk error) leaves an orphaned stash with no automatic recovery path, since the `RunWorktree` object that would carry `dirtyTreeResult.stashRef` back to the caller is never constructed. Fix by wrapping the post-stash steps in try/catch and surfacing/restoring the stash on failure. |
 | `snapshot-backup.ts` `relPath` traversal (round 3, confirmed real, currently unreachable) | §13.4 | small | `snapshotBeforeFirstEdit`/`rollback` join a caller-supplied `relPath` into `workspaceRoot`/`backupDir` with no traversal guard — the same class of bug fixed for `runId` elsewhere. Currently dead code (`agent.ts`'s `run()` throws before ever constructing a `SnapshotBackup` — the non-git execution path isn't wired up yet, see the "Full non-git AgentLoop execution path" row above), but it's an exported public API with no traversal test coverage, and the code comments explicitly plan to wire it up later. Fix with the same `assertSafeRunId`-style pattern before that wiring happens, not after. |
 
 ## Known gotchas (read before you hit them again)
