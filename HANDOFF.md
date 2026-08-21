@@ -1057,6 +1057,89 @@ information (e.g. concrete user demand for a native Windows sandbox
 despite its own spec-rated weakness). Full suite still 687/687 passing,
 clean `tsc -b`, clean `eslint .` — nothing here touched runtime behavior.
 
+### Research pass: DeepSeek Harness evaluated — two blocked rows unblocked, one policy gap closed
+
+Not a code change. Prompted directly by the user ("would deepseek harness help
+our clutchcode in any way?"), evaluated for real rather than from memory:
+cloned `deepseek-ai/deepseek-harness` @ `b150a55` (2026-08-21, MIT, TypeScript,
+~2,734 src files across 55 workspace packages — the closest peer to this
+project found so far: same language, same package manager, same test runner,
+same problem), read its architecture/sandbox/ACP/compaction subsystems and its
+published postmortems, and verified every load-bearing claim against a primary
+source rather than its README (npm registry for package existence and version,
+its own `LICENSE` files for the license split, `git rev-parse` for the pin).
+
+**The honest headline: it does not change our architecture, and almost none of
+it is adoptable.** Under our own §2 default the harness itself is
+**STUDY-ONLY** like every other reference project, and its plugin/DI core
+(Cordis) is explicitly *not* something to adopt — we chose direct package
+boundaries (§20) and retrofitting a DI container would be a rewrite, not an
+improvement. What it does deliver is three specific, concrete things:
+
+1. **The Landlock blocker is retired.** That row has carried the same stated
+   objection for several rounds — a native helper or vetted syscall binding
+   "neither exists yet, and a hand-rolled one carries a worse failure mode
+   (silently over-permissive, not fail-loud)." `@deepseek-ai/node-addon-landlock-run`
+   is exactly that helper, is **BSD-3-Clause** (its own LICENSE, separate from
+   the harness's MIT — a distinction that changes the verdict, so it is
+   recorded separately in every provenance doc), is published on npm (`0.1.1`,
+   confirmed live against the registry), and is **fail-closed by
+   construction**, which is precisely the property the objection demanded.
+   It also ships a prebuilt `linux-arm64`, so Landlock-on-arm64 does *not*
+   inherit the blocker that stalls arm64 seccomp. Row rewritten with a
+   four-step executable plan.
+2. **ACP is actionable and was already promised.** `PROJECT_SPEC.md` names ACP
+   in §18.1, §20 and §26 — our stdio binding is "deliberately the same shape as
+   ACP" and §26's risk mitigation is to be "a client of these protocols rather
+   than fighting them" — but we never implemented it, so no ACP client can
+   actually talk to us. There is now an official SDK (`@agentclientprotocol/sdk`
+   `0.25.1`) and a working reference consumer to study. As an **open protocol**
+   this lands on the MCP verdict (**REUSE — protocol impl**), not clean-room.
+   New row added, scoped as a second binding *alongside* `agent-rpc` so the VS
+   Code extension is untouched.
+3. **A real policy gap in our own docs, found by trying to answer the
+   question.** `LICENSE_AND_REUSE_ANALYSIS.md` governs *source entering our
+   tree* and says nearly everything is STUDY-ONLY "even when the license is
+   permissive." It had **nothing to say about adding a dependency** — a
+   different act with a different risk profile, and one we already do
+   routinely (`ajv`, `commander`, `vitest`). Read literally, the doc would have
+   forbidden consuming the Landlock helper for reasons that only apply to
+   copying. New **§2a, "Depending on a package is not reusing its source"**:
+   a comparison table (provenance, attribution, audit story, upstream fixes,
+   coupling), the explicit statement that §2's default is a rule about
+   *expression* not a preference for hand-rolling, the `ajv` precedent, and
+   five binding conditions on the Landlock dependency specifically
+   (depend-never-vendor; behind our own seam; fail-closed must be tested by us,
+   not trusted; BSD-3-Clause attribution at manifest level; pinned because
+   upstream advertises breaking changes).
+
+Also captured: their published **postmortem 0004** documents a Landlock defect
+we would very likely have shipped ourselves — a bare `'landlock-run: '`
+substring match conflating a *benign* partial-ABI notice with a *fatal* launcher
+error, so ripgrep's exit-1-for-no-matches surfaced as `SANDBOX_UNAVAILABLE`.
+Our own `classifyFailure` has been bitten twice by that same over-broad-text-match
+shape (the bare `"no such file or directory"` case, and the lint/typecheck
+`ENV_ERROR_RE` gap), so the lesson — *status-gated* classification, never a
+substring bag — is written into the Landlock row as a required step, not a
+footnote. A fourth, lower-priority row (tool-result pruning as a distinct
+compaction stage, §4.5) was added from their `compaction-tool-result-pruner`.
+
+The Windows Tier 1 decision closed earlier on this branch is **explicitly not
+reopened**: their native Windows rung self-reports `partial` enforcement, and
+their design note rejects AppContainer for being unable to do arbitrary-path
+reads at all — both of which *corroborate* §12.5's `[C:Low]` rating rather than
+contradicting it. Recorded as a watch item with two named revisit conditions so
+a future session doesn't relitigate it from the same evidence.
+
+Docs touched: new `research/repos/deepseek-harness.md` (full note in
+`00_METHOD.md §5`'s standard schema), `research/00_METHOD.md` inventory row
+(with a footnote on the later clone date and the license split),
+`LICENSE_AND_REUSE_ANALYSIS.md` (three table rows + new §2a; also corrected the
+stale "the one genuine REUSE" line, which is now two — MCP and ACP),
+`docs/PRIOR_ART.md` (four rows + corrected the blanket "all of the above are
+STUDY-ONLY" claim), and this file. No code, no tests, no behavior change:
+687/687 still passing, clean `tsc -b`, clean `eslint .`.
+
 ---
 
 ## What's left
@@ -1068,14 +1151,17 @@ loose "MVP" estimate.
 
 | Item | Spec ref | Rough effort | Notes |
 |---|---|---|---|
-| `agent workflow` CLI command | §8.1/§18.2, Phase 2 | small, do first | Both authoring layers exist now (built-ins + `--workflow-file`, see "what's done") — what's missing is the dedicated list/select/validate command §18.2 itself marks Phase 2. `--workflow-file <path>` can validate-and-run today; there's no `agent workflow validate <path>` that checks a file without starting a run, and no `agent workflow list` enumerating built-ins + any locally-referenced custom ones. Tagged "do first": Windows sandbox Tier 1 (the prior top row) is now closed as a documented decision, not a build task — see "what's done" — and this is the next row that's both small and genuinely unblocked; Landlock and arm64 seccomp (below) are each blocked on a plan/host that doesn't exist yet, and the VS Code multi-file view is deliberately deferred pending an engine-version bump, not actionable now. |
-| Landlock | §12.6 | medium–large, needs a plan first | Seccomp is done (see "what's done"); Landlock specifically needs either a native helper binary or a vetted raw-syscall binding — neither exists yet, and a hand-rolled one carries a worse failure mode (silently over-permissive, not fail-loud) than seccomp did. Don't attempt without a clear verification story first. |
-| arm64 seccomp | §12.6 | small, needs an arm64 host | The x86_64 filter is done and verified; arm64 has a different syscall number table with no way to verify it in this (x86_64) environment — needs either an arm64 host/CI runner or a very high-confidence authoritative source cross-checked the same way libseccomp's resolver was used for x86_64. |
+| `agent workflow` CLI command | §8.1/§18.2, Phase 2 | small, do first | Both authoring layers exist now (built-ins + `--workflow-file`, see "what's done") — what's missing is the dedicated list/select/validate command §18.2 itself marks Phase 2. `--workflow-file <path>` can validate-and-run today; there's no `agent workflow validate <path>` that checks a file without starting a run, and no `agent workflow list` enumerating built-ins + any locally-referenced custom ones. Tagged "do first" as the smallest genuinely-unblocked row — a quick win, not the highest-value one. **Updated:** the Landlock row below is **no longer blocked** (a published, fail-closed native helper now exists — see that row) and is tagged "do next (highest value)"; take `agent workflow` first if you want a short session, Landlock first if you want the substantive one. arm64 seccomp remains blocked on a real arm64 host, and the VS Code multi-file view is still deferred pending an engine-version bump. |
+| Landlock | §12.6 | medium, **now unblocked** — do next (highest value) | **The blocker named in this row for several rounds is retired.** It read: "needs either a native helper binary or a vetted raw-syscall binding — neither exists yet, and a hand-rolled one carries a worse failure mode (silently over-permissive, not fail-loud)." That helper now exists and is published: **`@deepseek-ai/node-addon-landlock-run`** (BSD-3-Clause, latest `0.1.1`, verified live on the npm registry) — ~298 lines of C11 over the raw kernel UAPI, statically linked musl, **fail-closed by construction** (exits without running the command if the kernel cannot enforce), self-restrict-then-`exec` so the ruleset is inherited across `execve` while the *invoking* process stays unrestricted, prebuilt for **`linux-x64` and `linux-arm64`**, with `probe() → 'full' \| 'partial' \| 'unusable'` and `grantArgs({readOnly, readWrite})`. **Consume it as a dependency; never vendor it** — see the new `LICENSE_AND_REUSE_ANALYSIS.md §2a` ("Depending on a package is not reusing its source"), which records the verdict and five binding conditions on it. Plan: (1) add the dep, pinned; (2) add a `landlock` rung to `packages/sandbox` behind the existing seam, layered *under* bwrap the way seccomp already is, wired through `detectSandboxBackend()`/`SandboxCapability` and reported by `agent doctor`; (3) **write our own runner-failure classification, status-gated** — a specific exit code **and** a fatal line, with exact informational lines excluded, never a substring bag: this is the whole lesson of their published postmortem 0004, where a bare `'landlock-run: '` substring match made ripgrep's exit-1-for-no-matches surface as `SANDBOX_UNAVAILABLE` on older-ABI kernels that print a *benign* partial-enforcement notice; our own `classifyFailure` has already been bitten twice by exactly this over-broad-text-match shape; (4) real tests on this Linux host in the style of the existing bwrap/seccomp suites — a file outside the allow-list genuinely unreadable, plus an explicit **fail-closed test** (absent/unusable launcher ⇒ no Landlock rung, never an unconfined run). Do **not** copy their `sandbox-local` provider, argv construction, or classification code — sandbox policy code is CLEAN-ROOM-REQUIRED per §3. Full study note: `research/repos/deepseek-harness.md`. |
+| arm64 seccomp | §12.6 | small, needs an arm64 host | The x86_64 filter is done and verified; arm64 has a different syscall number table with no way to verify it in this (x86_64) environment — needs either an arm64 host/CI runner or a very high-confidence authoritative source cross-checked the same way libseccomp's resolver was used for x86_64. **Note (new):** this blocker is specific to *seccomp*, whose filter we hand-assemble from architecture-specific syscall numbers. The Landlock row above does **not** inherit it — `@deepseek-ai/node-addon-landlock-run` ships a prebuilt `linux-arm64` binary and carries the ABI burden upstream, so Landlock-on-arm64 arrives free with that work while arm64 *seccomp* stays blocked on a real arm64 host. |
 | VS Code multi-file "changes" view | §18.5, minor | small | The extension opens one real `vscode.diff` editor per changed file (done, see "what's done") rather than combining several into VS Code's newer `vscode.changes` command — deliberately skipped since that command isn't universally available across the `^1.85.0` engine range this extension targets. Revisit if the minimum supported VS Code version is ever raised. |
 | Full non-git `AgentLoop` execution path | — | large, separate project | Snapshot-backed (not worktree-backed) execution for non-git directories. `Agent.run` currently refuses cleanly with a "run git init" error instead of attempting this. `SnapshotBackup`'s own traversal gap is already closed (see "what's done"), so this row is now purely "wire the execution path up," not blocked on any open correctness/security gap in the fallback it would use. |
 | PageRank repo map | §9, Phase 7 | medium | Tier 0 (ripgrep + on-demand tree-sitter) is what's live; the Aider-style PageRank map is Tier 1, triggered by measured retrieval-accuracy failures on large repos, not built preemptively. |
 | Eval scoreboard | §16, Phase 8 | medium–large | The replay harness (§16.3c) is live and gates every phase; the full SWE-bench-Verified-subset + Terminal-Bench-style scoreboard with published methodology is not. |
 | Multi-agent orchestration | §7, Phase 9 | large | Explicitly out of scope until the §7 rule justifies it — the spec argues *against* building this by default. Don't start it without re-reading §7's reasoning first. |
+| ACP (Agent Client Protocol) binding | §18.1/§20/§26 | medium | `PROJECT_SPEC.md` already names ACP three times — §18.1 says our stdio JSON-RPC binding is "deliberately the **same shape as ACP** … so future editor clients are cheap," §20's layer table calls the boundary "ACP-shaped," and §26's risk register commits us to "leaning into those protocols as a client rather than fighting them." We built `@clutchcode/agent-rpc` *shaped like* ACP but never implemented ACP, so no ACP client can actually talk to us. There is now an official **`@agentclientprotocol/sdk`** (`0.25.1`, spec at <https://agentclientprotocol.com>) and a working open-source consumer to study (DeepSeek Harness `packages/acp`, MIT, study-only). Because ACP is an **open protocol**, this is the same verdict as MCP — **REUSE — protocol impl**, not a clean-room problem (`LICENSE_AND_REUSE_ANALYSIS.md §2`). Payoff: Zed/Neovim/Emacs clients for roughly the cost of one adapter over the existing `Agent` boundary, without touching the runtime. Scope it as a *second binding alongside* `agent-rpc`, not a replacement, so the VS Code extension keeps working unchanged. |
+| Tool-result pruning as a distinct compaction stage | §4.5 | small–medium | Our context budgeter compacts conversation history wholesale (turn-safe) once the effective-context budget is exceeded, and folds the repo-map/open-file-window share into that same budget. Pruning *tool results* specifically — stale/superseded `shell` output, re-read file windows — is a cheaper, earlier lever we have not built, and it degrades quality far less than dropping whole turns. Idea studied from DeepSeek Harness's `compaction-tool-result-pruner` (a model-free pruner behind its own `ctx.toolResultPruner` seam, kept separate from `compaction-basic`); implementation clean-room, ours, per `docs/PRIOR_ART.md`. |
+| Windows sandbox Tier 1 — **revisit trigger only, decision stands** | §12.5/§12.6, A11 | n/a (watch item) | The doc-only/WSL2-recommended decision closed earlier this branch is **not** reopened by this research, and a future session should not treat it as reopened. Recording the evidence honestly so the trigger is legible: DeepSeek Harness ships `sandbox-windows-acl`, a real native Windows rung (a koffi port of a `WRITE_RESTRICTED`-token + restricting-SID mechanism). It **self-reports `enforcement: 'partial'`, not full** — ambient `Everyone` write ACEs and NTFS hard-links leak through, since ACLs bind to file objects rather than paths — and their own design note rejects AppContainer because it "cannot do arbitrary-path reads at all." Both facts **corroborate** §12.5's `[C:Low]` rating of the native path rather than contradicting it, and §29's team-size reasoning is untouched. Revisit only if (a) a Windows contributor/CI host materializes, **and** (b) a native path appears that reports *full*, not partial, enforcement. |
 
 ## Known gotchas (read before you hit them again)
 

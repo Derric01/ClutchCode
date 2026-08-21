@@ -42,8 +42,11 @@
 | smolagents | huggingface/smolagents | `e3a5b89` | Python | (see repo note) | Apache-2.0 | (see LICENSE_AND_REUSE) |
 | grok-cli | superagent-ai/grok-cli | `fb97af8` | TypeScript | (see repo note) | MIT | (see LICENSE_AND_REUSE) |
 | gemini-cli | google-gemini/gemini-cli | `1ac3377` | TypeScript | (see repo note) | Apache-2.0 | (see LICENSE_AND_REUSE) |
+| deepseek-harness | deepseek-ai/deepseek-harness | `b150a55` | TypeScript | ~2,734 | MIT † | `ebb4f099…` |
 
 *Source files = count of `.py/.ts/.tsx/.rs/.go` files (rough magnitude, not exact LOC).
+
+† **`deepseek-harness` was cloned later than the rest of this table — 2026-08-21, not 2026-08-12** (it did not exist as a public repo at the original clone date). Its `native/landlock-run` subtree carries its **own** `LICENSE` (BSD-3-Clause, © "node-addon-landlock-run contributors") and is published to npm as a separate package family — the MIT above covers the harness only. See `research/repos/deepseek-harness.md` and `LICENSE_AND_REUSE_ANALYSIS.md §2`, where the two get *different* reuse verdicts.
 
 **Prior-art repos read for docs/design, not adopted as code sources:**
 `SWE-bench/SWE-bench` (`f5daed8`, harness design), `laude-institute/terminal-bench` (`d28711d`), `modelcontextprotocol/modelcontextprotocol` (`5947545`, MCP spec).

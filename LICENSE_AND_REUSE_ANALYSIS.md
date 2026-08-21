@@ -71,10 +71,41 @@ SPDX identifiers verified by reading each repo's `LICENSE`/`LICENSE.md` at the p
 | grok-cli (superagent-ai) | MIT | No | No | Copyright + license text | Yes | **STUDY-ONLY** (community tool; not official xAI) |
 | gemini-cli | Apache-2.0 | No | Yes | NOTICE + license text | Yes | **STUDY-ONLY** |
 | MCP spec | Apache-2.0 (spec text often CC-BY-4.0) | No | Yes | attribution | Yes | **REUSE — protocol impl** (we implement the open protocol) |
+| DeepSeek Harness (`dsh`) | MIT | No | No | Copyright + license text | Yes | **STUDY-ONLY** (see `research/repos/deepseek-harness.md`) |
+| `@deepseek-ai/node-addon-landlock-run` | **BSD-3-Clause** (separate from the harness's MIT) | No | No | Copyright + license text in binary distributions | Yes | **DEPEND — do not vendor** (published npm package; see §2a) |
+| Agent Client Protocol (ACP) + `@agentclientprotocol/sdk` | Apache-2.0 | No | Yes | attribution | Yes | **REUSE — protocol impl** (open protocol, same basis as MCP) |
 
 **Why nearly everything is STUDY-ONLY even when the license is permissive:** Apache/MIT *permit* copying with attribution, but copying third-party source into our tree creates (a) attribution/NOTICE obligations that accrete and become a maintenance and audit burden, (b) provenance ambiguity that undermines the clean, auditable codebase the security story (spec §16/§19) depends on, and (c) coupling to another project's abstractions. Our default is therefore **reimplement the idea, cite the source in a code comment and in `docs/PRIOR_ART.md`, copy no code.** Verdicts above are *ceilings on what we would consider*, not licenses to paste.
 
-**The one genuine REUSE:** the **Model Context Protocol** is an open protocol meant to be implemented. We implement an MCP client (and optionally server) to the published spec — that is protocol conformance, not code copying. (Spec §15.)
+**The genuine REUSEs are open protocols, not codebases:** the **Model Context Protocol** (spec §15) and the **Agent Client Protocol** (spec §18.1, which already specifies our stdio JSON-RPC binding as "the same shape as ACP") are both open protocols meant to be implemented, each with a published spec and an official SDK. Implementing them is protocol conformance, not code copying. Their SDKs are ordinary dependencies under §2a below — we are a *client of the protocol*, which is precisely the mitigation §26's risk register commits us to ("leaning into those protocols as a client rather than fighting them").
+
+---
+
+## 2a. Depending on a package is not reusing its source
+
+§2's table and §3's clean-room rules govern **source entering our tree**. They say nothing about **adding a dependency**, which is a different act with a different risk profile, and conflating the two would forbid something we already do routinely (`ajv`, `commander`, `vitest`, `@types/vscode`).
+
+The distinction that matters:
+
+| | Copying source | Adding a dependency |
+|---|---|---|
+| Provenance | Ambiguous — our tree now contains someone else's expression under our copyright header | Clean — the boundary is a `package.json` line and a lockfile entry |
+| Attribution | Accretes NOTICE obligations per file, per update | Handled once, at the manifest/`THIRD_PARTY_NOTICES` level |
+| Audit story (§16/§19) | Weakened — reviewers must diff against upstream to know what is ours | Strengthened — the seam is explicit and versioned |
+| Upstream fixes | Manual re-port, silently drifts | `pnpm update` |
+| Coupling | To another project's *abstractions* | To a published *interface* we can swap behind our own seam |
+
+So the default in §2 ("reimplement the idea, copy no code") is a rule about **expression**, not a blanket preference for hand-rolling. Where a well-scoped, permissively-licensed package does something we would otherwise have to implement *badly or not at all*, taking the dependency is the more honest engineering call — this is exactly the reasoning already recorded for choosing `ajv` over a hand-rolled JSON-Schema validator (`HANDOFF.md`, §8.1 entry: "a hand-rolled structural check dressed up as one would be a real gap dressed as done").
+
+**`@deepseek-ai/node-addon-landlock-run` is the clearest instance of that case in the project so far.** §12.6's Landlock row has been blocked for several rounds on a stated, specific objection: it "needs either a native helper binary or a vetted raw-syscall binding — neither exists yet, and a hand-rolled one carries a worse failure mode (silently over-permissive, not fail-loud)." That package *is* the native helper, it is **fail-closed by construction** (it exits without running the command when the kernel cannot enforce), it is published with prebuilt `linux-x64` **and `linux-arm64`** binaries, and it exposes a `probe() → 'full' | 'partial' | 'unusable'` availability signal that maps onto our existing `detectSandboxBackend()`/`SandboxCapability` shape. Consuming it retires the objection without writing one line of security-critical C.
+
+**Conditions on that verdict** (all of which a reviewer should re-check before the dependency lands):
+
+1. **Depend, never vendor.** No C source, no prebuilt binary, and no `grantArgs`/classification logic is copied into our tree. If upstream disappears, we lose the Landlock *rung* and fall back to bwrap — we do not inherit a fork.
+2. **Behind our own seam.** It is wired as one rung of `packages/sandbox`, reported by `agent doctor` like every other backend, and never becomes a hard requirement of `shell`.
+3. **Fail-closed is load-bearing and must be tested by us**, not taken on trust — a real test on this Linux host asserting that an unusable/absent launcher yields no Landlock rung rather than an unconfined run (§12.6's whole reason for treating Landlock as higher-risk than seccomp).
+4. **BSD-3-Clause attribution** is satisfied in `NOTICE`/`THIRD_PARTY_NOTICES` at the manifest level, and the non-endorsement clause is respected (we do not imply DeepSeek endorses ClutchCode).
+5. **Preview-stage upstream**: the parent harness advertises breaking changes; the version is pinned, and the rung degrades to "unavailable" rather than erroring if the package's contract shifts.
 
 ---
 
