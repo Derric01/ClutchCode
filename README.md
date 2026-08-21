@@ -485,6 +485,34 @@ fixed by wrapping the rest of the function in try/catch and auto-restoring
 the stash on failure, narrating the outcome in the thrown error either
 way. 670 tests total (6 new), clean `tsc -b`, clean `eslint .`.
 
+**The last round-3-deferred finding — `snapshot-backup.ts`'s `relPath`
+path traversal (§13.4) — is fixed.** `SnapshotBackup.snapshotBeforeFirstEdit`
+joined a caller-supplied `relPath` straight into both `workspaceRoot` and
+`backupDir` via a bare `path.join`, with no traversal guard — reproduced
+for real against a throwaway workspace with distinct-depth roots (so the
+two escape directions can't collide on the same file and mask each other):
+a `relPath` containing `..` made the backup write land *outside*
+`backupDir` entirely, and a later `rollback()` for the same `relPath`
+overwrote a file *outside* `workspaceRoot`. Currently dead code — `agent.ts`'s
+`run()` still refuses non-git directories before ever constructing a
+`SnapshotBackup` — but it's an exported public API with no traversal test
+coverage, closed now rather than after the non-git execution path gets
+wired up. Fixed with a new `@clutchcode/git` module, `rel-path.ts`
+(`isSafeRelPath`/`assertSafeRelPath`, exported alongside the existing
+`assertSafeRunId`): unlike `runId`, `relPath` legitimately needs
+subdirectory structure, so instead of a single-segment allow-list it
+rejects the specific traversal primitive (any `..` path segment, checked
+on both separators regardless of platform) plus absolute/drive-prefixed
+shapes, backed by a `path`-based `assertContainedIn` re-check on the
+actual joined destination as defense in depth — the same
+structural-check-plus-resolved-containment-recheck pattern already used
+for `runId`. 17 new tests (11 for the validator itself, 6 exercising the
+real `SnapshotBackup` API, including two that reproduce the original
+disk-level escape and confirm it's now rejected before any write happens),
+each proven against the `git stash`-revert-recheck cycle. 687 tests total,
+clean `tsc -b`, clean `eslint .`. This closes the last open row from round
+3's git-package audit.
+
 ## Repository layout
 
 ```

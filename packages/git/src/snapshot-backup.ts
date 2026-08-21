@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { assertContainedIn, assertSafeRelPath } from "./rel-path.js";
 
 /**
  * Non-git fallback (PROJECT_SPEC.md §13.4, "Not a git repo at all"):
@@ -35,11 +36,21 @@ export class SnapshotBackup {
 
   /** Snapshot a file's pre-edit state, once, before its first edit this run. */
   snapshotBeforeFirstEdit(relPath: string): void {
+    assertSafeRelPath(relPath);
     if (this.snapshotted.has(relPath)) return;
-    this.snapshotted.add(relPath);
 
     const src = path.join(this.workspaceRoot, relPath);
     const dest = path.join(this.backupDir, relPath);
+    // Defense in depth: `assertSafeRelPath` already rejects any `..`
+    // segment (the only way `path.join` can escape a root here), but
+    // re-check the actual joined destinations too, the same
+    // belt-and-suspenders pattern used for `runId` elsewhere in this
+    // package — so a future change to the shape check alone can't quietly
+    // reopen this class of bug.
+    assertContainedIn(this.workspaceRoot, src);
+    assertContainedIn(this.backupDir, dest);
+
+    this.snapshotted.add(relPath);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
 
     if (fs.existsSync(src)) {

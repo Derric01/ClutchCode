@@ -7,8 +7,8 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-21
 **Branch:** `claude/start-work-handoff-referral-52eyj1`
-**Latest commit:** `86ed271` — "fix: close 5 round-3-deferred git worktree/dirty-tree correctness bugs"
-**Test suite:** 670/670 passing, 75 test files, clean `tsc -b`, clean `eslint .`
+**Latest commit:** (pushed below — see "what's done" for this session's commit)
+**Test suite:** 687/687 passing, 76 test files, clean `tsc -b`, clean `eslint .`
 
 **PR:** none opened yet for this branch — PR #12 (the prior branch) merged
 cleanly, as did #4–#11 before it. Pattern established across every phase so
@@ -927,6 +927,73 @@ findings" row in "what's left" below; the `snapshot-backup.ts` `relPath`
 traversal row (also round-3-deferred, currently unreachable dead code) is
 untouched and still open.
 
+### `snapshot-backup.ts` `relPath` path traversal (§13.4) — the last round-3-deferred finding, closed
+
+Picked up per the autonomous-continuation priority order: the prior
+session's own "what's done" entry explicitly flagged this row as still
+open, and it also carries the "do first" tag in "what's left" — both
+signals point at the same row, so no ambiguity this time.
+
+`SnapshotBackup.snapshotBeforeFirstEdit` (the §13.4 non-git fallback: a
+snapshot-vs-current backup used when there's no git worktree to isolate a
+run) joins a caller-supplied `relPath` into two different roots —
+`workspaceRoot` (to read the file's current content) and `backupDir` (to
+store the backup) — via a bare `path.join`, with no traversal guard at
+all. Reproduced for real before writing any fix, against a throwaway
+workspace with deliberately distinct-depth roots (so the two escape
+directions can't collide on the same absolute path and mask each other —
+an early repro attempt with same-depth sibling roots did exactly that, the
+"backup" and "victim" paths turned out identical and the escape was
+invisible until the roots were re-nested at different depths): a `relPath`
+built as `path.relative(workspaceRoot, someFileOutsideIt)` (e.g.
+`"../canary.txt"`) made `snapshotBeforeFirstEdit` write its backup file
+*outside* `backupDir` entirely — confirmed on disk, not just structurally —
+and a later `rollback()` for the same `relPath` genuinely overwrote a file
+*outside* `workspaceRoot` with backed-up content. Same class of bug as the
+`runId` path traversal fixed in an earlier round (`run-id.ts`'s
+`assertSafeRunId`), but `relPath` legitimately needs to carry subdirectory
+structure (`"src/nested/file.ts"`), so the single-segment allow-list shape
+`SAFE_RUN_ID_RE` uses isn't the right fit here.
+
+Fixed with a new `@clutchcode/git` module, `rel-path.ts`:
+`isSafeRelPath`/`assertSafeRelPath` reject the specific traversal
+primitive itself (any `..` path segment, split on both `/` and `\`
+regardless of the current platform's own separator, since `relPath` is
+untrusted text that may assume a different convention than this process's
+`path.sep`) plus absolute and Windows-drive/UNC-shaped input, and a
+companion `assertContainedIn(root, resolved)` re-checks the actual joined
+destination against its root as defense in depth — mirroring the
+"structural allow-list plus a `path`-based containment re-check on the
+resolved result" pattern already established for `runId`. `
+snapshotBeforeFirstEdit` calls `assertSafeRelPath` first, then
+`assertContainedIn` against both `src` and `dest` before touching disk or
+recording the path as snapshotted — since it's the *only* entry point that
+ever adds to `SnapshotBackup`'s internal `snapshotted` set (`diff()`/
+`rollback()` only ever iterate that already-validated set, never take a
+fresh `relPath`), this one chokepoint is genuinely sufficient, unlike
+`runId` which needed the same validator wired into several independent
+read/mutate paths.
+
+Confirmed real and fixed, not just plausible: reverted `snapshot-backup.ts`
+alone via `git stash push -- packages/git/src/snapshot-backup.ts`, re-ran
+the new tests — all 5 traversal-specific tests failed against the pre-fix
+code (the other 5 pre-existing/legitimate-path tests in the same file kept
+passing, confirming the fix doesn't regress ordinary nested-path use), then
+`git stash pop` and re-ran — all passed again. 17 new tests: 11 in a new
+`rel-path.test.ts` (accepts ordinary and nested paths; rejects a leading,
+buried, and bare `..`; rejects POSIX-absolute and Windows-drive/UNC-shaped
+input even on POSIX; rejects a backslash-separated `..` even though POSIX
+`path` itself wouldn't split on it; rejects empty string and embedded NUL;
+`assertContainedIn`'s own accept/reject/string-prefix-vs-real-containment
+cases) and 6 in `snapshot-backup.test.ts` (a legitimate nested-subdirectory
+path still round-trips through snapshot+rollback; three direct rejection
+cases; two full reproductions of the original disk-level escape, now
+asserted to throw before any file gets written in either direction). 687
+tests total (up from 670; 17 new), clean `tsc -b`, clean `eslint .`. This
+closes the row in "what's left" — round 3's git-package audit (worktree/
+dirty-tree correctness, prior entry, plus this one) is now fully resolved,
+with nothing left deferred from that round.
+
 ---
 
 ## What's left
@@ -938,16 +1005,15 @@ loose "MVP" estimate.
 
 | Item | Spec ref | Rough effort | Notes |
 |---|---|---|---|
-| Windows sandbox Tier 1 | §12.5/§12.6, A11 | medium | WSL2-recommended is the spec's own documented fallback; a native restricted-token/AppContainer path is explicitly `[C:Low]` in the spec — confirm whether it's worth building vs. staying doc-only. |
+| Windows sandbox Tier 1 | §12.5/§12.6, A11 | medium, do first | WSL2-recommended is the spec's own documented fallback; a native restricted-token/AppContainer path is explicitly `[C:Low]` in the spec — confirm whether it's worth building vs. staying doc-only. Tagged "do first": it's the literal top row now that every item explicitly deferred out of round 3 (the git-package audit's five worktree/dirty-tree findings, plus this table's own `snapshot-backup.ts` `relPath` row) is closed — see "what's done" — so nothing else carries an explicit-deferral signal ahead of it. |
 | Landlock | §12.6 | medium–large, needs a plan first | Seccomp is done (see "what's done"); Landlock specifically needs either a native helper binary or a vetted raw-syscall binding — neither exists yet, and a hand-rolled one carries a worse failure mode (silently over-permissive, not fail-loud) than seccomp did. Don't attempt without a clear verification story first. |
 | arm64 seccomp | §12.6 | small, needs an arm64 host | The x86_64 filter is done and verified; arm64 has a different syscall number table with no way to verify it in this (x86_64) environment — needs either an arm64 host/CI runner or a very high-confidence authoritative source cross-checked the same way libseccomp's resolver was used for x86_64. |
 | VS Code multi-file "changes" view | §18.5, minor | small | The extension opens one real `vscode.diff` editor per changed file (done, see "what's done") rather than combining several into VS Code's newer `vscode.changes` command — deliberately skipped since that command isn't universally available across the `^1.85.0` engine range this extension targets. Revisit if the minimum supported VS Code version is ever raised. |
-| Full non-git `AgentLoop` execution path | — | large, separate project | Snapshot-backed (not worktree-backed) execution for non-git directories. `Agent.run` currently refuses cleanly with a "run git init" error instead of attempting this. |
+| Full non-git `AgentLoop` execution path | — | large, separate project | Snapshot-backed (not worktree-backed) execution for non-git directories. `Agent.run` currently refuses cleanly with a "run git init" error instead of attempting this. `SnapshotBackup`'s own traversal gap is already closed (see "what's done"), so this row is now purely "wire the execution path up," not blocked on any open correctness/security gap in the fallback it would use. |
 | `agent workflow` CLI command | §8.1/§18.2, Phase 2 | small | Both authoring layers exist now (built-ins + `--workflow-file`, see "what's done") — what's missing is the dedicated list/select/validate command §18.2 itself marks Phase 2. `--workflow-file <path>` can validate-and-run today; there's no `agent workflow validate <path>` that checks a file without starting a run, and no `agent workflow list` enumerating built-ins + any locally-referenced custom ones. |
 | PageRank repo map | §9, Phase 7 | medium | Tier 0 (ripgrep + on-demand tree-sitter) is what's live; the Aider-style PageRank map is Tier 1, triggered by measured retrieval-accuracy failures on large repos, not built preemptively. |
 | Eval scoreboard | §16, Phase 8 | medium–large | The replay harness (§16.3c) is live and gates every phase; the full SWE-bench-Verified-subset + Terminal-Bench-style scoreboard with published methodology is not. |
 | Multi-agent orchestration | §7, Phase 9 | large | Explicitly out of scope until the §7 rule justifies it — the spec argues *against* building this by default. Don't start it without re-reading §7's reasoning first. |
-| `snapshot-backup.ts` `relPath` traversal (round 3, confirmed real, currently unreachable) | §13.4 | small, do first | `snapshotBeforeFirstEdit`/`rollback` join a caller-supplied `relPath` into `workspaceRoot`/`backupDir` with no traversal guard — the same class of bug fixed for `runId` elsewhere. Currently dead code (`agent.ts`'s `run()` throws before ever constructing a `SnapshotBackup` — the non-git execution path isn't wired up yet, see the "Full non-git AgentLoop execution path" row above), but it's an exported public API with no traversal test coverage, and the code comments explicitly plan to wire it up later. Fix with the same `assertSafeRunId`-style pattern before that wiring happens, not after. |
 
 ## Known gotchas (read before you hit them again)
 
