@@ -7,7 +7,7 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-21
 **Branch:** `claude/start-work-handoff-referral-52eyj1`
-**Latest commit:** (pending — see the commit this snapshot update ships in)
+**Latest commit:** `86ed271` — "fix: close 5 round-3-deferred git worktree/dirty-tree correctness bugs"
 **Test suite:** 670/670 passing, 75 test files, clean `tsc -b`, clean `eslint .`
 
 **PR:** none opened yet for this branch — PR #12 (the prior branch) merged
