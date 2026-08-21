@@ -7,7 +7,7 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-21
 **Branch:** `claude/start-work-handoff-referral-52eyj1`
-**Latest commit:** `2f0ae24` — "fix: close the last round-3-deferred snapshot-backup relPath traversal bug"
+**Latest commit:** (pushed below — see "what's done" for this session's commit)
 **Test suite:** 687/687 passing, 76 test files, clean `tsc -b`, clean `eslint .`
 
 **PR:** none opened yet for this branch — PR #12 (the prior branch) merged
@@ -994,6 +994,69 @@ closes the row in "what's left" — round 3's git-package audit (worktree/
 dirty-tree correctness, prior entry, plus this one) is now fully resolved,
 with nothing left deferred from that round.
 
+### Windows sandbox Tier 1 (§12.5/§12.6, A11/Q5) — closed as a documented decision: doc-only, WSL2-recommended
+
+Picked up per the autonomous-continuation priority order: nothing was left
+deferred in the prior session's own "what's done" entry, so this was the
+"do first"-tagged top row of "What's left." The row's own note flagged it
+needed a decision first — native restricted-token/AppContainer vs. staying
+WSL2-doc-only — before it could even be scoped as build-or-skip.
+
+Read what `PROJECT_SPEC.md` itself already says, rather than treating the
+row as blocked pending a fresh human call: §12.5's isolation-mechanism
+comparison table rates the "Windows restricted token / AppContainer" row
+**[C:Low]** — "weakest story; WSL2 preferred" — and §12.6's tiered-defaults
+block spells out the fallback explicitly: `Windows→ WSL2 (recommended)
+else restricted-token + ASK-heavy policy [C:Low]`. §29's self-review
+(point 3) goes further and makes the call directly for a small team: "If
+the team is <2, Phase 1 must shed the probe (defer to Phase 2) and Windows
+sandbox (doc-only)." A11/Q5 (the assumptions/open-questions registers)
+frame this as "decide Windows support level... doc-only vs code," with
+Q5's own decision deadline set at "Phase 3" — several phases behind where
+this project actually stands now. Taken together, this isn't spec silence
+needing a fresh human call — it's the spec having already made the call,
+with the low-confidence tag as its own stated reason, and simply never
+having that call formally closed out in the registers built to record
+exactly it.
+
+Before writing anything, checked whether the runtime already matches this
+decision or would need code changes to align with it. It already does,
+and is already tested: `detectSandboxBackend()` (`packages/sandbox/src/
+tier1.ts`) has no Windows-specific branch at all — any platform besides
+`linux`/`darwin` (including `win32`) falls through to `backend: "none"`
+with a `reason` string that explicitly names WSL2 as the recommended
+path; `tier1.test.ts` already asserts that string contains both `"win32"`
+and `"WSL2"`; and `agent doctor`'s `sandbox (§12.5/§12.6)` check
+(`apps/cli/src/commands.ts`) surfaces that same `reason` verbatim to the
+user, not a generic "unsupported." So the actual gap wasn't missing
+behavior — it was that HANDOFF's "What's left" table and README's Status
+section both described this as an *open* item ("confirm whether it's
+worth building," "remains open too"), reading as unresolved work still
+pending, when the spec, the code, and its tests already agree on the
+answer.
+
+Closed it as a documented decision rather than a build task:
+1. `PROJECT_SPEC.md`'s A11 and Q5 registers marked resolved in place —
+   doc-only, WSL2-recommended, pointing at §12.5's `[C:Low]` rating and
+   §29's self-review call as the reasoning — rather than silently leaving
+   two "decision needed" rows sitting unanswered forever in what the doc
+   calls its "authoritative Phase-0 deliverable."
+2. `README.md`'s Status section reworded from "remains open too" to state
+   the resolved decision plainly, with the same reasoning and a pointer to
+   the already-passing test that proves the runtime's `win32` fallback
+   message actually names WSL2.
+3. This entry, plus removing the row from "What's left" below with the
+   "do first" tag moved to the next genuinely unblocked row (see there for
+   which, and why).
+
+No code or test changes were needed — the runtime and its test coverage
+already matched the decision; the gap was purely a "what's left"/README
+bookkeeping one. `PROJECT_SPEC.md`, `README.md`, and `HANDOFF.md` now all
+agree the decision is made and closed, not to be revisited without new
+information (e.g. concrete user demand for a native Windows sandbox
+despite its own spec-rated weakness). Full suite still 687/687 passing,
+clean `tsc -b`, clean `eslint .` — nothing here touched runtime behavior.
+
 ---
 
 ## What's left
@@ -1005,12 +1068,11 @@ loose "MVP" estimate.
 
 | Item | Spec ref | Rough effort | Notes |
 |---|---|---|---|
-| Windows sandbox Tier 1 | §12.5/§12.6, A11 | medium, do first | WSL2-recommended is the spec's own documented fallback; a native restricted-token/AppContainer path is explicitly `[C:Low]` in the spec — confirm whether it's worth building vs. staying doc-only. Tagged "do first": it's the literal top row now that every item explicitly deferred out of round 3 (the git-package audit's five worktree/dirty-tree findings, plus this table's own `snapshot-backup.ts` `relPath` row) is closed — see "what's done" — so nothing else carries an explicit-deferral signal ahead of it. |
+| `agent workflow` CLI command | §8.1/§18.2, Phase 2 | small, do first | Both authoring layers exist now (built-ins + `--workflow-file`, see "what's done") — what's missing is the dedicated list/select/validate command §18.2 itself marks Phase 2. `--workflow-file <path>` can validate-and-run today; there's no `agent workflow validate <path>` that checks a file without starting a run, and no `agent workflow list` enumerating built-ins + any locally-referenced custom ones. Tagged "do first": Windows sandbox Tier 1 (the prior top row) is now closed as a documented decision, not a build task — see "what's done" — and this is the next row that's both small and genuinely unblocked; Landlock and arm64 seccomp (below) are each blocked on a plan/host that doesn't exist yet, and the VS Code multi-file view is deliberately deferred pending an engine-version bump, not actionable now. |
 | Landlock | §12.6 | medium–large, needs a plan first | Seccomp is done (see "what's done"); Landlock specifically needs either a native helper binary or a vetted raw-syscall binding — neither exists yet, and a hand-rolled one carries a worse failure mode (silently over-permissive, not fail-loud) than seccomp did. Don't attempt without a clear verification story first. |
 | arm64 seccomp | §12.6 | small, needs an arm64 host | The x86_64 filter is done and verified; arm64 has a different syscall number table with no way to verify it in this (x86_64) environment — needs either an arm64 host/CI runner or a very high-confidence authoritative source cross-checked the same way libseccomp's resolver was used for x86_64. |
 | VS Code multi-file "changes" view | §18.5, minor | small | The extension opens one real `vscode.diff` editor per changed file (done, see "what's done") rather than combining several into VS Code's newer `vscode.changes` command — deliberately skipped since that command isn't universally available across the `^1.85.0` engine range this extension targets. Revisit if the minimum supported VS Code version is ever raised. |
 | Full non-git `AgentLoop` execution path | — | large, separate project | Snapshot-backed (not worktree-backed) execution for non-git directories. `Agent.run` currently refuses cleanly with a "run git init" error instead of attempting this. `SnapshotBackup`'s own traversal gap is already closed (see "what's done"), so this row is now purely "wire the execution path up," not blocked on any open correctness/security gap in the fallback it would use. |
-| `agent workflow` CLI command | §8.1/§18.2, Phase 2 | small | Both authoring layers exist now (built-ins + `--workflow-file`, see "what's done") — what's missing is the dedicated list/select/validate command §18.2 itself marks Phase 2. `--workflow-file <path>` can validate-and-run today; there's no `agent workflow validate <path>` that checks a file without starting a run, and no `agent workflow list` enumerating built-ins + any locally-referenced custom ones. |
 | PageRank repo map | §9, Phase 7 | medium | Tier 0 (ripgrep + on-demand tree-sitter) is what's live; the Aider-style PageRank map is Tier 1, triggered by measured retrieval-accuracy failures on large repos, not built preemptively. |
 | Eval scoreboard | §16, Phase 8 | medium–large | The replay harness (§16.3c) is live and gates every phase; the full SWE-bench-Verified-subset + Terminal-Bench-style scoreboard with published methodology is not. |
 | Multi-agent orchestration | §7, Phase 9 | large | Explicitly out of scope until the §7 rule justifies it — the spec argues *against* building this by default. Don't start it without re-reading §7's reasoning first. |

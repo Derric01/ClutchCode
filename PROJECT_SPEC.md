@@ -1471,7 +1471,7 @@ Format: ID · Title · Status · Context · Decision · Alternatives · Why reje
 | A8 | tree-sitter grammars cover the languages our users care about; missing grammars degrade to ripgrep. | eng | pick the initial language set from eval suite |
 | A9 | The "adapt-to-weak-models" bet has a real, measurable VTCR delta (§16.4). | research | prove/disprove in Phase 8; it validates the whole project |
 | A10 | Reference-project architecture claims are current as of the 2026-08-12 clones; they will rot. | research | re-verify before relying on any claim in build |
-| A11 | Windows users can/will use WSL2 for the strong sandbox tier; native Windows sandbox stays weak. | eng | decide Windows support level for Phase 1 (doc-only vs code) |
+| A11 | Windows users can/will use WSL2 for the strong sandbox tier; native Windows sandbox stays weak. | eng | **Resolved (2026-08-21, see `HANDOFF.md`): doc-only.** WSL2 stays the recommended path; a native restricted-token/AppContainer backend is not built, matching §12.5's own `[C:Low]` rating for it and §29 point 3's self-review call for doc-only Windows sandboxing at this team size. `detectSandboxBackend()` already implements this (reports `"none"` on `win32` with a `reason` naming WSL2), surfaced by `agent doctor`. |
 
 ## 28. OPEN QUESTIONS register
 
@@ -1481,7 +1481,7 @@ Format: ID · Title · Status · Context · Decision · Alternatives · Why reje
 | Q2 | Which SWE-bench Verified subset + how many realistic hand-built tasks constitute the eval suite (§16.3)? | research | before Phase 8 (design earlier) |
 | Q3 | Cheat-detection false-positive tolerance + the labeled corpus to tune it (§14.6, §16.2). | eng+research | Phase 4 |
 | Q4 | Default cost ceiling + step/wall-clock budgets that balance capability vs runaway (§6.3). | product | Phase 1 default, tune via eval |
-| Q5 | Windows Phase 1 posture: WSL2-recommended doc-only, or ship a restricted-token sandbox? (§12.5, A11) | eng | Phase 3 |
+| Q5 | Windows Phase 1 posture: WSL2-recommended doc-only, or ship a restricted-token sandbox? (§12.5, A11) | eng | **Resolved: doc-only — see A11.** |
 | Q6 | Should `agent doctor` bundle/manage a local model server or only detect one? (A4) | product | Phase 2 |
 | Q7 | Single-binary toolchain: Bun compile vs Node SEA vs pkg — which by Phase 2? (A5) | eng | Phase 2 |
 | Q8 | Workflow authoring: is the two-mode split (TS DSL + declarative) worth it, or declarative-only? (§8.1) | eng | after Phase 6 dogfood |

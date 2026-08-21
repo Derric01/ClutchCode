@@ -127,8 +127,21 @@ fails by silently granting more access than intended, a worse mistake
 category than seccomp's fail-loud one, so this stays a named gap rather
 than a guess. **arm64 seccomp is also not supported yet** — different
 syscall numbers, no way to verify them without an arm64 host, reported
-honestly by `detectSeccompSupport()` rather than guessed. A Windows Tier 1
-backend (WSL2 is the spec's own recommended path there) remains open too.
+honestly by `detectSeccompSupport()` rather than guessed. **Windows Tier 1
+is a closed decision, not an open gap:** §12.5 itself rates a native
+restricted-token/AppContainer backend **[C:Low]** ("weakest story; WSL2
+preferred"), and the spec's own self-review (§29 point 3) already calls
+for doc-only Windows sandboxing when the team is small — so this project
+stays doc-only, on purpose, rather than building a native path against a
+confidence rating the spec itself flags as its weakest. `PROJECT_SPEC.md`'s
+assumptions register (A11) and open-questions register (Q5) are marked
+resolved accordingly. This isn't just a documentation stance:
+`detectSandboxBackend()` already implements it — on `win32` it reports
+`backend: "none"` with a `reason` string that names WSL2 as the
+recommended path (tested directly, asserting the string mentions both
+`win32` and `WSL2`), and `agent doctor` surfaces that same reason
+verbatim, so a Windows user sees *why* Tier 1 is inactive and what to do
+about it, not a silent fallback.
 
 **Phase 4's VS Code extension (§18.1/§18.5) is built.** A new
 `@clutchcode/agent-rpc` package gives the runtime a second binding
