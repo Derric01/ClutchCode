@@ -7,7 +7,7 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-21
 **Branch:** `claude/start-work-handoff-referral-52eyj1`
-**Latest commit:** `8b96ed2` — "docs: make the two research passes actually reachable by a next session"
+**Latest commit:** `1d5bcb1` — "docs: architectural audit of the two research passes — 4 findings, 3 corrections"
 **Test suite:** 687/687 passing, 76 test files, clean `tsc -b`, clean `eslint .`
 
 **PR:** none opened yet for this branch — PR #12 (the prior branch) merged
