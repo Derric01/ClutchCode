@@ -9,7 +9,14 @@ file is the time-stamped snapshot of where the project actually stands.
 **Branch:** `claude/start-work-handoff-referral-52eyj1`
 **Latest commit:** `06ca21e` — "feat: open-source packaging — CI, security policy, quickstart, publish metadata"
 **Test suite:** 687/687 passing, 76 test files, clean `tsc -b`, clean `eslint .`
-**CI:** `.github/workflows/ci.yml` — build/test/lint on Node 20 + 22, on every PR.
+**CI:** `.github/workflows/ci.yml` added — build/test/lint on Node 20 + 22, on
+every PR. **Not yet observed running.** Verified: the file is valid YAML, is on
+the PR branch, and is in the PR diff — but the GitHub API reports `0` registered
+workflows and `0` check runs on PR #14. This repo had no workflows before, so
+the most likely cause is that **GitHub Actions is disabled for the repository**
+(Settings → Actions → General). A human needs to enable it; the workflow itself
+cannot be confirmed green until a run actually happens. Do not record CI as
+working until a run is observed.
 **Note:** the "what's done" history moved to `docs/PROJECT_LOG.md`; this file is
 kept short on purpose. Append your entry there, not here.
 
