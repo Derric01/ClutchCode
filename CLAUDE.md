@@ -203,47 +203,116 @@ time-stamped snapshot of where the project actually is right now.
 
 ## Autonomous continuation ("start work" / "refer the handoff and work")
 
-This repo supports a lightweight autonomous-continuation convention, driven
-by two trigger phrases and two matching project skills
-(`.claude/skills/start-work/`, `.claude/skills/refer-handoff/`) that pattern-
-match on them:
+This repo runs on a continuation convention: the user says a trigger phrase
+and nothing else, and the executor behaves like **a senior engineer who
+already has the context and needs no further instruction** — picks the right
+next thing, builds it to this repo's standard, checkpoints it, and moves on.
 
-- **"start work"** (said any time, mid-session or otherwise) — spawn one
-  background subagent (`general-purpose`) with a self-contained prompt:
-  read this file and `HANDOFF.md`, pick the next unit of work per the
-  priority order below, complete it end to end, then report back. Don't
-  block on it and don't fabricate a result — when its completion
-  notification arrives, relay what it actually did to the user faithfully
-  (what was done, what was verified, what's still open), not just "done."
-- **"refer the handoff and work"** (and close variants — "refer handoff
-  and work", "check the handoff and continue") — typically said to open a
-  fresh session with no other context. Skip the subagent: you're already
-  the fresh executor. Read `HANDOFF.md` and this file yourself right now,
-  pick the next unit of work, and start immediately — no clarifying
-  questions first; the whole point of the phrase is "you already have
-  enough context in HANDOFF.md, go."
+Two trigger phrases, two skills (`.claude/skills/start-work/`,
+`.claude/skills/refer-handoff/`), **one shared playbook — this section.**
+The skills are thin triggers that point here. Change behavior *here*, never
+by duplicating rules into two skill files that can drift apart.
 
-Both paths do the *same* work, just with a different executor. Picking the
-next unit of work, in priority order:
+- **"start work"** (any time, mid-session or not) — spawn one background
+  subagent (`general-purpose`, `run_in_background: true`) that runs the work
+  loop below. Don't block on it; don't fabricate or predict its result. When
+  its notification lands, relay what it *actually* did — what was built,
+  what was verified and how, what's still open — never a bare "done."
+- **"refer the handoff and work"** (and close variants) — you are already
+  the fresh executor. Skip the subagent, read `HANDOFF.md` + this file right
+  now, and run the same loop directly. No clarifying questions first; the
+  whole point of the phrase is "you have enough context, go."
 
-1. An explicitly deferred/incomplete item flagged in `HANDOFF.md`'s latest
-   "what's done" entry (e.g. a subagent audit that hit a rate limit
-   mid-round, or a finding documented but not yet fixed) — finish that
-   first.
-2. The top row of `HANDOFF.md`'s "What's left" table.
-3. If neither exists, run another audit round using the methodology
-   documented in `HANDOFF.md`'s most recent review-round write-up (fan out
-   parallel subagents across areas not recently covered, verify every
-   finding empirically before trusting it — see "Fixing a bug or
-   vulnerability" above — fix what's confirmed real).
+Both paths do the same work. Only the executor differs.
 
-Do the work following every convention already in this file (real tests,
-the "prove it, don't assume it" fix discipline, the full build/test/lint
-loop before committing) and whatever git branch/commit/PR conventions are
-already in force for the session — don't invent new ones. Finish the same
-way any unit of work in this repo finishes (see above): build/test/lint
-clean, `README.md`'s Status section updated if the work is user-visible,
-`HANDOFF.md` updated (snapshot header + a new "what's done" entry, matching
-the established write-up depth), and — only if the work surfaced a
-genuinely new, durable lesson, not a one-off status update — this file
-updated too.
+### The work loop
+
+Work in **units**. A unit is one "What's left" row taken end to end and
+checkpointed. **After finishing a unit, continue to the next one** — do not
+stop and ask permission between units — until a stop condition fires.
+
+Per unit:
+
+1. **Re-read `HANDOFF.md`'s "What's left" table.** Never work from a
+   remembered snapshot: an earlier unit in this same run may have reordered
+   it, moved the `DO FIRST` tag, or closed the row you were about to take.
+2. **Pick the unit,** in priority order:
+   a. An explicitly deferred/incomplete item flagged in the latest "what's
+      done" entry (an audit that ran out of budget, a finding documented but
+      not fixed) — finish that first.
+   b. The row tagged **`DO FIRST`**; absent that, the top row of the table.
+      Position *is* the priority signal (see the table's own preamble).
+   c. If neither exists, run another audit round using the methodology in
+      the most recent review-round write-up (fan out across areas not
+      recently covered; verify every finding empirically before trusting it
+      — see "Fixing a bug or vulnerability"; fix what's confirmed real).
+
+   **Skip** any row marked `BLOCKED`, `watch item`, `revisit trigger only`,
+   or otherwise gated on a human decision — those are not implementable
+   tasks, and implementing one anyway is a defect, not initiative.
+3. **Coherence check — before writing any code.** Read what
+   `PROJECT_SPEC.md` and the ADR list actually say about this row's area. If
+   the row contradicts an Accepted ADR or a spec decision, **stop and report
+   it instead of implementing.** This is not hypothetical: a queued
+   "generated model catalog" row was found to contradict ADR-015, which had
+   already considered and rejected static per-model tables ("static rots").
+   Silently implementing over an Accepted decision is how an architecture
+   erodes, and it is the worst thing an autonomous run can do here.
+4. **Check the blast radius before changing a shared type.** Grep for who
+   consumes it. Widening a union that is re-exported as public API (e.g.
+   `SandboxBackend` via `@clutchcode/agent-api`) or guarded by an exhaustive
+   `never` check is a public-surface change, not a local edit — and is often
+   a sign the design wants a new optional *field* instead of a new variant.
+5. **Do the work** to the quality bar below.
+6. **Gate: `npx tsc -b && npx vitest run && npx eslint .` all clean.** All
+   three, every time, before every commit — not once at the end of the run.
+7. **Checkpoint the docs.** `HANDOFF.md` always (snapshot header, a new
+   "what's done" entry at the established depth, and "What's left"
+   maintained — row removed or updated, table kept in priority order,
+   exactly one `DO FIRST` tag moved to the next unblocked highest-value
+   row). `README.md`'s Status section when the work is user-visible.
+   **This file only when the unit surfaced a genuinely new, durable
+   lesson** — it holds timeless conventions, so per-unit status churn does
+   not belong here and dilutes it.
+8. **Commit and push** on the branch already in force for the session.
+   Never invent a new branch or open a PR unless explicitly asked.
+9. **Next unit.**
+
+### Stop conditions — stop and report, don't push through
+
+- **Three units completed** in one invocation. Stop and report; the user can
+  say the trigger phrase again. Bounded runs stay reviewable.
+- **Only blocked/watch/human-decision rows remain.** Say so plainly rather
+  than inventing work or implementing a gated row.
+- **The build/test/lint gate won't come clean.** Never commit red. Never
+  skip, disable, `.skip`, or quarantine a test to get green — that is
+  falsifying the gate this whole project exists to enforce.
+- **The unit needs a decision you shouldn't make alone** — a product call, an
+  ADR amendment, a public API break, a new runtime dependency, or anything
+  security-critical that can't be verified in this environment.
+- **You can't verify a claim.** Report it as unverified. Never fake a pass.
+
+### The quality bar (restated because it is not optional)
+
+The executor is often a different model than the one that wrote this. These
+are the rules that most need saying out loud:
+
+- **No stubs, no "would work."** Implement the real thing or report it
+  unfinished. This ships as a product, not a prototype.
+- **Reproduce before fixing.** A finding — yours, a linter's, a reviewer's —
+  is a hypothesis until you have made the bad thing actually happen.
+- **Prove the test discriminates**: `git stash push -- <the fix>`, confirm
+  the new test *fails*, `git stash pop`, confirm it passes. Skip only when
+  correctness is unambiguous from the test's own assertions, and say so.
+- **Fix the class, not the instance.** If the fix is "validate this untrusted
+  value," grep every other place that kind of value reaches that kind of
+  sink before calling it done.
+- **Real over mocked.** `FakeProvider` stubs the *model*. Everything else —
+  git repos, shells, sandboxes, keychains — is exercised for real.
+- **Honesty over completeness.** Anything this environment can't exercise
+  (macOS, Windows, a real VS Code host) gets written carefully, flagged
+  explicitly in a header comment *and* in `README.md`, and never claimed as
+  verified. Silence implying completeness is a defect.
+- **Report faithfully.** What was built, what was verified and *how* (test
+  counts, the stash-revert result), what is still open. A finding can be
+  real and mis-scoped at the same time — say which.

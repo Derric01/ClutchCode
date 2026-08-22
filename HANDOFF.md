@@ -1208,6 +1208,71 @@ prior-art rows in `research/00_METHOD.md`, `LICENSE_AND_REUSE_ANALYSIS.md`,
 `docs/PRIOR_ART.md`, and this file. No code, no tests, no behavior change:
 687/687 still passing, clean `tsc -b`, clean `eslint .`.
 
+### Autonomous-continuation convention upgraded: one trigger, a bounded work loop, an explicit quality bar
+
+Requested directly: *"I will just say start work, Claude should act like a
+senior and build this product ... only Sonnet will work on it so quality is
+key."* The convention previously did **one** unit per invocation and leaned on
+the executor having internalized `CLAUDE.md`. Both were wrong for the actual
+usage pattern.
+
+Rewrote the playbook in `CLAUDE.md`'s "Autonomous continuation" section —
+deliberately **there and not in the skill files**, preserving the existing
+"one shared thing, not two that can drift" design; the two skills stay thin
+triggers that point at it.
+
+**What changed:**
+
+1. **A bounded work loop instead of a single unit.** A *unit* is one "What's
+   left" row taken end to end and checkpointed (gate clean → `HANDOFF.md`
+   updated → `README.md` if user-visible → commit → push). After a unit the
+   executor **continues to the next one** rather than stopping for permission.
+   Bounded at **three units per invocation** so a run stays reviewable — the
+   user just says the phrase again.
+2. **Explicit stop conditions**, because an unattended run needs to know when
+   *not* to push through: three units done; only blocked/watch/human-decision
+   rows left; the gate won't come clean (never commit red, never skip or
+   disable a test to reach green); the unit needs a decision the executor
+   shouldn't make alone (product call, ADR amendment, public-API break, new
+   runtime dependency, unverifiable security-critical work); or a claim can't
+   be verified — report it unverified, never fake a pass.
+3. **Two guardrails promoted from this session's own audit findings**, since
+   both were real mistakes that nearly shipped:
+   - **Coherence check before writing code** — read what `PROJECT_SPEC.md` and
+     the ADRs actually say about the row's area, and *stop and report* if the
+     row contradicts an Accepted decision. Cites the live example: the queued
+     model-catalog row contradicted ADR-015, which had already rejected static
+     per-model tables ("static rots").
+   - **Blast-radius check before widening a shared type** — a union
+     re-exported as public API (`SandboxBackend` via `@clutchcode/agent-api`)
+     or guarded by an exhaustive `never` check is a public-surface change, and
+     usually a hint the design wants a new optional *field*, not a new variant.
+4. **The quality bar restated inline** rather than assumed — no stubs;
+   reproduce before fixing; prove the test discriminates via stash-revert;
+   fix the class not the instance; real over mocked; flag what this
+   environment can't verify; report what was verified and *how*.
+5. **Row-selection hardened**: take the `DO FIRST` row (position is the
+   priority signal), and **skip** anything marked `BLOCKED` / `watch item` /
+   gated on a human decision — implementing one of those is a defect, not
+   initiative. Re-read the table between units, since an earlier unit in the
+   same run may have reordered it or moved the tag.
+6. **`CLAUDE.md` updates stay rare, deliberately.** The request was to update
+   it each cycle; that would make a timeless-conventions file churn with
+   per-unit status and dilute it. `HANDOFF.md` is the per-unit checkpoint;
+   `CLAUDE.md` is touched only when a unit surfaces a genuinely durable
+   lesson. Stated explicitly in the loop so the distinction is not left to
+   taste.
+
+Also: `"start"` added as a recognized trigger variant; the relay step now
+requires **verifying the reported commits actually exist** before passing a
+subagent's report to the user, rather than relaying it on trust.
+
+Every cross-reference in the new playbook was verified to resolve against the
+repo (the `DO FIRST` tag, the table preamble, the blocked/watch rows, ADR-015's
+rejection text, the `agent-api` re-export, the exhaustive `never` check, and
+that all three gate commands run clean). Docs/skills only — no code: 687/687
+passing, clean `tsc -b`, clean `eslint .`.
+
 ---
 
 ## What's left
