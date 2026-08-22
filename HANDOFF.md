@@ -1140,6 +1140,74 @@ stale "the one genuine REUSE" line, which is now two — MCP and ACP),
 STUDY-ONLY" claim), and this file. No code, no tests, no behavior change:
 687/687 still passing, clean `tsc -b`, clean `eslint .`.
 
+### Research pass: pi agent harness evaluated — a real latent provider gap, and a correction
+
+Prompted by a second repo link with "now something useful from this."
+Cloned `Derric01/pi_coding_agent` @ `f13e6a8` **after confirming the clone
+matched the live remote HEAD** (`git ls-remote` — the user asked explicitly for
+this, and it did match; single `main` branch).
+
+**A correction worth recording, because it changed the whole verdict.** The
+repo sits under a familiar owner name, and the first read of the situation was
+"this is first-party work, so the clean-room rules don't bind." That was wrong:
+`LICENSE` is **MIT © 2025 Mario Zechner** (the upstream pi harness, <https://pi.dev>,
+published as `@earendil-works/*`) and this is a **fork**. The ordinary §2
+STUDY-ONLY default therefore applies in full, exactly as for Aider or opencode.
+Caught by reading the `LICENSE` file rather than trusting the repo's owner
+prefix — worth generalizing: **a repo under a known owner is not evidence of
+that owner's copyright**, and the LICENSE is the only thing that settles it.
+
+**Cross-signal from the previous entry:** DeepSeek Harness's capability-seams
+graph lists an `llm-pi-ai` package — i.e. it depends on this same
+`@earendil-works/pi-ai`. Two independently-built serious harnesses converging on
+one provider library says more about that library than either project alone.
+
+**The concrete finding — real, latent, correctly scoped as not-yet-reachable.**
+`pi-ai`'s stop/finish-reason vocabulary is materially wider than ours; the
+interesting entry is Anthropic's **`pause_turn`**. Verified against Anthropic's
+own published API documentation (not from memory, and not from pi-ai's
+treatment of it): `pause_turn` means *the model paused a long-running turn and
+the client is expected to resume it* — it arises with server-side tools
+(web search / web fetch / code execution). Our `mapStopReason` in
+`packages/providers/src/anthropic.ts` has no `pause_turn` case, so it falls
+through `default:` to `"stop"` — the agent loop would treat a *paused* turn as
+a *completed* one. That is precisely the defect signature round 3 found six
+instances of ("a truncated or failed turn reported as a normal, complete one").
+
+**Scoping it honestly, per "a finding can be real and mis-scoped at the same
+time":**
+- It is **not currently reachable**. `pause_turn` only occurs when the request
+  declares Anthropic server tools; we declare none (grepped — no `web_search`,
+  `web_fetch`, `code_execution`, or `server_tool` anywhere in `packages/providers`
+  or `packages/tools`). Our tools are all client-side. Same category as the
+  `snapshot-backup.ts` `relPath` row: confirmed real, currently dead, worth
+  closing *before* the wiring exists rather than after.
+- **pi-ai maps it to `"stop"` too** — deliberately, as a named case with the
+  comment "Stop is good enough -> resubmit." So this is *not* "they got it right
+  and we got it wrong." The difference is that theirs is an explicit, documented
+  decision inside a loop that resubmits, while ours is an unnamed fallthrough in
+  a loop that treats `"stop"` as terminal.
+- Closing it properly is **not a one-liner**: `FinishReason` is
+  `"stop" | "tool_use" | "length" | "error"` with no paused variant, so doing it
+  right means adding one and deciding what `AgentLoop` does with it. That is a
+  small design decision, deliberately left queued rather than made unilaterally.
+
+Two rows added to "What's left" (the `pause_turn`/conformance row, and a
+generated-model-catalog row that complements — does not replace — the §4.9
+capability probe). Recorded explicitly as **not** worth doing: adopting `pi-ai`
+as our provider layer. Its coverage and error vocabulary are better than ours,
+but it pulls `@aws-sdk/client-bedrock-runtime`, `@google/genai`,
+`@mistralai/mistralai`, `openai`, `@anthropic-ai/sdk`, `undici`, `proxy-agent`
+and more into a local-first tool (§17) that hand-assembled a seccomp BPF filter
+in TypeScript specifically to avoid *one* runtime dependency (§12.6). §2a's
+"depend, don't copy" reasoning cuts both ways: the `ajv` precedent was ~4 small
+transitive deps, not three cloud-vendor SDKs.
+
+Docs touched: new `research/repos/pi-agent-harness.md`, plus inventory/licence/
+prior-art rows in `research/00_METHOD.md`, `LICENSE_AND_REUSE_ANALYSIS.md`,
+`docs/PRIOR_ART.md`, and this file. No code, no tests, no behavior change:
+687/687 still passing, clean `tsc -b`, clean `eslint .`.
+
 ---
 
 ## What's left
@@ -1161,6 +1229,8 @@ loose "MVP" estimate.
 | Multi-agent orchestration | §7, Phase 9 | large | Explicitly out of scope until the §7 rule justifies it — the spec argues *against* building this by default. Don't start it without re-reading §7's reasoning first. |
 | ACP (Agent Client Protocol) binding | §18.1/§20/§26 | medium | `PROJECT_SPEC.md` already names ACP three times — §18.1 says our stdio JSON-RPC binding is "deliberately the **same shape as ACP** … so future editor clients are cheap," §20's layer table calls the boundary "ACP-shaped," and §26's risk register commits us to "leaning into those protocols as a client rather than fighting them." We built `@clutchcode/agent-rpc` *shaped like* ACP but never implemented ACP, so no ACP client can actually talk to us. There is now an official **`@agentclientprotocol/sdk`** (`0.25.1`, spec at <https://agentclientprotocol.com>) and a working open-source consumer to study (DeepSeek Harness `packages/acp`, MIT, study-only). Because ACP is an **open protocol**, this is the same verdict as MCP — **REUSE — protocol impl**, not a clean-room problem (`LICENSE_AND_REUSE_ANALYSIS.md §2`). Payoff: Zed/Neovim/Emacs clients for roughly the cost of one adapter over the existing `Agent` boundary, without touching the runtime. Scope it as a *second binding alongside* `agent-rpc`, not a replacement, so the VS Code extension keeps working unchanged. |
 | Tool-result pruning as a distinct compaction stage | §4.5 | small–medium | Our context budgeter compacts conversation history wholesale (turn-safe) once the effective-context budget is exceeded, and folds the repo-map/open-file-window share into that same budget. Pruning *tool results* specifically — stale/superseded `shell` output, re-read file windows — is a cheaper, earlier lever we have not built, and it degrades quality far less than dropping whole turns. Idea studied from DeepSeek Harness's `compaction-tool-result-pruner` (a model-free pruner behind its own `ctx.toolResultPruner` seam, kept separate from `compaction-basic`); implementation clean-room, ours, per `docs/PRIOR_ART.md`. |
+| Provider stop/finish-reason conformance — incl. Anthropic `pause_turn` | §4.7/§6.8 | small–medium, **do first among the provider rows** | **Confirmed real, currently unreachable** (same posture as the old `snapshot-backup.ts` row). `mapStopReason` in `packages/providers/src/anthropic.ts` has no `pause_turn` case, so it falls through `default:` → `"stop"`. Per Anthropic's published API docs, `pause_turn` means the model **paused a long-running turn and the client is expected to resume it** — so the loop would treat a paused turn as a completed one, the exact defect signature round 3 found six instances of. Not reachable today: `pause_turn` only arises when the request declares Anthropic **server** tools (web search / web fetch / code execution) and we declare none (verified by grep — all our tools are client-side). Doing this right is a small **design decision, not a one-liner**: `FinishReason` is `"stop" \| "tool_use" \| "length" \| "error"` with no paused variant, so it needs a new variant plus a decision about what `AgentLoop` does with it (resubmit? treat as a budgeted continuation?). Left queued rather than decided unilaterally. Scope the work as a **table-driven conformance test per adapter** covering the full documented stop/finish vocabulary — `pause_turn`, `aborted`, `content_filter`, `refusal`, `max_tokens`/`length`, `stop_sequence`, `tool_use`/`tool_calls` — with each case's meaning taken from the **provider's own documentation**, using `@earendil-works/pi-ai`'s vocabulary only as a checklist of what to go look up (`research/repos/pi-agent-harness.md`). Adapters stay ours; do not vendor or port pi-ai. |
+| Generated model catalog to complement the capability probe | §4.9 | medium | We probe every model at runtime because we do not know its context window/capabilities a priori, falling back to provider defaults per ADR-015 when nothing has been probed. A generated catalog for *known hosted* models, with probing retained for *unknown/local* ones, is strictly better than probing everything — and it is what the §4.5 budgeter actually wants (real numbers, not a default). Idea studied from `@earendil-works/pi-ai`'s `models.generated.ts` + `scripts/generate-models.ts`, including its enforced rule that the generator is the source of truth and the generated file is never hand-edited. Implementation ours; the catalog data should come from each provider's own published model documentation / models endpoint, not from copying theirs. **Not** a reason to adopt pi-ai wholesale — see the "what's done" entry for why its dependency footprint disqualifies it for a local-first tool. |
 | Windows sandbox Tier 1 — **revisit trigger only, decision stands** | §12.5/§12.6, A11 | n/a (watch item) | The doc-only/WSL2-recommended decision closed earlier this branch is **not** reopened by this research, and a future session should not treat it as reopened. Recording the evidence honestly so the trigger is legible: DeepSeek Harness ships `sandbox-windows-acl`, a real native Windows rung (a koffi port of a `WRITE_RESTRICTED`-token + restricting-SID mechanism). It **self-reports `enforcement: 'partial'`, not full** — ambient `Everyone` write ACEs and NTFS hard-links leak through, since ACLs bind to file objects rather than paths — and their own design note rejects AppContainer because it "cannot do arbitrary-path reads at all." Both facts **corroborate** §12.5's `[C:Low]` rating of the native path rather than contradicting it, and §29's team-size reasoning is untouched. Revisit only if (a) a Windows contributor/CI host materializes, **and** (b) a native path appears that reports *full*, not partial, enforcement. |
 
 ## Known gotchas (read before you hit them again)

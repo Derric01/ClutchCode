@@ -43,8 +43,11 @@
 | grok-cli | superagent-ai/grok-cli | `fb97af8` | TypeScript | (see repo note) | MIT | (see LICENSE_AND_REUSE) |
 | gemini-cli | google-gemini/gemini-cli | `1ac3377` | TypeScript | (see repo note) | Apache-2.0 | (see LICENSE_AND_REUSE) |
 | deepseek-harness | deepseek-ai/deepseek-harness | `b150a55` | TypeScript | ~2,734 | MIT † | `ebb4f099…` |
+| pi (agent harness) | Derric01/pi_coding_agent (fork of the upstream pi harness) | `f13e6a8` | TypeScript | ~662 | MIT ‡ | (see LICENSE_AND_REUSE) |
 
 *Source files = count of `.py/.ts/.tsx/.rs/.go` files (rough magnitude, not exact LOC).
+
+‡ **`pi` was cloned 2026-05-09 from a fork.** `LICENSE` is MIT **© 2025 Mario Zechner** (<https://pi.dev>, published as `@earendil-works/*`), not the fork owner — so the ordinary STUDY-ONLY default applies exactly as for any third-party project. Its published package `@earendil-works/pi-ai` is a *dependency* question under `LICENSE_AND_REUSE_ANALYSIS.md §2a`, not a copying question. See `research/repos/pi-agent-harness.md`.
 
 † **`deepseek-harness` was cloned later than the rest of this table — 2026-08-21, not 2026-08-12** (it did not exist as a public repo at the original clone date). Its `native/landlock-run` subtree carries its **own** `LICENSE` (BSD-3-Clause, © "node-addon-landlock-run contributors") and is published to npm as a separate package family — the MIT above covers the harness only. See `research/repos/deepseek-harness.md` and `LICENSE_AND_REUSE_ANALYSIS.md §2`, where the two get *different* reuse verdicts.
 

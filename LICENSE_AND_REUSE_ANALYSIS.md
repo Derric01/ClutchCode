@@ -72,6 +72,7 @@ SPDX identifiers verified by reading each repo's `LICENSE`/`LICENSE.md` at the p
 | gemini-cli | Apache-2.0 | No | Yes | NOTICE + license text | Yes | **STUDY-ONLY** |
 | MCP spec | Apache-2.0 (spec text often CC-BY-4.0) | No | Yes | attribution | Yes | **REUSE — protocol impl** (we implement the open protocol) |
 | DeepSeek Harness (`dsh`) | MIT | No | No | Copyright + license text | Yes | **STUDY-ONLY** (see `research/repos/deepseek-harness.md`) |
+| pi agent harness / `@earendil-works/pi-ai` | MIT (© 2025 Mario Zechner) | No | No | Copyright + license text | Yes | **STUDY-ONLY** — see `research/repos/pi-agent-harness.md`. Note: reached via a *fork* under a familiar owner name; the copyright is a third party's, so no first-party carve-out applies. |
 | `@deepseek-ai/node-addon-landlock-run` | **BSD-3-Clause** (separate from the harness's MIT) | No | No | Copyright + license text in binary distributions | Yes | **DEPEND — do not vendor** (published npm package; see §2a) |
 | Agent Client Protocol (ACP) + `@agentclientprotocol/sdk` | Apache-2.0 | No | Yes | attribution | Yes | **REUSE — protocol impl** (open protocol, same basis as MCP) |
 
