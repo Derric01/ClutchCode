@@ -7,7 +7,7 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-21
 **Branch:** `claude/start-work-handoff-referral-52eyj1`
-**Latest commit:** `8741973` — "docs: evaluate DeepSeek Harness — unblock Landlock, queue ACP, add reuse §2a"
+**Latest commit:** `ab8df41` — "docs: evaluate the pi agent harness — latent pause_turn gap, plus a provenance correction"
 **Test suite:** 687/687 passing, 76 test files, clean `tsc -b`, clean `eslint .`
 
 **PR:** none opened yet for this branch — PR #12 (the prior branch) merged
