@@ -7,7 +7,7 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-21
 **Branch:** `claude/start-work-handoff-referral-52eyj1`
-**Latest commit:** `d2c4b87` — "feat(skills): autonomous continuation runs a bounded work loop with an explicit quality bar"
+**Latest commit:** `06ca21e` — "feat: open-source packaging — CI, security policy, quickstart, publish metadata"
 **Test suite:** 687/687 passing, 76 test files, clean `tsc -b`, clean `eslint .`
 **CI:** `.github/workflows/ci.yml` — build/test/lint on Node 20 + 22, on every PR.
 **Note:** the "what's done" history moved to `docs/PROJECT_LOG.md`; this file is
