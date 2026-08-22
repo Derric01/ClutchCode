@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeTempDir, makeTempRepo } from "./test-helpers.js";
 import { git } from "./git-exec.js";
@@ -224,6 +225,192 @@ describe("dirty working tree handling (§13.4)", () => {
     const status = git(["status", "--porcelain"], { cwd: repoPath });
     expect(status.trim()).not.toBe("");
     expect(fs.readFileSync(path.join(repoPath, "README.md"), "utf8")).toBe("dirty change\n");
+  });
+});
+
+describe("round-3 deferred git worktree/dirty-tree correctness findings, fixed", () => {
+  let repoPath: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    repoPath = makeTempRepo();
+    stateDir = makeTempDir("clutchcode-git-test-state-");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("checkpoint() does not silently treat a real git status failure as 'nothing to commit' (finding 1)", () => {
+    const run = createRunWorktree({ repoPath, stateDir, runId: "statusfail1", slug: "task" });
+    fs.writeFileSync(path.join(run.worktreePath, "a.txt"), "first\n", "utf8");
+
+    // A thin PATH shim that fails exactly `git status --porcelain` (and
+    // nothing else) while a marker file exists — stands in for a real
+    // transient git failure (index lock, disk error) at precisely the call
+    // `checkpoint()` makes right after `add -A` genuinely staged real
+    // content, without mocking `checkpoint()` itself or any module under
+    // test — every other git invocation still goes to the real binary.
+    const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+    const shimDir = makeTempDir("clutchcode-git-status-shim-");
+    const triggerFile = path.join(shimDir, "fail-status");
+    fs.writeFileSync(triggerFile, "");
+    const shimScript = [
+      "#!/bin/sh",
+      `if [ "$1" = "status" ] && [ "$2" = "--porcelain" ] && [ -f "${triggerFile}" ]; then`,
+      `  echo "fatal: simulated index corruption (round-3 repro)" >&2`,
+      "  exit 128",
+      "fi",
+      `exec "${realGit}" "$@"`,
+      ""
+    ].join("\n");
+    fs.writeFileSync(path.join(shimDir, "git"), shimScript, { mode: 0o755 });
+
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${shimDir}:${oldPath}`;
+    try {
+      expect(() => checkpoint(run, "should fail loudly, not silently no-op")).toThrow();
+    } finally {
+      process.env.PATH = oldPath;
+      fs.rmSync(shimDir, { recursive: true, force: true });
+    }
+  });
+
+  it("restoreStash resolves the auto-stash's stable SHA back to its current stack position, robust to another stash pushed in between (finding 3)", () => {
+    fs.writeFileSync(path.join(repoPath, "README.md"), "dirty change\n", "utf8");
+    const run = createRunWorktree({ repoPath, stateDir, runId: "stashpos1", slug: "task" });
+    expect(run.dirtyTreeResult.strategyUsed).toBe("stash");
+    expect(run.dirtyTreeResult.stashRef).toBeTruthy();
+
+    // A plausible manual stash by the user on the same repo while the run
+    // is in flight — pushes the auto-stash down from position 0 to 1.
+    fs.writeFileSync(path.join(repoPath, "other.txt"), "manual\n", "utf8");
+    git(["add", "-A"], { cwd: repoPath });
+    git(["stash", "push", "-m", "manual mid-run stash"], { cwd: repoPath });
+    expect(fs.existsSync(path.join(repoPath, "other.txt"))).toBe(false);
+
+    discardRun(run);
+
+    // The *auto*-stash was restored — not whatever now sits at position 0.
+    expect(fs.readFileSync(path.join(repoPath, "README.md"), "utf8")).toBe("dirty change\n");
+    // The manual stash is untouched — still there, never popped.
+    expect(fs.existsSync(path.join(repoPath, "other.txt"))).toBe(false);
+    const remaining = git(["stash", "list"], { cwd: repoPath }).trim();
+    expect(remaining.split("\n")).toHaveLength(1);
+    expect(remaining).toContain("manual mid-run stash");
+  });
+
+  it("approveRun surfaces a stash-restore conflict as a warning instead of throwing after the merge already succeeded (finding 2)", () => {
+    fs.writeFileSync(path.join(repoPath, "conflict.txt"), "base\n", "utf8");
+    git(["add", "conflict.txt"], { cwd: repoPath });
+    git(["commit", "-m", "seed conflict.txt"], { cwd: repoPath });
+
+    // The user has an uncommitted local edit to that same file when the run starts.
+    fs.writeFileSync(path.join(repoPath, "conflict.txt"), "user-local-change\n", "utf8");
+
+    const run = createRunWorktree({ repoPath, stateDir, runId: "stashconflict1", slug: "task" });
+    expect(run.dirtyTreeResult.strategyUsed).toBe("stash");
+    // The worktree is based on the clean HEAD content — the dirty edit got stashed.
+    expect(fs.readFileSync(path.join(run.worktreePath, "conflict.txt"), "utf8")).toBe("base\n");
+
+    // The run itself edits the very same file, differently, and checkpoints it.
+    fs.writeFileSync(path.join(run.worktreePath, "conflict.txt"), "run-produced-change\n", "utf8");
+    expect(checkpoint(run, "run edits conflict.txt")).not.toBeNull();
+
+    // approveRun must not throw: the merge itself has no conflict (repoPath's
+    // conflict.txt is clean at merge time, the local edit is off in the stash) —
+    // only the *stash restore* afterward conflicts with the merge's own result.
+    const result = approveRun(run);
+    expect(result.mergedSha).toBeTruthy();
+    // The merge itself genuinely completed with the run's content, on its
+    // own commit — proven directly from the commit object, not the working
+    // tree, since the *next* step (the stash-restore conflict) legitimately
+    // rewrites the working tree with conflict markers on top of it, which
+    // is the very side effect this test exists to prove is now surfaced
+    // rather than thrown as an unqualified exception.
+    expect(git(["show", `${result.mergedSha}:conflict.txt`], { cwd: repoPath })).toBe("run-produced-change\n");
+
+    // The stash conflict is surfaced, not swallowed and not thrown — and it
+    // does leave literal conflict markers in the tree, exactly as the
+    // finding describes.
+    expect(result.stashRestoreWarning).toBeTruthy();
+    expect(result.stashRestoreWarning).toMatch(/stash/i);
+    expect(fs.readFileSync(path.join(repoPath, "conflict.txt"), "utf8")).toContain("<<<<<<<");
+
+    // git itself never drops a stash on a failed pop — nothing was lost.
+    const stashList = git(["stash", "list"], { cwd: repoPath });
+    expect(stashList.trim()).not.toBe("");
+  });
+
+  it("stash strategy preserves a fully-staged modification's staged status via --index, not just 'something is dirty' (finding 4, stash)", () => {
+    fs.writeFileSync(path.join(repoPath, "README.md"), "staged-change\n", "utf8");
+    git(["add", "README.md"], { cwd: repoPath });
+    const beforeStatus = git(["status", "--porcelain"], { cwd: repoPath }).trim();
+    expect(beforeStatus).toBe("M  README.md"); // staged (index 'M'), nothing further unstaged on top
+
+    const run = createRunWorktree({ repoPath, stateDir, runId: "stashsplit1", slug: "task" });
+    discardRun(run);
+
+    const afterStatus = git(["status", "--porcelain"], { cwd: repoPath }).trim();
+    expect(afterStatus).toBe("M  README.md"); // still staged, not collapsed to unstaged " M"
+    expect(fs.readFileSync(path.join(repoPath, "README.md"), "utf8")).toBe("staged-change\n");
+  });
+
+  it("temp-commit strategy exactly preserves the original staged/unstaged split, including a partially-staged file (finding 4, temp-commit)", () => {
+    // README.md: stage one edit, then make a further *unstaged* edit on top — "MM".
+    fs.writeFileSync(path.join(repoPath, "README.md"), "staged-part\n", "utf8");
+    git(["add", "README.md"], { cwd: repoPath });
+    fs.writeFileSync(path.join(repoPath, "README.md"), "staged-part\nunstaged-part\n", "utf8");
+
+    // A second, fully-staged new file.
+    fs.writeFileSync(path.join(repoPath, "new.txt"), "new\n", "utf8");
+    git(["add", "new.txt"], { cwd: repoPath });
+
+    // An untracked file, left alone entirely.
+    fs.writeFileSync(path.join(repoPath, "untracked.txt"), "untracked\n", "utf8");
+
+    const beforeStatus = git(["status", "--porcelain"], { cwd: repoPath }).trim().split("\n").sort();
+
+    const run = createRunWorktree({
+      repoPath,
+      stateDir,
+      runId: "tempsplit1",
+      slug: "task",
+      dirtyTreeStrategy: "temp-commit"
+    });
+
+    const afterStatus = git(["status", "--porcelain"], { cwd: repoPath }).trim().split("\n").sort();
+    expect(afterStatus).toEqual(beforeStatus);
+    expect(fs.readFileSync(path.join(repoPath, "README.md"), "utf8")).toBe("staged-part\nunstaged-part\n");
+
+    discardRun(run); // no stash to restore for temp-commit; just cleans up the worktree/branch.
+  });
+
+  it("createRunWorktree auto-restores the auto-stash if worktree creation itself fails afterward (finding 5)", () => {
+    fs.writeFileSync(path.join(repoPath, "README.md"), "dirty change\n", "utf8");
+
+    // Pre-create the exact branch name createRunWorktree will try to
+    // create, so `git worktree add -b <branch>` collides and fails — a
+    // real, plausible failure (a leftover branch from an earlier run
+    // reusing the same runId/slug), not a contrived one.
+    const runId = "collide1"; // exactly 8 chars, so `.slice(0, 8)` is a no-op — keeps the branch name predictable.
+    const branchName = `clutchcode/run-${runId}-task`;
+    git(["branch", branchName], { cwd: repoPath });
+
+    let thrown: unknown;
+    try {
+      createRunWorktree({ repoPath, stateDir, runId, slug: "task" });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toMatch(/restored automatically/);
+
+    // The stash was auto-restored — the user's dirty tree is exactly as they left it.
+    expect(fs.readFileSync(path.join(repoPath, "README.md"), "utf8")).toBe("dirty change\n");
+    const stashList = git(["stash", "list"], { cwd: repoPath });
+    expect(stashList.trim()).toBe("");
   });
 });
 

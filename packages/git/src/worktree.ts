@@ -51,30 +51,68 @@ export function createRunWorktree(opts: CreateRunOptions): RunWorktree {
   assertSafeRunId(opts.runId);
 
   const dirtyResult = handleDirtyTree(opts.repoPath, opts.dirtyTreeStrategy ?? "stash");
-  const base =
-    dirtyResult.strategyUsed === "temp-commit" && dirtyResult.tempCommitSha
-      ? dirtyResult.tempCommitSha
-      : git(["rev-parse", "HEAD"], { cwd: opts.repoPath }).trim();
 
-  const shortId = opts.runId.slice(0, 8);
-  const branch = `clutchcode/run-${shortId}-${slugify(opts.slug)}`;
-  const wtRoot = path.join(opts.stateDir, "wt");
-  const worktreePath = path.join(wtRoot, opts.runId);
-  // Defense in depth beyond the regex above, in case a future change to
-  // stateDir/runId handling (or a platform-specific path quirk) reopens a
-  // traversal some other way — this is the actual invariant that matters,
-  // checked directly rather than only inferred from input validation.
-  if (path.relative(wtRoot, worktreePath).startsWith("..")) {
-    throw new Error(`refusing to create a worktree outside ${wtRoot} (resolved to ${worktreePath})`);
+  try {
+    const base =
+      dirtyResult.strategyUsed === "temp-commit" && dirtyResult.tempCommitSha
+        ? dirtyResult.tempCommitSha
+        : git(["rev-parse", "HEAD"], { cwd: opts.repoPath }).trim();
+
+    const shortId = opts.runId.slice(0, 8);
+    const branch = `clutchcode/run-${shortId}-${slugify(opts.slug)}`;
+    const wtRoot = path.join(opts.stateDir, "wt");
+    const worktreePath = path.join(wtRoot, opts.runId);
+    // Defense in depth beyond the regex above, in case a future change to
+    // stateDir/runId handling (or a platform-specific path quirk) reopens a
+    // traversal some other way — this is the actual invariant that matters,
+    // checked directly rather than only inferred from input validation.
+    if (path.relative(wtRoot, worktreePath).startsWith("..")) {
+      throw new Error(`refusing to create a worktree outside ${wtRoot} (resolved to ${worktreePath})`);
+    }
+    fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+
+    // Best-effort: empty (not thrown) on detached HEAD — a PR base is then left to the caller.
+    const baseBranch = git(["symbolic-ref", "--short", "HEAD"], { cwd: opts.repoPath, allowFailure: true }).trim() || undefined;
+
+    git(["worktree", "add", worktreePath, "-b", branch, base], { cwd: opts.repoPath });
+
+    return { runId: opts.runId, branch, baseCommit: base, worktreePath, repoPath: opts.repoPath, dirtyTreeResult: dirtyResult, baseBranch };
+  } catch (e) {
+    // `handleDirtyTree` already had a real, user-visible side effect above
+    // (stashed or temp-committed the working tree) before anything past it
+    // could fail — a branch-name collision, a disk error, anything from
+    // `git worktree add` onward. Without this, that side effect was simply
+    // orphaned: the `RunWorktree` that would have carried
+    // `dirtyResult.stashRef` back to a caller never gets constructed, so
+    // nothing downstream even knows a stash exists to recover. Best effort:
+    // undo it automatically so the repo is back exactly how the caller
+    // found it; if that itself fails, say so explicitly with enough detail
+    // (the stash's own identity) to recover by hand instead of silently
+    // discarding it.
+    const original = e instanceof Error ? e.message : String(e);
+    throw new Error(`createRunWorktree failed: ${original}${describeDirtyTreeRecovery(opts.repoPath, dirtyResult)}`);
   }
-  fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+}
 
-  // Best-effort: empty (not thrown) on detached HEAD — a PR base is then left to the caller.
-  const baseBranch = git(["symbolic-ref", "--short", "HEAD"], { cwd: opts.repoPath, allowFailure: true }).trim() || undefined;
-
-  git(["worktree", "add", worktreePath, "-b", branch, base], { cwd: opts.repoPath });
-
-  return { runId: opts.runId, branch, baseCommit: base, worktreePath, repoPath: opts.repoPath, dirtyTreeResult: dirtyResult, baseBranch };
+/**
+ * Best-effort recovery narration for `createRunWorktree`'s catch above.
+ * "stash" is the only strategy that actually needs undoing here —
+ * "temp-commit" already leaves the working tree exactly as it was found
+ * (that's the whole point of its own `reset --soft` + index restore), so
+ * there is nothing to recover for it beyond the dangling commit itself.
+ */
+function describeDirtyTreeRecovery(repoPath: string, dirtyResult: DirtyTreeResult): string {
+  if (dirtyResult.strategyUsed === "temp-commit" && dirtyResult.tempCommitSha) {
+    return ` (your working tree itself was left unchanged — the dirty state is also captured in dangling commit ${dirtyResult.tempCommitSha} if you need it)`;
+  }
+  if (dirtyResult.strategyUsed !== "stash" || !dirtyResult.stashRef) return "";
+  try {
+    restoreStash(repoPath, dirtyResult.stashRef);
+    return " (the auto-stash was restored automatically — your working tree is unchanged)";
+  } catch (restoreErr) {
+    const msg = restoreErr instanceof Error ? restoreErr.message : String(restoreErr);
+    return ` (your changes are still stashed and auto-restore failed: ${msg} — recover manually with \`git stash list\` / \`git stash pop\` in ${repoPath}, looking for commit ${dirtyResult.stashRef})`;
+  }
 }
 
 /** `agent diff`: worktree vs base (§13.2). */
@@ -192,7 +230,14 @@ function readWorktreeTextFile(worktreePath: string, filePath: string): string | 
  */
 export function checkpoint(run: RunWorktree, message: string): string | null {
   git(["add", "-A"], { cwd: run.worktreePath });
-  const status = git(["status", "--porcelain"], { cwd: run.worktreePath, allowFailure: true });
+  // Deliberately no `allowFailure` here (unlike most read-only status
+  // checks elsewhere in this file): `git status --porcelain` genuinely
+  // exits 0 for a clean tree — an `allowFailure`-swallowed non-zero exit
+  // here means a *real* git error (index lock, disk error, corruption),
+  // not "nothing changed," and treating the two identically silently skips
+  // a checkpoint that should have been created, right after `add -A` staged
+  // real content.
+  const status = git(["status", "--porcelain"], { cwd: run.worktreePath });
   if (!status.trim()) return null;
   git(["commit", "--no-verify", "-m", `checkpoint: ${message}`], { cwd: run.worktreePath });
   return git(["rev-parse", "HEAD"], { cwd: run.worktreePath }).trim();
@@ -231,13 +276,36 @@ export function rollbackTo(run: RunWorktree, sha: string): void {
   git(["clean", "-fd"], { cwd: run.worktreePath });
 }
 
+/**
+ * Restore the run's auto-stash, if it has one, without letting a stash-pop
+ * failure (most commonly a real merge conflict between the just-restored
+ * stash and content the run itself produced) read as "the whole operation
+ * failed." By the time this runs, `discardRun`/`approveRun`'s own
+ * destructive work — removing the worktree, merging the branch — has
+ * already genuinely completed; a `restoreStash` exception at this point
+ * used to propagate straight out of both functions with no indication that
+ * everything before it had actually succeeded. A failed `git stash pop`
+ * itself never drops the stash (git's own documented behavior — "The stash
+ * entry is kept in case you need it again"), so nothing is lost here either
+ * way; this just makes that fact visible to the caller instead of masking
+ * it as an unqualified exception.
+ */
+function restoreStashIfAny(run: RunWorktree): string | undefined {
+  if (run.dirtyTreeResult.strategyUsed !== "stash" || !run.dirtyTreeResult.stashRef) return undefined;
+  try {
+    restoreStash(run.repoPath, run.dirtyTreeResult.stashRef);
+    return undefined;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return `restoring the auto-stash failed after the operation itself completed: ${msg} — the stash was not lost, recover it manually with \`git stash list\` / \`git stash pop\` in ${run.repoPath} (possibly leaving conflict markers to resolve there)`;
+  }
+}
+
 /** `agent reject`: discard the worktree and its branch entirely (§13.1). */
-export function discardRun(run: RunWorktree): void {
+export function discardRun(run: RunWorktree): { stashRestoreWarning?: string } {
   git(["worktree", "remove", "--force", run.worktreePath], { cwd: run.repoPath, allowFailure: true });
   git(["branch", "-D", run.branch], { cwd: run.repoPath, allowFailure: true });
-  if (run.dirtyTreeResult.strategyUsed === "stash" && run.dirtyTreeResult.stashRef) {
-    restoreStash(run.repoPath, run.dirtyTreeResult.stashRef);
-  }
+  return { stashRestoreWarning: restoreStashIfAny(run) };
 }
 
 export interface ApproveOptions {
@@ -248,7 +316,7 @@ export interface ApproveOptions {
 }
 
 /** `agent approve`: merge the run branch into the user's branch (§13.1/§13.5). Never runs without an explicit call. */
-export function approveRun(run: RunWorktree, opts: ApproveOptions = {}): { mergedSha: string } {
+export function approveRun(run: RunWorktree, opts: ApproveOptions = {}): { mergedSha: string; stashRestoreWarning?: string } {
   if (opts.targetBranch) {
     git(["checkout", opts.targetBranch], { cwd: run.repoPath });
   }
@@ -277,10 +345,8 @@ export function approveRun(run: RunWorktree, opts: ApproveOptions = {}): { merge
   const mergedSha = git(["rev-parse", "HEAD"], { cwd: run.repoPath }).trim();
 
   git(["worktree", "remove", "--force", run.worktreePath], { cwd: run.repoPath, allowFailure: true });
-  if (run.dirtyTreeResult.strategyUsed === "stash" && run.dirtyTreeResult.stashRef) {
-    restoreStash(run.repoPath, run.dirtyTreeResult.stashRef);
-  }
+  const stashRestoreWarning = restoreStashIfAny(run);
   // Branch is retained until the run is deleted (§13.1), only the worktree checkout is removed.
 
-  return { mergedSha };
+  return { mergedSha, stashRestoreWarning };
 }

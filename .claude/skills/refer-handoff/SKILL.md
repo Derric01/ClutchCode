@@ -1,31 +1,29 @@
 ---
 name: refer-handoff
-description: Use when the user says "refer the handoff and work" (or a close variant, e.g. "refer handoff.md and work", "check the handoff and continue", "read the handoff and go") in the ClutchCode repo — typically the very first message of a fresh session. Read HANDOFF.md and CLAUDE.md yourself and start the next unit of work immediately, no subagent, no clarifying questions — see CLAUDE.md's "Autonomous continuation" section for the full convention.
+description: Use when the user says "refer the handoff and work" (or a close variant, e.g. "refer handoff.md and work", "check the handoff and continue", "read the handoff and go") in the ClutchCode repo — typically the first message of a fresh session. Read HANDOFF.md and CLAUDE.md yourself and run the autonomous work loop directly — no subagent, no clarifying questions. See CLAUDE.md's "Autonomous continuation" section for the full playbook.
 ---
 
 # refer-handoff
 
-This is the **direct** half of CLAUDE.md's "Autonomous continuation"
-convention (read that section first if you haven't — it's the source of
-truth this skill just triggers). You are already the fresh executor here —
-no subagent needed, unlike the `start-work` skill's sibling behavior.
+The **direct** half of CLAUDE.md's "Autonomous continuation" convention —
+you are already the fresh executor, so there is no subagent to spawn. That
+section is the source of truth: the work loop, the stop conditions, and the
+quality bar all live there, deliberately in one place so this file and
+`start-work/` can't drift apart. This file only routes you into it.
 
-1. Read `HANDOFF.md` and `CLAUDE.md` in full, right now, before doing
+1. Read `HANDOFF.md` and `CLAUDE.md` **in full, right now**, before
    anything else.
-2. Pick the next unit of work using the priority order in CLAUDE.md's
-   "Autonomous continuation" section: an explicitly deferred item from
-   HANDOFF.md's latest "what's done" entry, then the top row of
-   HANDOFF.md's "What's left" table, then — if neither exists — another
-   audit round per the methodology in HANDOFF.md's most recent
-   review-round write-up.
-3. Start working immediately — don't ask the user what to do first, don't
-   summarize the plan and wait for approval. The whole point of this
-   trigger phrase is "you already have enough context in HANDOFF.md, go."
-4. Finish the same way any unit of work in this repo finishes: real tests,
-   the "prove it, don't assume it" fix discipline from CLAUDE.md, the full
-   build/test/lint loop clean before committing, README.md's Status
-   section updated if the work is user-visible, HANDOFF.md updated
-   (snapshot header + a new "what's done" entry), commit/push per whatever
-   git branch/PR conventions are already set up for this repo/session, and
-   a plain-language report back to the user of what you did, what you
-   verified and how, and what — if anything — is still open.
+2. Run the work loop in CLAUDE.md's "Autonomous continuation" section
+   exactly as written — up to three units, each checkpointed (build/test/
+   lint clean → `HANDOFF.md` updated → `README.md` if user-visible →
+   commit → push) before starting the next, stopping early on any stop
+   condition listed there.
+3. **Start immediately.** Don't ask what to work on, don't summarize a plan
+   and wait for approval — the trigger phrase exists precisely to skip
+   that. The one thing that *does* warrant stopping is a stop condition:
+   a row gated on a human decision, a contradiction with an Accepted ADR,
+   a gate that won't come clean. Report those; don't push through them.
+4. Report in plain language when you stop: which units you completed, what
+   you verified and **how** (test counts, stash-revert results), the
+   commits you pushed, and what is still open — including anything you
+   deliberately skipped or could not verify.

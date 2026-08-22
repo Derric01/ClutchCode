@@ -5,10 +5,10 @@ session; update it before you stop. See `CLAUDE.md` for timeless working
 conventions (build/test/lint, testing philosophy, quality bar) — this
 file is the time-stamped snapshot of where the project actually stands.
 
-**Snapshot as of:** 2026-08-20
+**Snapshot as of:** 2026-08-21
 **Branch:** `claude/start-work-handoff-referral-52eyj1`
-**Latest commit:** `a9d4796` — "fix: close 3 sandbox/policy/redaction gaps from the deferred round-3 audit"
-**Test suite:** 664/664 passing, 75 test files, clean `tsc -b`, clean `eslint .`
+**Latest commit:** `d2c4b87` — "feat(skills): autonomous continuation runs a bounded work loop with an explicit quality bar"
+**Test suite:** 687/687 passing, 76 test files, clean `tsc -b`, clean `eslint .`
 
 **PR:** none opened yet for this branch — PR #12 (the prior branch) merged
 cleanly, as did #4–#11 before it. Pattern established across every phase so
@@ -832,28 +832,477 @@ This closes the "do first" row in "what's left" below — the sandbox/
 policy/redaction subsystem now has a complete review pass, not a partial
 one.
 
+### Git worktree/dirty-tree correctness findings (§13.1/§13.3) — the five round-3-deferred fixes
+
+Picked up per the autonomous-continuation priority order: nothing was
+deferred in the prior session's own "what's done" entry, so this is the
+row tagged "do first" in "what's left" (the table's literal top-to-bottom
+order hadn't been re-sorted after the sandbox/policy/redaction row above
+was completed and removed — treated the explicit "do first" tag as the
+actual priority signal, consistent with how the *previous* session picked
+its own "do first"-tagged row over the table's literal position). All five
+confirmed-real findings from round 3's git-package audit, each reproduced
+for real before fixing and proven with the full `git stash push -- <file>`
+/ confirm-new-test-fails / `git stash pop` / confirm-passes cycle:
+
+1. **`checkpoint()`'s post-`add -A` status check swallowed real git
+   errors as "nothing to commit."** `git status --porcelain` genuinely
+   exits 0 for a clean tree — it only exits non-zero for an actual
+   failure (index lock, disk error, corruption) — so the existing
+   `allowFailure: true` on that call meant a real error and a clean tree
+   were indistinguishable to `checkpoint()`, silently skipping a
+   checkpoint that should have existed right after `add -A` staged real
+   content. Reproduced without mocking `checkpoint()` itself: a thin PATH
+   shim intercepts exactly `git status --porcelain` (every other
+   invocation, including the preceding `add -A`, still goes to the real
+   binary) and fails it with a simulated "index file smaller than
+   expected"-style error; pre-fix, `checkpoint()` returned `null` as if
+   nothing changed, post-fix it throws. Fixed by removing `allowFailure`
+   from that one call.
+2. **`approveRun`/`discardRun` let a `restoreStash` failure read as "the
+   whole operation failed," even after the merge/discard had already
+   genuinely completed.** Reproduced for real: a user's local edit to a
+   file gets auto-stashed, the run edits the *same* file differently and
+   gets merged in cleanly (no merge conflict — the stash means
+   `repoPath`'s copy is clean at merge time), then restoring the stash
+   conflicts with the merge's own result — confirmed directly with a
+   throwaway repo that a failed `git stash pop` leaves literal conflict
+   markers in the file and, per git's own documented behavior ("The stash
+   entry is kept in case you need it again"), never drops the stash
+   either. Pre-fix, that pop's `GitError` propagated straight out of
+   `approveRun` with no indication the merge itself had already succeeded.
+   Fixed by catching just that failure and returning it as an optional
+   `stashRestoreWarning` on `approveRun`'s/`discardRun`'s result instead of
+   throwing — `mergedSha` is still returned normally either way.
+3. **The auto-stash was identified by a positional `stash@{0}`, captured
+   once at push time and reused verbatim at restore time.** A plausible
+   manual `git stash` elsewhere on the same repo during a long-running run
+   shifts every existing entry's position, so a later `restoreStash` could
+   pop the wrong one. Reproduced directly: push the auto-stash, then push
+   a second, unrelated manual stash (moving the auto-stash from position 0
+   to 1); pre-fix, `discardRun` popped the *manual* stash's content instead
+   of the auto-stash's, leaving the real auto-stash orphaned in the stash
+   list forever. Fixed by capturing the stash's own commit SHA
+   (`git rev-parse stash@{0}`, resolved right after the push) instead of a
+   positional name, and resolving that SHA back to whatever position it
+   currently occupies (`git stash list --format=%H`) at restore time.
+4. **Neither dirty-tree strategy actually preserved the original
+   staged/unstaged split**, despite a code comment on the temp-commit path
+   claiming the tree was "left exactly as it was." For the stash strategy,
+   reproduced with a fully-staged modification to a tracked file: plain
+   `git stash pop` collapses it to unstaged (` M`) on restore, losing the
+   staged bit entirely — confirmed empirically that git's own `--index`
+   flag exists precisely to prevent this and does; fixed by adding
+   `--index` to the pop. For the temp-commit strategy, `git add -A`
+   unavoidably stages everything to capture untracked files in the temp
+   commit, and `reset --soft HEAD~1` only moves HEAD back — it doesn't
+   restore the index's prior split, so every file ended up staged
+   afterward regardless of its original state. Fixed with a precise
+   fix rather than a partial one: capture the index as a tree object via
+   `git write-tree` *before* touching anything, then restore it verbatim
+   via `git read-tree` afterward — both operate purely on the index, never
+   the working tree, so this reproduces the original split exactly, proven
+   with a file that was genuinely *partially* staged (some hunks staged,
+   some not — the case `git stash --index` itself can't always get
+   perfectly right, confirmed by direct comparison in a throwaway repo).
+5. **`createRunWorktree` ran the destructive dirty-tree handling (stash/
+   temp-commit) before the still-fallible `git worktree add`,** with no
+   recovery path if anything after it failed — the `RunWorktree` object
+   that would have carried `dirtyTreeResult.stashRef` back to a caller is
+   only ever constructed on the success path. Reproduced with a real,
+   plausible failure (a leftover branch from an earlier run reusing the
+   same runId/slug, so `git worktree add -b <branch>` collides): pre-fix,
+   the function just threw, leaving the user's auto-stashed changes
+   invisible to anything downstream. Fixed by wrapping the post-
+   `handleDirtyTree` logic in try/catch and auto-restoring the stash on
+   failure (temp-commit needs no recovery — its own `reset --soft` +
+   index-restore already leaves the working tree untouched), narrating the
+   outcome either way (restored automatically, or — if even that
+   fails — exactly which stash to recover by hand) in the thrown error so
+   nothing is silently orphaned.
+
+670 tests total (up from 664; 6 new — one per finding), clean `tsc -b`,
+clean `eslint .`. This closes the "Git worktree/dirty-tree correctness
+findings" row in "what's left" below; the `snapshot-backup.ts` `relPath`
+traversal row (also round-3-deferred, currently unreachable dead code) is
+untouched and still open.
+
+### `snapshot-backup.ts` `relPath` path traversal (§13.4) — the last round-3-deferred finding, closed
+
+Picked up per the autonomous-continuation priority order: the prior
+session's own "what's done" entry explicitly flagged this row as still
+open, and it also carries the "do first" tag in "what's left" — both
+signals point at the same row, so no ambiguity this time.
+
+`SnapshotBackup.snapshotBeforeFirstEdit` (the §13.4 non-git fallback: a
+snapshot-vs-current backup used when there's no git worktree to isolate a
+run) joins a caller-supplied `relPath` into two different roots —
+`workspaceRoot` (to read the file's current content) and `backupDir` (to
+store the backup) — via a bare `path.join`, with no traversal guard at
+all. Reproduced for real before writing any fix, against a throwaway
+workspace with deliberately distinct-depth roots (so the two escape
+directions can't collide on the same absolute path and mask each other —
+an early repro attempt with same-depth sibling roots did exactly that, the
+"backup" and "victim" paths turned out identical and the escape was
+invisible until the roots were re-nested at different depths): a `relPath`
+built as `path.relative(workspaceRoot, someFileOutsideIt)` (e.g.
+`"../canary.txt"`) made `snapshotBeforeFirstEdit` write its backup file
+*outside* `backupDir` entirely — confirmed on disk, not just structurally —
+and a later `rollback()` for the same `relPath` genuinely overwrote a file
+*outside* `workspaceRoot` with backed-up content. Same class of bug as the
+`runId` path traversal fixed in an earlier round (`run-id.ts`'s
+`assertSafeRunId`), but `relPath` legitimately needs to carry subdirectory
+structure (`"src/nested/file.ts"`), so the single-segment allow-list shape
+`SAFE_RUN_ID_RE` uses isn't the right fit here.
+
+Fixed with a new `@clutchcode/git` module, `rel-path.ts`:
+`isSafeRelPath`/`assertSafeRelPath` reject the specific traversal
+primitive itself (any `..` path segment, split on both `/` and `\`
+regardless of the current platform's own separator, since `relPath` is
+untrusted text that may assume a different convention than this process's
+`path.sep`) plus absolute and Windows-drive/UNC-shaped input, and a
+companion `assertContainedIn(root, resolved)` re-checks the actual joined
+destination against its root as defense in depth — mirroring the
+"structural allow-list plus a `path`-based containment re-check on the
+resolved result" pattern already established for `runId`. `
+snapshotBeforeFirstEdit` calls `assertSafeRelPath` first, then
+`assertContainedIn` against both `src` and `dest` before touching disk or
+recording the path as snapshotted — since it's the *only* entry point that
+ever adds to `SnapshotBackup`'s internal `snapshotted` set (`diff()`/
+`rollback()` only ever iterate that already-validated set, never take a
+fresh `relPath`), this one chokepoint is genuinely sufficient, unlike
+`runId` which needed the same validator wired into several independent
+read/mutate paths.
+
+Confirmed real and fixed, not just plausible: reverted `snapshot-backup.ts`
+alone via `git stash push -- packages/git/src/snapshot-backup.ts`, re-ran
+the new tests — all 5 traversal-specific tests failed against the pre-fix
+code (the other 5 pre-existing/legitimate-path tests in the same file kept
+passing, confirming the fix doesn't regress ordinary nested-path use), then
+`git stash pop` and re-ran — all passed again. 17 new tests: 11 in a new
+`rel-path.test.ts` (accepts ordinary and nested paths; rejects a leading,
+buried, and bare `..`; rejects POSIX-absolute and Windows-drive/UNC-shaped
+input even on POSIX; rejects a backslash-separated `..` even though POSIX
+`path` itself wouldn't split on it; rejects empty string and embedded NUL;
+`assertContainedIn`'s own accept/reject/string-prefix-vs-real-containment
+cases) and 6 in `snapshot-backup.test.ts` (a legitimate nested-subdirectory
+path still round-trips through snapshot+rollback; three direct rejection
+cases; two full reproductions of the original disk-level escape, now
+asserted to throw before any file gets written in either direction). 687
+tests total (up from 670; 17 new), clean `tsc -b`, clean `eslint .`. This
+closes the row in "what's left" — round 3's git-package audit (worktree/
+dirty-tree correctness, prior entry, plus this one) is now fully resolved,
+with nothing left deferred from that round.
+
+### Windows sandbox Tier 1 (§12.5/§12.6, A11/Q5) — closed as a documented decision: doc-only, WSL2-recommended
+
+Picked up per the autonomous-continuation priority order: nothing was left
+deferred in the prior session's own "what's done" entry, so this was the
+"do first"-tagged top row of "What's left." The row's own note flagged it
+needed a decision first — native restricted-token/AppContainer vs. staying
+WSL2-doc-only — before it could even be scoped as build-or-skip.
+
+Read what `PROJECT_SPEC.md` itself already says, rather than treating the
+row as blocked pending a fresh human call: §12.5's isolation-mechanism
+comparison table rates the "Windows restricted token / AppContainer" row
+**[C:Low]** — "weakest story; WSL2 preferred" — and §12.6's tiered-defaults
+block spells out the fallback explicitly: `Windows→ WSL2 (recommended)
+else restricted-token + ASK-heavy policy [C:Low]`. §29's self-review
+(point 3) goes further and makes the call directly for a small team: "If
+the team is <2, Phase 1 must shed the probe (defer to Phase 2) and Windows
+sandbox (doc-only)." A11/Q5 (the assumptions/open-questions registers)
+frame this as "decide Windows support level... doc-only vs code," with
+Q5's own decision deadline set at "Phase 3" — several phases behind where
+this project actually stands now. Taken together, this isn't spec silence
+needing a fresh human call — it's the spec having already made the call,
+with the low-confidence tag as its own stated reason, and simply never
+having that call formally closed out in the registers built to record
+exactly it.
+
+Before writing anything, checked whether the runtime already matches this
+decision or would need code changes to align with it. It already does,
+and is already tested: `detectSandboxBackend()` (`packages/sandbox/src/
+tier1.ts`) has no Windows-specific branch at all — any platform besides
+`linux`/`darwin` (including `win32`) falls through to `backend: "none"`
+with a `reason` string that explicitly names WSL2 as the recommended
+path; `tier1.test.ts` already asserts that string contains both `"win32"`
+and `"WSL2"`; and `agent doctor`'s `sandbox (§12.5/§12.6)` check
+(`apps/cli/src/commands.ts`) surfaces that same `reason` verbatim to the
+user, not a generic "unsupported." So the actual gap wasn't missing
+behavior — it was that HANDOFF's "What's left" table and README's Status
+section both described this as an *open* item ("confirm whether it's
+worth building," "remains open too"), reading as unresolved work still
+pending, when the spec, the code, and its tests already agree on the
+answer.
+
+Closed it as a documented decision rather than a build task:
+1. `PROJECT_SPEC.md`'s A11 and Q5 registers marked resolved in place —
+   doc-only, WSL2-recommended, pointing at §12.5's `[C:Low]` rating and
+   §29's self-review call as the reasoning — rather than silently leaving
+   two "decision needed" rows sitting unanswered forever in what the doc
+   calls its "authoritative Phase-0 deliverable."
+2. `README.md`'s Status section reworded from "remains open too" to state
+   the resolved decision plainly, with the same reasoning and a pointer to
+   the already-passing test that proves the runtime's `win32` fallback
+   message actually names WSL2.
+3. This entry, plus removing the row from "What's left" below with the
+   "do first" tag moved to the next genuinely unblocked row (see there for
+   which, and why).
+
+No code or test changes were needed — the runtime and its test coverage
+already matched the decision; the gap was purely a "what's left"/README
+bookkeeping one. `PROJECT_SPEC.md`, `README.md`, and `HANDOFF.md` now all
+agree the decision is made and closed, not to be revisited without new
+information (e.g. concrete user demand for a native Windows sandbox
+despite its own spec-rated weakness). Full suite still 687/687 passing,
+clean `tsc -b`, clean `eslint .` — nothing here touched runtime behavior.
+
+### Research pass: DeepSeek Harness evaluated — two blocked rows unblocked, one policy gap closed
+
+Not a code change. Prompted directly by the user ("would deepseek harness help
+our clutchcode in any way?"), evaluated for real rather than from memory:
+cloned `deepseek-ai/deepseek-harness` @ `b150a55` (2026-08-21, MIT, TypeScript,
+~2,734 src files across 55 workspace packages — the closest peer to this
+project found so far: same language, same package manager, same test runner,
+same problem), read its architecture/sandbox/ACP/compaction subsystems and its
+published postmortems, and verified every load-bearing claim against a primary
+source rather than its README (npm registry for package existence and version,
+its own `LICENSE` files for the license split, `git rev-parse` for the pin).
+
+**The honest headline: it does not change our architecture, and almost none of
+it is adoptable.** Under our own §2 default the harness itself is
+**STUDY-ONLY** like every other reference project, and its plugin/DI core
+(Cordis) is explicitly *not* something to adopt — we chose direct package
+boundaries (§20) and retrofitting a DI container would be a rewrite, not an
+improvement. What it does deliver is three specific, concrete things:
+
+1. **The Landlock blocker is retired.** That row has carried the same stated
+   objection for several rounds — a native helper or vetted syscall binding
+   "neither exists yet, and a hand-rolled one carries a worse failure mode
+   (silently over-permissive, not fail-loud)." `@deepseek-ai/node-addon-landlock-run`
+   is exactly that helper, is **BSD-3-Clause** (its own LICENSE, separate from
+   the harness's MIT — a distinction that changes the verdict, so it is
+   recorded separately in every provenance doc), is published on npm (`0.1.1`,
+   confirmed live against the registry), and is **fail-closed by
+   construction**, which is precisely the property the objection demanded.
+   It also ships a prebuilt `linux-arm64`, so Landlock-on-arm64 does *not*
+   inherit the blocker that stalls arm64 seccomp. Row rewritten with a
+   four-step executable plan.
+2. **ACP is actionable and was already promised.** `PROJECT_SPEC.md` names ACP
+   in §18.1, §20 and §26 — our stdio binding is "deliberately the same shape as
+   ACP" and §26's risk mitigation is to be "a client of these protocols rather
+   than fighting them" — but we never implemented it, so no ACP client can
+   actually talk to us. There is now an official SDK (`@agentclientprotocol/sdk`
+   `0.25.1`) and a working reference consumer to study. As an **open protocol**
+   this lands on the MCP verdict (**REUSE — protocol impl**), not clean-room.
+   New row added, scoped as a second binding *alongside* `agent-rpc` so the VS
+   Code extension is untouched.
+3. **A real policy gap in our own docs, found by trying to answer the
+   question.** `LICENSE_AND_REUSE_ANALYSIS.md` governs *source entering our
+   tree* and says nearly everything is STUDY-ONLY "even when the license is
+   permissive." It had **nothing to say about adding a dependency** — a
+   different act with a different risk profile, and one we already do
+   routinely (`ajv`, `commander`, `vitest`). Read literally, the doc would have
+   forbidden consuming the Landlock helper for reasons that only apply to
+   copying. New **§2a, "Depending on a package is not reusing its source"**:
+   a comparison table (provenance, attribution, audit story, upstream fixes,
+   coupling), the explicit statement that §2's default is a rule about
+   *expression* not a preference for hand-rolling, the `ajv` precedent, and
+   five binding conditions on the Landlock dependency specifically
+   (depend-never-vendor; behind our own seam; fail-closed must be tested by us,
+   not trusted; BSD-3-Clause attribution at manifest level; pinned because
+   upstream advertises breaking changes).
+
+Also captured: their published **postmortem 0004** documents a Landlock defect
+we would very likely have shipped ourselves — a bare `'landlock-run: '`
+substring match conflating a *benign* partial-ABI notice with a *fatal* launcher
+error, so ripgrep's exit-1-for-no-matches surfaced as `SANDBOX_UNAVAILABLE`.
+Our own `classifyFailure` has been bitten twice by that same over-broad-text-match
+shape (the bare `"no such file or directory"` case, and the lint/typecheck
+`ENV_ERROR_RE` gap), so the lesson — *status-gated* classification, never a
+substring bag — is written into the Landlock row as a required step, not a
+footnote. A fourth, lower-priority row (tool-result pruning as a distinct
+compaction stage, §4.5) was added from their `compaction-tool-result-pruner`.
+
+The Windows Tier 1 decision closed earlier on this branch is **explicitly not
+reopened**: their native Windows rung self-reports `partial` enforcement, and
+their design note rejects AppContainer for being unable to do arbitrary-path
+reads at all — both of which *corroborate* §12.5's `[C:Low]` rating rather than
+contradicting it. Recorded as a watch item with two named revisit conditions so
+a future session doesn't relitigate it from the same evidence.
+
+Docs touched: new `research/repos/deepseek-harness.md` (full note in
+`00_METHOD.md §5`'s standard schema), `research/00_METHOD.md` inventory row
+(with a footnote on the later clone date and the license split),
+`LICENSE_AND_REUSE_ANALYSIS.md` (three table rows + new §2a; also corrected the
+stale "the one genuine REUSE" line, which is now two — MCP and ACP),
+`docs/PRIOR_ART.md` (four rows + corrected the blanket "all of the above are
+STUDY-ONLY" claim), and this file. No code, no tests, no behavior change:
+687/687 still passing, clean `tsc -b`, clean `eslint .`.
+
+### Research pass: pi agent harness evaluated — a real latent provider gap, and a correction
+
+Prompted by a second repo link with "now something useful from this."
+Cloned `Derric01/pi_coding_agent` @ `f13e6a8` **after confirming the clone
+matched the live remote HEAD** (`git ls-remote` — the user asked explicitly for
+this, and it did match; single `main` branch).
+
+**A correction worth recording, because it changed the whole verdict.** The
+repo sits under a familiar owner name, and the first read of the situation was
+"this is first-party work, so the clean-room rules don't bind." That was wrong:
+`LICENSE` is **MIT © 2025 Mario Zechner** (the upstream pi harness, <https://pi.dev>,
+published as `@earendil-works/*`) and this is a **fork**. The ordinary §2
+STUDY-ONLY default therefore applies in full, exactly as for Aider or opencode.
+Caught by reading the `LICENSE` file rather than trusting the repo's owner
+prefix — worth generalizing: **a repo under a known owner is not evidence of
+that owner's copyright**, and the LICENSE is the only thing that settles it.
+
+**Cross-signal from the previous entry:** DeepSeek Harness's capability-seams
+graph lists an `llm-pi-ai` package — i.e. it depends on this same
+`@earendil-works/pi-ai`. Two independently-built serious harnesses converging on
+one provider library says more about that library than either project alone.
+
+**The concrete finding — real, latent, correctly scoped as not-yet-reachable.**
+`pi-ai`'s stop/finish-reason vocabulary is materially wider than ours; the
+interesting entry is Anthropic's **`pause_turn`**. Verified against Anthropic's
+own published API documentation (not from memory, and not from pi-ai's
+treatment of it): `pause_turn` means *the model paused a long-running turn and
+the client is expected to resume it* — it arises with server-side tools
+(web search / web fetch / code execution). Our `mapStopReason` in
+`packages/providers/src/anthropic.ts` has no `pause_turn` case, so it falls
+through `default:` to `"stop"` — the agent loop would treat a *paused* turn as
+a *completed* one. That is precisely the defect signature round 3 found six
+instances of ("a truncated or failed turn reported as a normal, complete one").
+
+**Scoping it honestly, per "a finding can be real and mis-scoped at the same
+time":**
+- It is **not currently reachable**. `pause_turn` only occurs when the request
+  declares Anthropic server tools; we declare none (grepped — no `web_search`,
+  `web_fetch`, `code_execution`, or `server_tool` anywhere in `packages/providers`
+  or `packages/tools`). Our tools are all client-side. Same category as the
+  `snapshot-backup.ts` `relPath` row: confirmed real, currently dead, worth
+  closing *before* the wiring exists rather than after.
+- **pi-ai maps it to `"stop"` too** — deliberately, as a named case with the
+  comment "Stop is good enough -> resubmit." So this is *not* "they got it right
+  and we got it wrong." The difference is that theirs is an explicit, documented
+  decision inside a loop that resubmits, while ours is an unnamed fallthrough in
+  a loop that treats `"stop"` as terminal.
+- Closing it properly is **not a one-liner**: `FinishReason` is
+  `"stop" | "tool_use" | "length" | "error"` with no paused variant, so doing it
+  right means adding one and deciding what `AgentLoop` does with it. That is a
+  small design decision, deliberately left queued rather than made unilaterally.
+
+Two rows added to "What's left" (the `pause_turn`/conformance row, and a
+generated-model-catalog row that complements — does not replace — the §4.9
+capability probe). Recorded explicitly as **not** worth doing: adopting `pi-ai`
+as our provider layer. Its coverage and error vocabulary are better than ours,
+but it pulls `@aws-sdk/client-bedrock-runtime`, `@google/genai`,
+`@mistralai/mistralai`, `openai`, `@anthropic-ai/sdk`, `undici`, `proxy-agent`
+and more into a local-first tool (§17) that hand-assembled a seccomp BPF filter
+in TypeScript specifically to avoid *one* runtime dependency (§12.6). §2a's
+"depend, don't copy" reasoning cuts both ways: the `ajv` precedent was ~4 small
+transitive deps, not three cloud-vendor SDKs.
+
+Docs touched: new `research/repos/pi-agent-harness.md`, plus inventory/licence/
+prior-art rows in `research/00_METHOD.md`, `LICENSE_AND_REUSE_ANALYSIS.md`,
+`docs/PRIOR_ART.md`, and this file. No code, no tests, no behavior change:
+687/687 still passing, clean `tsc -b`, clean `eslint .`.
+
+### Autonomous-continuation convention upgraded: one trigger, a bounded work loop, an explicit quality bar
+
+Requested directly: *"I will just say start work, Claude should act like a
+senior and build this product ... only Sonnet will work on it so quality is
+key."* The convention previously did **one** unit per invocation and leaned on
+the executor having internalized `CLAUDE.md`. Both were wrong for the actual
+usage pattern.
+
+Rewrote the playbook in `CLAUDE.md`'s "Autonomous continuation" section —
+deliberately **there and not in the skill files**, preserving the existing
+"one shared thing, not two that can drift" design; the two skills stay thin
+triggers that point at it.
+
+**What changed:**
+
+1. **A bounded work loop instead of a single unit.** A *unit* is one "What's
+   left" row taken end to end and checkpointed (gate clean → `HANDOFF.md`
+   updated → `README.md` if user-visible → commit → push). After a unit the
+   executor **continues to the next one** rather than stopping for permission.
+   Bounded at **three units per invocation** so a run stays reviewable — the
+   user just says the phrase again.
+2. **Explicit stop conditions**, because an unattended run needs to know when
+   *not* to push through: three units done; only blocked/watch/human-decision
+   rows left; the gate won't come clean (never commit red, never skip or
+   disable a test to reach green); the unit needs a decision the executor
+   shouldn't make alone (product call, ADR amendment, public-API break, new
+   runtime dependency, unverifiable security-critical work); or a claim can't
+   be verified — report it unverified, never fake a pass.
+3. **Two guardrails promoted from this session's own audit findings**, since
+   both were real mistakes that nearly shipped:
+   - **Coherence check before writing code** — read what `PROJECT_SPEC.md` and
+     the ADRs actually say about the row's area, and *stop and report* if the
+     row contradicts an Accepted decision. Cites the live example: the queued
+     model-catalog row contradicted ADR-015, which had already rejected static
+     per-model tables ("static rots").
+   - **Blast-radius check before widening a shared type** — a union
+     re-exported as public API (`SandboxBackend` via `@clutchcode/agent-api`)
+     or guarded by an exhaustive `never` check is a public-surface change, and
+     usually a hint the design wants a new optional *field*, not a new variant.
+4. **The quality bar restated inline** rather than assumed — no stubs;
+   reproduce before fixing; prove the test discriminates via stash-revert;
+   fix the class not the instance; real over mocked; flag what this
+   environment can't verify; report what was verified and *how*.
+5. **Row-selection hardened**: take the `DO FIRST` row (position is the
+   priority signal), and **skip** anything marked `BLOCKED` / `watch item` /
+   gated on a human decision — implementing one of those is a defect, not
+   initiative. Re-read the table between units, since an earlier unit in the
+   same run may have reordered it or moved the tag.
+6. **`CLAUDE.md` updates stay rare, deliberately.** The request was to update
+   it each cycle; that would make a timeless-conventions file churn with
+   per-unit status and dilute it. `HANDOFF.md` is the per-unit checkpoint;
+   `CLAUDE.md` is touched only when a unit surfaces a genuinely durable
+   lesson. Stated explicitly in the loop so the distinction is not left to
+   taste.
+
+Also: `"start"` added as a recognized trigger variant; the relay step now
+requires **verifying the reported commits actually exist** before passing a
+subagent's report to the user, rather than relaying it on trust.
+
+Every cross-reference in the new playbook was verified to resolve against the
+repo (the `DO FIRST` tag, the table preamble, the blocked/watch rows, ADR-015's
+rejection text, the `agent-api` re-export, the exhaustive `never` check, and
+that all three gate commands run clean). Docs/skills only — no code: 687/687
+passing, clean `tsc -b`, clean `eslint .`.
+
 ---
 
 ## What's left
 
-Roughly ordered by what a next session would naturally reach for first.
+Ordered by what a next session should reach for first — **this ordering is
+the priority signal**, so a row added later belongs at its right position,
+not appended to the bottom. Exactly **one** row carries a `DO FIRST` tag at
+any time (currently the top row); when that row is completed, move the tag
+to whatever becomes the next genuinely-unblocked, highest-value row rather
+than letting it disappear. Do not introduce competing "do first"/"do next"
+variants — one tag, one row.
 Effort is rough — a single focused session's worth of work, at this
 project's standard (real tests, honest verification flags), not a
 loose "MVP" estimate.
 
 | Item | Spec ref | Rough effort | Notes |
 |---|---|---|---|
-| Windows sandbox Tier 1 | §12.5/§12.6, A11 | medium | WSL2-recommended is the spec's own documented fallback; a native restricted-token/AppContainer path is explicitly `[C:Low]` in the spec — confirm whether it's worth building vs. staying doc-only. |
-| Landlock | §12.6 | medium–large, needs a plan first | Seccomp is done (see "what's done"); Landlock specifically needs either a native helper binary or a vetted raw-syscall binding — neither exists yet, and a hand-rolled one carries a worse failure mode (silently over-permissive, not fail-loud) than seccomp did. Don't attempt without a clear verification story first. |
-| arm64 seccomp | §12.6 | small, needs an arm64 host | The x86_64 filter is done and verified; arm64 has a different syscall number table with no way to verify it in this (x86_64) environment — needs either an arm64 host/CI runner or a very high-confidence authoritative source cross-checked the same way libseccomp's resolver was used for x86_64. |
+| Landlock | §12.6 | medium, **DO FIRST** (now unblocked, highest value) | **The blocker named in this row for several rounds is retired.** It read: "needs either a native helper binary or a vetted raw-syscall binding — neither exists yet, and a hand-rolled one carries a worse failure mode (silently over-permissive, not fail-loud)." That helper now exists and is published: **`@deepseek-ai/node-addon-landlock-run`** (BSD-3-Clause, latest `0.1.1`, verified live on the npm registry) — ~298 lines of C11 over the raw kernel UAPI, statically linked musl, **fail-closed by construction** (exits without running the command if the kernel cannot enforce), self-restrict-then-`exec` so the ruleset is inherited across `execve` while the *invoking* process stays unrestricted, prebuilt for **`linux-x64` and `linux-arm64`**, with `probe() → 'full' \| 'partial' \| 'unusable'` and `grantArgs({readOnly, readWrite})`. **Consume it as a dependency; never vendor it** — see the new `LICENSE_AND_REUSE_ANALYSIS.md §2a` ("Depending on a package is not reusing its source"), which records the verdict and five binding conditions on it. Plan: (1) add the dep, pinned; (2) add a `landlock` rung to `packages/sandbox` behind the existing seam, layered *under* bwrap the way seccomp already is, wired through `detectSandboxBackend()`/`SandboxCapability` and reported by `agent doctor`; (3) **write our own runner-failure classification, status-gated** — a specific exit code **and** a fatal line, with exact informational lines excluded, never a substring bag: this is the whole lesson of their published postmortem 0004, where a bare `'landlock-run: '` substring match made ripgrep's exit-1-for-no-matches surface as `SANDBOX_UNAVAILABLE` on older-ABI kernels that print a *benign* partial-enforcement notice; our own `classifyFailure` has already been bitten twice by exactly this over-broad-text-match shape; (4) real tests on this Linux host in the style of the existing bwrap/seccomp suites — a file outside the allow-list genuinely unreadable, plus an explicit **fail-closed test** (absent/unusable launcher ⇒ no Landlock rung, never an unconfined run). Do **not** copy their `sandbox-local` provider, argv construction, or classification code — sandbox policy code is CLEAN-ROOM-REQUIRED per §3. Full study note: `research/repos/deepseek-harness.md`. **ARCHITECTURE — read before writing code (audited, do not get this wrong):** Landlock is a *hardening layer under bwrap*, exactly as §12.6 words it and exactly as seccomp is already modelled — **not** a new sandbox backend. Concretely: add an optional `landlock?: LandlockDetection` field to `SandboxCapability` alongside the existing `seccomp?: SeccompDetection`, and emit the launcher into the argv that `buildBwrapSpawn` already produces. Do **NOT** add `"landlock"` to the `SandboxBackend` union: that union is (a) a **closed union re-exported as public API from `@clutchcode/agent-api`**, so widening it is a public-surface change, and (b) guarded by an exhaustive `const exhaustive: never = backend` switch in `buildConfinedSpawn` that a new variant breaks at compile time. It is also conceptually wrong — Landlock is not an *alternative* to bwrap, it composes with it, and a `"landlock"` backend would imply an unconfined-namespace path that does not exist. |
+| `agent workflow` CLI command | §8.1/§18.2, Phase 2 | small — the short-session alternative to Landlock above | Both authoring layers exist now (built-ins + `--workflow-file`, see "what's done") — what's missing is the dedicated list/select/validate command §18.2 itself marks Phase 2. `--workflow-file <path>` can validate-and-run today; there's no `agent workflow validate <path>` that checks a file without starting a run, and no `agent workflow list` enumerating built-ins + any locally-referenced custom ones. Tagged "do first" as the smallest genuinely-unblocked row — a quick win, not the highest-value one. **Updated:** the Landlock row below is **no longer blocked** (a published, fail-closed native helper now exists — see that row) and is tagged "do next (highest value)"; take `agent workflow` first if you want a short session, Landlock first if you want the substantive one. arm64 seccomp remains blocked on a real arm64 host, and the VS Code multi-file view is still deferred pending an engine-version bump. |
+| Provider stop/finish-reason conformance — incl. Anthropic `pause_turn` | §4.7/§6.8 | small–medium | **Confirmed real, currently unreachable** (same posture as the old `snapshot-backup.ts` row). `mapStopReason` in `packages/providers/src/anthropic.ts` has no `pause_turn` case, so it falls through `default:` → `"stop"`. Per Anthropic's published API docs, `pause_turn` means the model **paused a long-running turn and the client is expected to resume it** — so the loop would treat a paused turn as a completed one, the exact defect signature round 3 found six instances of. Not reachable today: `pause_turn` only arises when the request declares Anthropic **server** tools (web search / web fetch / code execution) and we declare none (verified by grep — all our tools are client-side). Doing this right is a small **design decision, not a one-liner**: `FinishReason` is `"stop" \| "tool_use" \| "length" \| "error"` with no paused variant, so it needs a new variant plus a decision about what `AgentLoop` does with it (resubmit? treat as a budgeted continuation?). Left queued rather than decided unilaterally. Scope the work as a **table-driven conformance test per adapter** covering the full documented stop/finish vocabulary — `pause_turn`, `aborted`, `content_filter`, `refusal`, `max_tokens`/`length`, `stop_sequence`, `tool_use`/`tool_calls` — with each case's meaning taken from the **provider's own documentation**, using `@earendil-works/pi-ai`'s vocabulary only as a checklist of what to go look up (`research/repos/pi-agent-harness.md`). Adapters stay ours; do not vendor or port pi-ai. **Blast radius, audited so it is neither over- nor under-estimated:** `finishReason` is confined to `packages/providers` (`types.ts`, the three adapters, `fake-provider.ts`) and one consumer, `packages/runtime/src/agent-loop.ts`. It is **not** part of the `agent-rpc` wire contract and **not** re-exported through `agent-api`, so widening the union does **not** break the JSON-RPC protocol, the VS Code extension, or any `apps/*` consumer. Two packages, one loop — contained. |
+| ACP (Agent Client Protocol) binding | §18.1/§20/§26 | medium | `PROJECT_SPEC.md` already names ACP three times — §18.1 says our stdio JSON-RPC binding is "deliberately the **same shape as ACP** … so future editor clients are cheap," §20's layer table calls the boundary "ACP-shaped," and §26's risk register commits us to "leaning into those protocols as a client rather than fighting them." We built `@clutchcode/agent-rpc` *shaped like* ACP but never implemented ACP, so no ACP client can actually talk to us. There is now an official **`@agentclientprotocol/sdk`** (`0.25.1`, spec at <https://agentclientprotocol.com>) and a working open-source consumer to study (DeepSeek Harness `packages/acp`, MIT, study-only). Because ACP is an **open protocol**, this is the same verdict as MCP — **REUSE — protocol impl**, not a clean-room problem (`LICENSE_AND_REUSE_ANALYSIS.md §2`). Payoff: Zed/Neovim/Emacs clients for roughly the cost of one adapter over the existing `Agent` boundary, without touching the runtime. Scope it as a *second binding alongside* `agent-rpc`, not a replacement, so the VS Code extension keeps working unchanged. Study note (incl. the working reference consumer): `research/repos/deepseek-harness.md`. |
+| Generated model catalog to complement the capability probe | §4.9 | medium | We probe every model at runtime because we do not know its context window/capabilities a priori, falling back to provider defaults per ADR-015 when nothing has been probed. A generated catalog for *known hosted* models, with probing retained for *unknown/local* ones, is strictly better than probing everything — and it is what the §4.5 budgeter actually wants (real numbers, not a default). Idea studied from `@earendil-works/pi-ai`'s `models.generated.ts` + `scripts/generate-models.ts`, including its enforced rule that the generator is the source of truth and the generated file is never hand-edited. Implementation ours; the catalog data should come from each provider's own published model documentation / models endpoint, not from copying theirs. **Not** a reason to adopt pi-ai wholesale — see the "what's done" entry for why its dependency footprint disqualifies it for a local-first tool. Study note: `research/repos/pi-agent-harness.md`. **BLOCKED ON AN ADR DECISION — do not implement as written.** Audited against the spec: **ADR-015 (Accepted) explicitly considered and rejected this**, verbatim — *"Alternatives: static per-model tables; probe every run. Why rejected: **static rots**; per-run wastes tokens."* A *generated* catalog is a materially different proposal from the hand-maintained table ADR-015 rejected (regeneration is what answers "static rots", and ADR-015's own migration note already says "fall back to static defaults if probe fails", so static data is not foreign to the design) — but that argument has to be made **in an ADR amendment or a superseding ADR first**, not smuggled in as an implementation task. A future session must either amend ADR-015 or drop this row; silently implementing it would contradict an Accepted decision, which is exactly how an architecture erodes. |
+| Tool-result pruning as a distinct compaction stage | §4.5 | small–medium | Our context budgeter compacts conversation history wholesale (turn-safe) once the effective-context budget is exceeded, and folds the repo-map/open-file-window share into that same budget. Pruning *tool results* specifically — stale/superseded `shell` output, re-read file windows — is a cheaper, earlier lever we have not built, and it degrades quality far less than dropping whole turns. Idea studied from DeepSeek Harness's `compaction-tool-result-pruner` (a model-free pruner behind its own `ctx.toolResultPruner` seam, kept separate from `compaction-basic`); implementation clean-room, ours, per `docs/PRIOR_ART.md`. Study note: `research/repos/deepseek-harness.md`. |
+| arm64 seccomp | §12.6 | small, needs an arm64 host | The x86_64 filter is done and verified; arm64 has a different syscall number table with no way to verify it in this (x86_64) environment — needs either an arm64 host/CI runner or a very high-confidence authoritative source cross-checked the same way libseccomp's resolver was used for x86_64. **Note (new):** this blocker is specific to *seccomp*, whose filter we hand-assemble from architecture-specific syscall numbers. The Landlock row above does **not** inherit it — `@deepseek-ai/node-addon-landlock-run` ships a prebuilt `linux-arm64` binary and carries the ABI burden upstream, so Landlock-on-arm64 arrives free with that work while arm64 *seccomp* stays blocked on a real arm64 host. |
 | VS Code multi-file "changes" view | §18.5, minor | small | The extension opens one real `vscode.diff` editor per changed file (done, see "what's done") rather than combining several into VS Code's newer `vscode.changes` command — deliberately skipped since that command isn't universally available across the `^1.85.0` engine range this extension targets. Revisit if the minimum supported VS Code version is ever raised. |
-| Full non-git `AgentLoop` execution path | — | large, separate project | Snapshot-backed (not worktree-backed) execution for non-git directories. `Agent.run` currently refuses cleanly with a "run git init" error instead of attempting this. |
-| `agent workflow` CLI command | §8.1/§18.2, Phase 2 | small | Both authoring layers exist now (built-ins + `--workflow-file`, see "what's done") — what's missing is the dedicated list/select/validate command §18.2 itself marks Phase 2. `--workflow-file <path>` can validate-and-run today; there's no `agent workflow validate <path>` that checks a file without starting a run, and no `agent workflow list` enumerating built-ins + any locally-referenced custom ones. |
 | PageRank repo map | §9, Phase 7 | medium | Tier 0 (ripgrep + on-demand tree-sitter) is what's live; the Aider-style PageRank map is Tier 1, triggered by measured retrieval-accuracy failures on large repos, not built preemptively. |
 | Eval scoreboard | §16, Phase 8 | medium–large | The replay harness (§16.3c) is live and gates every phase; the full SWE-bench-Verified-subset + Terminal-Bench-style scoreboard with published methodology is not. |
+| Full non-git `AgentLoop` execution path | — | large, separate project | Snapshot-backed (not worktree-backed) execution for non-git directories. `Agent.run` currently refuses cleanly with a "run git init" error instead of attempting this. `SnapshotBackup`'s own traversal gap is already closed (see "what's done"), so this row is now purely "wire the execution path up," not blocked on any open correctness/security gap in the fallback it would use. |
 | Multi-agent orchestration | §7, Phase 9 | large | Explicitly out of scope until the §7 rule justifies it — the spec argues *against* building this by default. Don't start it without re-reading §7's reasoning first. |
-| Git worktree/dirty-tree correctness findings (round 3, confirmed real, not yet fixed) | §13.1/§13.3 | small each, do first | Five confirmed-real correctness bugs from the round-3 git-package audit, deferred for scope: (1) `checkpoint()`'s `git status --porcelain` call uses `allowFailure: true` right after `add -A`, so a real git error (index lock, disk error) is swallowed and misread as "nothing changed," silently skipping a checkpoint that should have been created — fix by not using `allowFailure` there. (2) `approveRun`/`discardRun` call `restoreStash` with no error handling *after* the merge/discard already succeeded — a stash-pop conflict then throws an exception for an operation that actually completed, potentially leaving literal conflict markers in the just-merged tree. (3) `dirty-tree.ts` identifies the auto-stash by the positional ref `stash@{0}`, captured once at push time and reused verbatim at restore time — if any other `git stash` happens on the repo in between (a plausible manual stash by the user during a long-running agent run), `restoreStash` pops the wrong entry. Fix by capturing `git rev-parse stash@{0}` (a stable SHA) at push time and resolving it back to its current position at restore time. (4) Neither dirty-tree strategy preserves the original staged/unstaged split (`stash pop` without `--index`; temp-commit's `add -A` stages everything) despite a code comment claiming the tree is "left exactly as it was" — fix with `stash pop --index` and a staged-set-preserving temp-commit path. (5) `createRunWorktree` runs `handleDirtyTree` (destructive: stashes/temp-commits) before the still-fallible `git worktree add` — a failure there (branch collision, disk error) leaves an orphaned stash with no automatic recovery path, since the `RunWorktree` object that would carry `dirtyTreeResult.stashRef` back to the caller is never constructed. Fix by wrapping the post-stash steps in try/catch and surfacing/restoring the stash on failure. |
-| `snapshot-backup.ts` `relPath` traversal (round 3, confirmed real, currently unreachable) | §13.4 | small | `snapshotBeforeFirstEdit`/`rollback` join a caller-supplied `relPath` into `workspaceRoot`/`backupDir` with no traversal guard — the same class of bug fixed for `runId` elsewhere. Currently dead code (`agent.ts`'s `run()` throws before ever constructing a `SnapshotBackup` — the non-git execution path isn't wired up yet, see the "Full non-git AgentLoop execution path" row above), but it's an exported public API with no traversal test coverage, and the code comments explicitly plan to wire it up later. Fix with the same `assertSafeRunId`-style pattern before that wiring happens, not after. |
+| Windows sandbox Tier 1 — **revisit trigger only, decision stands** | §12.5/§12.6, A11 | n/a (watch item) | The doc-only/WSL2-recommended decision closed earlier this branch is **not** reopened by this research, and a future session should not treat it as reopened. Recording the evidence honestly so the trigger is legible: DeepSeek Harness ships `sandbox-windows-acl`, a real native Windows rung (a koffi port of a `WRITE_RESTRICTED`-token + restricting-SID mechanism). It **self-reports `enforcement: 'partial'`, not full** — ambient `Everyone` write ACEs and NTFS hard-links leak through, since ACLs bind to file objects rather than paths — and their own design note rejects AppContainer because it "cannot do arbitrary-path reads at all." Both facts **corroborate** §12.5's `[C:Low]` rating of the native path rather than contradicting it, and §29's team-size reasoning is untouched. Revisit only if (a) a Windows contributor/CI host materializes, **and** (b) a native path appears that reports *full*, not partial, enforcement. |
 
 ## Known gotchas (read before you hit them again)
 

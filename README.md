@@ -127,8 +127,21 @@ fails by silently granting more access than intended, a worse mistake
 category than seccomp's fail-loud one, so this stays a named gap rather
 than a guess. **arm64 seccomp is also not supported yet** — different
 syscall numbers, no way to verify them without an arm64 host, reported
-honestly by `detectSeccompSupport()` rather than guessed. A Windows Tier 1
-backend (WSL2 is the spec's own recommended path there) remains open too.
+honestly by `detectSeccompSupport()` rather than guessed. **Windows Tier 1
+is a closed decision, not an open gap:** §12.5 itself rates a native
+restricted-token/AppContainer backend **[C:Low]** ("weakest story; WSL2
+preferred"), and the spec's own self-review (§29 point 3) already calls
+for doc-only Windows sandboxing when the team is small — so this project
+stays doc-only, on purpose, rather than building a native path against a
+confidence rating the spec itself flags as its weakest. `PROJECT_SPEC.md`'s
+assumptions register (A11) and open-questions register (Q5) are marked
+resolved accordingly. This isn't just a documentation stance:
+`detectSandboxBackend()` already implements it — on `win32` it reports
+`backend: "none"` with a `reason` string that names WSL2 as the
+recommended path (tested directly, asserting the string mentions both
+`win32` and `WSL2`), and `agent doctor` surfaces that same reason
+verbatim, so a Windows user sees *why* Tier 1 is inactive and what to do
+about it, not a silent fallback.
 
 **Phase 4's VS Code extension (§18.1/§18.5) is built.** A new
 `@clutchcode/agent-rpc` package gives the runtime a second binding
@@ -449,6 +462,69 @@ alias. Fixed by having `resolveInWorkspace` return the fully-resolved real
 path alongside the existing containment flag, and denylist-checking that
 instead of the requested name at all three call sites. 664 tests total (11
 new), clean `tsc -b`, clean `eslint .`.
+
+**The five confirmed-real git-worktree/dirty-tree correctness findings
+deferred from round 3 are now fixed**, all reproduced for real and proven
+against the `git stash`-revert-recheck cycle (each new test fails against
+the pre-fix code, passes after): (1) `checkpoint()`'s post-`add -A` status
+check used `allowFailure: true`, so a genuine git error (index lock, disk
+error, corruption) read identically to "nothing changed" and silently
+skipped a checkpoint right after real content was staged — reproduced with
+a PATH-shimmed `git` that fails exactly `status --porcelain` and nothing
+else; fixed by not swallowing that call's failures. (2) `approveRun`/
+`discardRun` let a `restoreStash` conflict throw *after* the merge/discard
+had already genuinely completed — reproduced with a real merge that lands
+cleanly followed by a stash pop that conflicts with the just-merged
+content (git itself leaves literal conflict markers and never drops the
+stash on a failed pop); fixed by catching that specific failure and
+returning it as a `stashRestoreWarning` instead of masking a successful
+operation as a thrown exception. (3) the auto-stash was identified by a
+positional `stash@{0}` captured once at push time and reused verbatim
+later, so a manual `git stash` elsewhere on the repo in between (plausible
+during a long-running run) made restore pop the wrong entry — fixed by
+capturing the stash's own commit SHA instead and resolving it back to its
+current position at restore time. (4) neither dirty-tree strategy actually
+preserved the original staged/unstaged split despite a comment claiming
+the tree was "left exactly as it was" — the stash strategy now uses `stash
+pop --index`; the temp-commit strategy now captures the index as a tree
+object via `git write-tree` before touching anything and restores it
+byte-exact via `git read-tree` afterward, proven to survive even a
+genuinely partially-staged (mixed-hunk) file, which `--index` itself can't
+always do perfectly. (5) `createRunWorktree` ran the destructive dirty-tree
+handling *before* the still-fallible `git worktree add`, so a branch-name
+collision or disk error left an orphaned stash with no return path back to
+the caller — reproduced with a real pre-existing branch-name collision;
+fixed by wrapping the rest of the function in try/catch and auto-restoring
+the stash on failure, narrating the outcome in the thrown error either
+way. 670 tests total (6 new), clean `tsc -b`, clean `eslint .`.
+
+**The last round-3-deferred finding — `snapshot-backup.ts`'s `relPath`
+path traversal (§13.4) — is fixed.** `SnapshotBackup.snapshotBeforeFirstEdit`
+joined a caller-supplied `relPath` straight into both `workspaceRoot` and
+`backupDir` via a bare `path.join`, with no traversal guard — reproduced
+for real against a throwaway workspace with distinct-depth roots (so the
+two escape directions can't collide on the same file and mask each other):
+a `relPath` containing `..` made the backup write land *outside*
+`backupDir` entirely, and a later `rollback()` for the same `relPath`
+overwrote a file *outside* `workspaceRoot`. Currently dead code — `agent.ts`'s
+`run()` still refuses non-git directories before ever constructing a
+`SnapshotBackup` — but it's an exported public API with no traversal test
+coverage, closed now rather than after the non-git execution path gets
+wired up. Fixed with a new `@clutchcode/git` module, `rel-path.ts`
+(`isSafeRelPath`/`assertSafeRelPath`, exported alongside the existing
+`assertSafeRunId`): unlike `runId`, `relPath` legitimately needs
+subdirectory structure, so instead of a single-segment allow-list it
+rejects the specific traversal primitive (any `..` path segment, checked
+on both separators regardless of platform) plus absolute/drive-prefixed
+shapes, backed by a `path`-based `assertContainedIn` re-check on the
+actual joined destination as defense in depth — the same
+structural-check-plus-resolved-containment-recheck pattern already used
+for `runId`. 17 new tests (11 for the validator itself, 6 exercising the
+real `SnapshotBackup` API, including two that reproduce the original
+disk-level escape and confirm it's now rejected before any write happens),
+each proven against the `git stash`-revert-recheck cycle. 687 tests total,
+clean `tsc -b`, clean `eslint .`. This closes the last open row from round
+3's git-package audit.
 
 ## Repository layout
 
