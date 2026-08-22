@@ -1,7 +1,7 @@
 {
   "name": "@clutchcode/capability",
   "version": "0.1.0",
-  "description": "The model capability probe (§4.9), capability-profile persistence, the context budgeter (§4.5), and edit-format selection (§4.4) — the adaptation layer's 'crown jewel' (§4.2).",
+  "description": "The model capability probe (\u00a74.9), capability-profile persistence, the context budgeter (\u00a74.5), and edit-format selection (\u00a74.4) \u2014 the adaptation layer's 'crown jewel' (\u00a74.2).",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -18,5 +18,25 @@
   },
   "devDependencies": {
     "typescript": "^5.7.2"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Derric01/ClutchCode.git",
+    "directory": "packages/capability"
+  },
+  "homepage": "https://github.com/Derric01/ClutchCode#readme",
+  "bugs": {
+    "url": "https://github.com/Derric01/ClutchCode/issues"
   }
 }

@@ -1,7 +1,7 @@
 {
   "name": "@clutchcode/agent-rpc",
   "version": "0.1.0",
-  "description": "The Agent API's stdio JSON-RPC binding (PROJECT_SPEC.md §18.1/§18.5, ACP-shaped): LSP-style framing, a server wrapping @clutchcode/agent-api's Agent, and a client any editor (VS Code today; Zed/Neovim later) can speak to over a spawned process's stdio.",
+  "description": "The Agent API's stdio JSON-RPC binding (PROJECT_SPEC.md \u00a718.1/\u00a718.5, ACP-shaped): LSP-style framing, a server wrapping @clutchcode/agent-api's Agent, and a client any editor (VS Code today; Zed/Neovim later) can speak to over a spawned process's stdio.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -16,5 +16,25 @@
   },
   "devDependencies": {
     "typescript": "^5.7.2"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Derric01/ClutchCode.git",
+    "directory": "packages/agent-rpc"
+  },
+  "homepage": "https://github.com/Derric01/ClutchCode#readme",
+  "bugs": {
+    "url": "https://github.com/Derric01/ClutchCode/issues"
   }
 }

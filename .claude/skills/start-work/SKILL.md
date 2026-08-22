@@ -23,9 +23,17 @@ exists to skip.
    > `HANDOFF.md` **in full** before doing anything else, then run the work
    > loop in CLAUDE.md's "Autonomous continuation" section exactly as
    > written: complete **up to three units** of work, each one checkpointed
-   > (build/test/lint clean → `HANDOFF.md` updated → `README.md` if
+   > (build/test/lint clean → entry appended to `docs/PROJECT_LOG.md` →
+   > `HANDOFF.md` snapshot + "What's left" updated → `README.md` if
    > user-visible → commit → push) before starting the next. Stop early on
    > any stop condition that section lists.
+   >
+   > **When the run ends, the work must be on an open pull request.** Check
+   > whether one already exists for this branch: if so, your pushes have
+   > already updated it — say so. If not, open one against `main` with a body
+   > stating what was built, what was verified and **how** (test counts,
+   > stash-revert results), and what is deliberately still open. Never open a
+   > second PR for a branch that already has one.
    >
    > The things most worth restating, because getting them wrong is worse
    > than doing nothing: pick the `DO FIRST` row (skip anything marked

@@ -1,7 +1,7 @@
 {
   "name": "@clutchcode/agent-api",
   "version": "0.1.0",
-  "description": "The Agent API boundary (PROJECT_SPEC.md §18, §24, ADR-011): in-process binding for the CLI/TUI. apps/* depend only on this package, never on @clutchcode/runtime internals.",
+  "description": "The Agent API boundary (PROJECT_SPEC.md \u00a718, \u00a724, ADR-011): in-process binding for the CLI/TUI. apps/* depend only on this package, never on @clutchcode/runtime internals.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -24,5 +24,25 @@
   },
   "devDependencies": {
     "typescript": "^5.7.2"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Derric01/ClutchCode.git",
+    "directory": "packages/agent-api"
+  },
+  "homepage": "https://github.com/Derric01/ClutchCode#readme",
+  "bugs": {
+    "url": "https://github.com/Derric01/ClutchCode/issues"
   }
 }

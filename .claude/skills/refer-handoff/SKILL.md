@@ -15,9 +15,13 @@ quality bar all live there, deliberately in one place so this file and
    anything else.
 2. Run the work loop in CLAUDE.md's "Autonomous continuation" section
    exactly as written — up to three units, each checkpointed (build/test/
-   lint clean → `HANDOFF.md` updated → `README.md` if user-visible →
+   lint clean → entry appended to `docs/PROJECT_LOG.md` → `HANDOFF.md`
+   snapshot + "What's left" updated → `README.md` if user-visible →
    commit → push) before starting the next, stopping early on any stop
    condition listed there.
+   **When you stop, the work must be on an open pull request** — pushing
+   updates one that already exists; open one against `main` if none does.
+   Never open a second PR for a branch that already has one.
 3. **Start immediately.** Don't ask what to work on, don't summarize a plan
    and wait for approval — the trigger phrase exists precisely to skip
    that. The one thing that *does* warrant stopping is a stop condition:

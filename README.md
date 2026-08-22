@@ -13,7 +13,101 @@ design rationale (the authoritative Phase 0 deliverable), and
 [`LICENSE_AND_REUSE_ANALYSIS.md`](./LICENSE_AND_REUSE_ANALYSIS.md) for the
 licensing/reuse rules that govern this implementation.
 
+## What makes it different
+
+Most coding agents stop when the model says it's finished. ClutchCode stops
+when a **deterministic gate** says so: the build, the tests, and the linter
+actually have to pass. A separate cheat-detection layer exists specifically to
+catch a model that "fixes" a failing test by deleting its assertion.
+
+Three other things follow from that stance:
+
+- **Local-first.** No account, no telemetry, no mandatory cloud. Enforced by a
+  release-gate test — the eval harness completes a task offline with egress
+  blocked at the OS level against a local model.
+- **Model-agnostic.** A capability probe adapts the edit format, context
+  budget, and output reservation to whatever you point it at — a frontier API
+  or a 14B model on your own GPU.
+- **Sandboxed by default.** Commands run under real OS confinement
+  (bubblewrap + a seccomp filter on Linux), inside an isolated git worktree,
+  with a scrubbed environment and a synthetic `$HOME`.
+
+## Quickstart
+
+**Requirements:** Node ≥ 20, pnpm, git. On Linux, `bubblewrap` for the OS
+sandbox (without it ClutchCode falls back to Tier 0 — policy engine only —
+and `doctor` will tell you).
+
+Not yet published to npm. Build from source:
+
+```sh
+git clone https://github.com/Derric01/ClutchCode.git
+cd ClutchCode
+pnpm install
+pnpm build
+node apps/cli/dist/cli.js --help     # or link it onto your PATH
+```
+
+Check what your machine actually supports:
+
+```sh
+clutchcode doctor        # sandbox backend, seccomp, keychain, toolchain
+```
+
+Point it at a model. For a local model via Ollama, no key is needed:
+
+```sh
+clutchcode run "fix the failing test in src/parser.ts" \
+  --provider ollama --model qwen2.5-coder:14b
+```
+
+For a hosted provider, store the key in your OS keychain first — it is read
+from stdin, never from argv or shell history:
+
+```sh
+clutchcode providers set-key anthropic      # paste the key, then Ctrl-D
+clutchcode run "add pagination to the users endpoint" \
+  --provider anthropic --model claude-sonnet-5
+```
+
+**Review before anything touches your branch.** The run edits an isolated
+worktree; nothing lands until you approve it:
+
+```sh
+clutchcode status                # runs and their state
+clutchcode diff    <runId>       # what the agent changed
+clutchcode approve <runId>       # merge it back (--no-squash to keep checkpoints)
+clutchcode reject  <runId>       # discard the worktree entirely
+```
+
+Add `--yes` to `run` to auto-approve **only** when the deterministic gate is
+green and cheat detection flags nothing.
+
+Useful extras: `--max-steps` / `--cost-ceiling-usd` to bound a run,
+`resume <runId> --extend-steps N` to continue one that hit a budget,
+`checkpoints` / `rollback` for per-step history, and `--scope path/` to pin
+verification to one package of a monorepo.
+
+**Try it with no model at all** — `--provider fake` replays a scripted
+transcript, which is how the test suite exercises the whole loop.
+
+## Honest limitations
+
+- **Linux is the verified platform.** The bubblewrap sandbox and seccomp
+  filter are tested against the real kernel. The macOS Seatbelt profile is
+  written against the documented grammar but **has never run on real macOS**.
+  Windows Tier 1 is deliberately doc-only; WSL2 is the recommended path.
+- **Pre-1.0**, under active development, and not yet published as a package.
+- **Landlock is not implemented yet**; seccomp is.
+- Security reviews to date have been thorough but **single-reviewer**. See
+  [`SECURITY.md`](./SECURITY.md) for the threat model and how to report an
+  issue.
+
 ## Status
+
+> A running engineering log, newest sections appended as work lands — not
+> a user guide. For usage see the Quickstart above; for where the project
+> stands right now and what's next, see [`HANDOFF.md`](./HANDOFF.md).
 
 **Phase 1 shipped; Phase 2 in progress.** Per `PROJECT_SPEC.md §21`,
 Phase 1 is: one agent, one default workflow, two provider adapters
