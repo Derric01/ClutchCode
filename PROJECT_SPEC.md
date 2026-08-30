@@ -1150,6 +1150,53 @@ clutchcode/                      # monorepo (pnpm/bun workspaces), Apache-2.0, D
 └── tests/                       # cross-package integration + the offline-completion release-gate test
 ```
 
+**Dependency view of the same structure.** The tree above shows *layout*; this
+shows *who may depend on whom*, which is the part that is normative. The single
+rule that matters: **`apps/*` depend only on `agent-api`** (plus `agent-rpc` for
+the stdio binding) and never reach into `runtime` or below. That is what lets
+the CLI, the VS Code extension, and any future editor client share 100% of the
+runtime code while differing only in presentation.
+
+```mermaid
+flowchart TB
+    subgraph clients["apps/ — presentation only"]
+        CLI["cli"]
+        VSC["vscode"]
+    end
+    subgraph boundary["the public boundary"]
+        API["agent-api"]
+        RPC["agent-rpc"]
+    end
+    subgraph core["core"]
+        RT["runtime"]
+        CAP["capability"]
+        VER["verification"]
+        MEM["memory"]
+    end
+    subgraph found["foundation"]
+        TOOLS["tools"]
+        SBX["sandbox"]
+        GIT["git"]
+        PROV["providers"]
+    end
+
+    CLI --> API
+    VSC --> RPC
+    RPC --> API
+    API --> RT & CAP & VER & MEM
+    RT --> TOOLS & GIT & PROV & SBX
+    VER --> TOOLS
+    CAP --> PROV & TOOLS
+    MEM --> VER
+    TOOLS --> SBX
+```
+
+`git`, `providers` and `sandbox` are leaves — they depend on no other workspace
+package, which is what keeps them independently testable (§2). A dependency
+edge pointing *upward* through this graph, or an `apps/*` edge that bypasses
+`agent-api`, is a boundary violation regardless of whether it compiles.
+
+
 Boundary rules: `runtime` depends on `providers`, `tools`, etc. **only through interfaces**; `providers/FakeProvider` enables model-stubbed tests everywhere (§2). `apps/*` depend only on `agent-api`, never reach into `runtime` internals — so the same API serves CLI and editor. **[C:High]**
 
 ---
