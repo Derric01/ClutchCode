@@ -7,7 +7,7 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-30
 **Branch:** `claude/start-work-handoff-referral-52eyj1`
-**Latest commit:** `67e6694` — "feat(runtime): tool-result pruning as a distinct compaction stage (§4.5)"
+**Latest commit:** `11be036` — "docs: rewrite README as a project front page"
 **Test suite:** 720/720 passing, 78 test files, clean `tsc -b`, clean `eslint .`
 **CI:** `.github/workflows/ci.yml` added — build/test/lint on Node 20 + 22, on
 every PR. **Not yet observed running.** Verified: the file is valid YAML, is on
