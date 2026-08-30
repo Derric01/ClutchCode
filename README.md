@@ -358,10 +358,8 @@ built-in or a custom workflow — proven by a test that hands `AgentLoop` a
 is persisted on `RunState` itself (`state.workflowPlan`), not re-derived
 from the source file on every load — proven by a test that deletes the
 declaration file between pausing and resuming a run and shows `resume()`
-still honors the original plan correctly. Still deliberately out of
-scope: the dedicated `agent workflow` list/select/validate CLI command
-(§18.2 marks that command itself Phase 2) — selection is `--workflow
-<id>` or `--workflow-file <path>` and nothing more structured yet.
+still honors the original plan correctly. (That last deferral — the dedicated `agent workflow` CLI command — has
+since landed; see below.)
 
 **A code-review pass over this session's own work found and fixed three
 real bugs**, not stylistic nits — worth naming because the whole point of
@@ -660,3 +658,57 @@ test with zero tokens and no API key or GPU required.
 
 Apache-2.0. Contributions via DCO (sign off your commits: `git commit -s`).
 See [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
+**`agent workflow` (§18.2) — inspect workflows without starting a run.**
+Both of §8.1's authoring layers already existed (three built-ins as a
+typed TS DSL; a JSON-Schema-validated declarative form behind `agent run
+--workflow-file`), but there was no way to look at either without
+launching a real run against a real repo — finding out whether a
+declaration file was even valid meant starting one. Two subcommands close
+that:
+
+- `clutchcode workflow list [files...]` prints the built-ins plus any
+  declaration files you name, each with the `WorkflowPlan` it actually
+  resolves to (`planMode`/`readonly` — the thing that drives `AgentLoop`,
+  not just a label). A file that fails to load is listed *with its error*
+  rather than aborting the listing, and the exit code is `4` when any file
+  you named is broken.
+- `clutchcode workflow validate <path>` runs the same schema + semantic
+  validation `agent run --workflow-file` does, with no run started and
+  nothing written, and prints the resolved plan on success. A test pins
+  that the two agree in both directions — same verdict, same exit code,
+  same message — so `validate` is the run's own acceptance rules reached
+  earlier, not a second copy that can drift.
+
+Deliberately **not** built: a discovery convention for custom workflows.
+There is no registry of "installed" declarative workflows — they are
+referenced per-run by path — and inventing one (a config key naming a
+workflow directory) is a config-schema decision, which ADR-003 rates as
+hard to reverse once users have config files. `list` therefore enumerates
+the built-ins plus exactly the files you point it at, and persists
+nothing.
+
+**A real CLI bug found while building it, reproduced against the shipped
+binary and fixed as a class.** In commander v15, when a parent command and
+its subcommand both declare the same long option, the flag is parsed onto
+the **parent** and the subcommand's own `opts()` keeps its declared
+default forever. Every `memory` and `providers` subcommand re-registered
+the shared `--repo`/`--json`/`--state-dir`/`--scope` options, so:
+
+- `clutchcode memory correct build "npm run build" --repo /other/repo`
+  wrote the corrected fact into the **current directory's** repo instead
+  of the one named — and printed a success message. Reproduced live
+  before the fix: the fact landed in the cwd repo and the named repo came
+  back `null`.
+- `clutchcode memory list --json` printed human-readable prose, breaking
+  §18.4's "`--json` always prints machine-readable output to stdout"
+  contract that scripts and CI depend on.
+
+Fixed structurally rather than per-site: a group's shared options are
+declared once, on the group parent, and subcommands read the merged view
+via `optsWithGlobals()`. The command tree moved out of the bin entry into
+`apps/cli/src/program.ts` so it can be inspected as a data structure, and
+`cli-structure.test.ts` walks the whole tree asserting **no subcommand
+ever re-declares an ancestor's option** — the same "fix the class, not the
+instance" move as `assertSafeRunId`. All four new tests were confirmed to
+fail against the pre-fix code and pass after it.

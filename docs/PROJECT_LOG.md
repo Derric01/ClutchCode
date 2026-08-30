@@ -1483,3 +1483,139 @@ untouched; the probing was done entirely in a scratch directory outside the
 repo.
 
 No code change. 689/689 still passing, clean `tsc -b`, clean `eslint .`.
+
+### `agent workflow` (§18.2) — and a shipped CLI option-shadowing bug found while building it
+
+The `DO FIRST` row after Landlock turned out to be host-blocked. §18.2 lists
+`agent workflow` — "list/select/validate workflows (§8)" — as Phase 2, and
+both of §8.1's authoring layers already existed; what was missing was any way
+to *inspect* either one without starting a run. Checked against
+`PROJECT_SPEC.md` §8.1/§8.2/§18.2 and ADR-003 before writing code: no
+contradiction — ADR-003 already commits to "workflows typed-DSL + declarative
+schema", which is exactly what this command surfaces.
+
+**Built.** Two subcommands in `apps/cli`, backed by pure functions in
+`commands.ts` (`cmdWorkflowList`, `cmdWorkflowValidate`) exactly like every
+other command:
+
+- `workflow list [files...]` — the three built-ins plus any declaration files
+  named on the command line, each with the `WorkflowPlan` it actually resolves
+  to. Showing the plan (not just a label) is the point: a `plan` stage without
+  `params.mode: "always"` resolves to `auto`, and a listing that hid that would
+  misrepresent what the workflow does. A file that fails to load is listed
+  *with its error* rather than aborting the listing — "what can I run, and
+  what's broken?" wants both halves — and the exit code is `4` when any
+  explicitly-named file failed, so a script needn't parse prose.
+- `workflow validate <path>` — the same schema + semantic validation
+  `agent run --workflow-file` performs, with no run started and nothing
+  written, printing the resolved plan on success. A built-in id passed where a
+  path belongs is named as the actual mistake instead of surfacing an ENOENT
+  on a file called `quickfix`.
+
+**Deliberately not built: a discovery convention for custom workflows.** The
+row's wording ("built-ins + any locally-referenced custom ones") has no
+referent today — there is no registry of installed declarative workflows, they
+are referenced per-run by path. Inventing one (a config key naming a workflow
+directory) is a **config-schema** decision, and ADR-003 rates config-schema
+reversal as "hard once users have config files". So `list` takes the files you
+point it at and persists nothing. Recorded rather than silently skipped.
+
+**No package-boundary change was needed.** Everything the CLI needs
+(`BUILTIN_WORKFLOWS`, `isBuiltinWorkflowId`, `loadWorkflowDeclaration`,
+`resolveWorkflowPlan`, `resolveBuiltinWorkflowPlan`, `WorkflowPlan`) was
+already re-exported through `@clutchcode/agent-api`, so §20's "apps depend
+only on agent-api" holds unchanged and no new dependency was added.
+
+---
+
+**Then the actual find: a real, shipped CLI bug, reproduced against the
+binary.** Writing the argv test for `workflow list --json` showed it printing
+human-readable output. That was not a bug in the new command.
+
+**Mechanism**, isolated with a four-variant minimal repro rather than guessed:
+in commander v15, when a **parent command and its subcommand both declare the
+same long option**, the flag is parsed onto the **parent**, and the
+subcommand's own `opts()` keeps its declared default forever. The parent's
+having an action handler is irrelevant; the duplicate *option registration* is
+what does it. Confirmed with a parent/child pair carrying deliberately
+different defaults: `group list --json --repo X` gave the child
+`{json:false, repo:"CHILD_DEFAULT"}` while `optsWithGlobals()` and the parent
+both showed `{json:true, repo:"X"}`.
+
+Every `memory` and `providers` subcommand re-registered `baseOptions`, so the
+bug was already shipped in six places. Reproduced end to end against the built
+binary:
+
+```
+$ cd /home/user/ClutchCode
+$ clutchcode memory correct build "npm run build" --repo /tmp/mrepo
+build: corrected to "npm run build"          ← reports success
+$ clutchcode memory --repo /tmp/mrepo --json
+null                                          ← the named repo got nothing
+$ clutchcode memory --json
+{"facts":{"build":{"value":"npm run build",…}}}   ← it landed in the cwd repo
+```
+
+A **write to the wrong repo, silently, with a success message.** `memory
+forget` deletes from the wrong repo the same way. The `--json` half breaks
+§18.4's "`--json` always prints machine-readable output to stdout" contract
+for every `memory`/`providers` subcommand — `memory list --json` printed
+prose.
+
+**Fixed as a class, not per call site**, which is the standing rule here (the
+`assertSafeRunId` lesson: one shared validator, not a patch at one call site).
+A group's shared options are now declared **once, on the group parent**, and
+its subcommands read the merged view through a single `globalOpts(cmd)` helper
+over commander's own `optsWithGlobals()`. Verified first that parent-only
+declaration parses correctly in every position — `group list --json`,
+`group --json list`, `group list a b --json` (after variadic args), and the
+default case — before relying on it.
+
+To make the invariant *enforceable* rather than a comment, the command tree
+moved out of the bin entry into **`apps/cli/src/program.ts`** exporting
+`buildProgram()`; `cli.ts` is now nine lines that build and parse. That split
+exists so a test can inspect the tree as a data structure without importing a
+module that parses `process.argv` and calls `process.exit` at import time —
+the alternative (a main-module guard) would have risked breaking the installed
+binary, whose `process.argv[1]` is an npm symlink rather than the real file.
+
+**What was verified, and how.** 707/707 passing (up from 689 — **18 new
+tests**), 77 test files, clean `tsc -b`, clean `eslint .`.
+
+- 9 tests in `commands.test.ts` over the real workflow layer and real files on
+  disk: built-in plans match what `AgentLoop` is actually driven by
+  (`default` → auto/false, `quickfix` → never/false, `review-only` →
+  never/true); a custom file is folded in with `planMode: "always"` and stages
+  rendered `plan(always) → implement → verify`; a broken file is listed with
+  its error while the built-ins still list, exit `4`; schema violations and
+  each semantic rule are reported specifically; a built-in id given as a path
+  is named as such; a missing file reports cleanly.
+- **The load-bearing one:** `validate` and a real `agent run --workflow-file`
+  are asserted to agree in both directions on the same files — same verdict,
+  same §18.4 exit code, same message — against a real git repo with
+  `FakeProvider` stubbing only the model. Without this, `validate` would be a
+  second copy of the acceptance rules free to drift from the ones that
+  actually gate a run.
+- 6 tests in `cli.test.ts` spawning the **real compiled binary**, because
+  argv parsing is the whole subject: `workflow list`, bare `workflow`,
+  variadic `workflow list a b --json`, `validate` exiting `4`/`0`, plus the
+  two regression tests for the shadowing bug (`memory correct --repo <other>`
+  writes to the repo named and *not* to the cwd repo; `memory list --json`
+  emits parseable JSON). `HOME` is redirected to a throwaway dir per run so
+  the memory store under `~/.config/clutchcode/memory` is never the
+  developer's.
+- 3 tests in the new `cli-structure.test.ts` walking `buildProgram()`: no
+  subcommand re-declares an ancestor's option; the walker is proven
+  non-vacuous by re-adding a shadow and asserting it is caught; and each group
+  parent still owns the shared options its children now inherit.
+
+**Discrimination check (`CLAUDE.md`'s stash-revert discipline).** The fix was
+flipped off by restoring the pre-fix registration shape for `memory list` and
+`memory correct` and rebuilding. **Four tests went red** — the structural
+invariant, its own non-vacuity guard, `memory correct --repo`, and `memory
+list --json` — and all four went green again on restore. The workflow tests
+were unaffected either way, correctly: they test a different thing.
+
+**Cleanup worth noting:** reproducing the bug wrote a fact into this repo's
+own real memory store. It was removed (`memory forget build`) once the fix was
+confirmed, not left behind.
