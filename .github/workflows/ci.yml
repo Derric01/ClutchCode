@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A PR that supersedes an in-flight run cancels it; main never cancels.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: build · test · lint (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22'] # 20 is the floor declared in package.json engines
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # This project's testing philosophy is "real over mocked wherever real is
+      # possible" (CLAUDE.md). Several suites therefore need real OS binaries,
+      # not stubs, and silently skip or fail without them:
+      #   bubblewrap      -> Tier 1 sandbox confinement tests (§12.5/§12.6)
+      #   libsecret-tools -> OS keychain / Secret Service tests (§5.1 tier 1)
+      #   gnome-keyring   -> the throwaway keyring those tests spin up
+      #   dbus-x11        -> dbus-run-session, for that throwaway D-Bus session
+      # Omitting these does not make the suite pass with less coverage — it
+      # makes ~9 tests fail outright. They are load-bearing, not optional.
+      - name: Install real sandbox + keychain backends
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bubblewrap libsecret-tools gnome-keyring dbus-x11
+
+      - name: Verify those backends are actually present
+        run: |
+          command -v bwrap
+          command -v secret-tool
+          command -v gnome-keyring-daemon
+          command -v dbus-run-session
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The three gates, run separately so a failure names which one broke.
+      # This mirrors exactly what CLAUDE.md requires before every commit.
+      - name: Build (tsc -b, project references)
+        run: pnpm build
+
+      - name: Test (vitest, whole workspace)
+        run: pnpm test
+
+      - name: Lint (eslint)
+        run: pnpm lint

@@ -1,7 +1,7 @@
 {
   "name": "@clutchcode/git",
   "version": "0.1.0",
-  "description": "Git worktree isolation, checkpointing, rollback, and the non-git snapshot fallback (PROJECT_SPEC.md §13).",
+  "description": "Git worktree isolation, checkpointing, rollback, and the non-git snapshot fallback (PROJECT_SPEC.md \u00a713).",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -14,5 +14,25 @@
   "dependencies": {},
   "devDependencies": {
     "typescript": "^5.7.2"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Derric01/ClutchCode.git",
+    "directory": "packages/git"
+  },
+  "homepage": "https://github.com/Derric01/ClutchCode#readme",
+  "bugs": {
+    "url": "https://github.com/Derric01/ClutchCode/issues"
   }
 }

@@ -1,7 +1,7 @@
 {
   "name": "@clutchcode/runtime",
   "version": "0.1.0",
-  "description": "The agent runtime: RunState state machine, budgets, loop detection, and the orchestration loop (PROJECT_SPEC.md §6). Model-stubbable via FakeProvider.",
+  "description": "The agent runtime: RunState state machine, budgets, loop detection, and the orchestration loop (PROJECT_SPEC.md \u00a76). Model-stubbable via FakeProvider.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -22,5 +22,25 @@
   },
   "devDependencies": {
     "typescript": "^5.7.2"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Derric01/ClutchCode.git",
+    "directory": "packages/runtime"
+  },
+  "homepage": "https://github.com/Derric01/ClutchCode#readme",
+  "bugs": {
+    "url": "https://github.com/Derric01/ClutchCode/issues"
   }
 }

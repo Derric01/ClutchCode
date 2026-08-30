@@ -26,7 +26,9 @@ import {
   cmdRollback,
   cmdRun,
   cmdStatus,
-  cmdTrust
+  cmdTrust,
+  cmdWorkflowList,
+  cmdWorkflowValidate
 } from "./commands.js";
 import { EXIT, exitCodeForRunStatus } from "./exit-codes.js";
 import {
@@ -700,4 +702,189 @@ describe("exitCodeForRunStatus", () => {
     expect(exitCodeForRunStatus("PAUSED")).toBe(3);
     expect(exitCodeForRunStatus("CANCELLED")).toBe(130);
   });
+});
+
+/**
+ * `agent workflow` (§18.2). These exercise the real workflow layer —
+ * `BUILTIN_WORKFLOWS` + the real ajv-backed `loadWorkflowDeclaration` —
+ * against real files on disk; nothing here is mocked.
+ */
+describe("agent workflow (§18.2 list/validate)", () => {
+  let dir: string;
+  let repoPath: string;
+
+  const READONLY_DECL = {
+    apiVersion: "clutchcode/v1",
+    id: "custom-readonly",
+    name: "Custom Readonly",
+    stages: [{ id: "implement", uses: "implement", params: { readonly: true } }]
+  };
+  const ALWAYS_PLAN_DECL = {
+    apiVersion: "clutchcode/v1",
+    id: "custom-always-plan",
+    name: "Custom Always Plan",
+    stages: [
+      { id: "plan", uses: "plan", params: { mode: "always" } },
+      { id: "implement", uses: "implement" },
+      { id: "verify", uses: "verify" }
+    ]
+  };
+
+  function writeDecl(name: string, decl: unknown): string {
+    const p = path.join(dir, name);
+    fs.writeFileSync(p, JSON.stringify(decl), "utf8");
+    return p;
+  }
+
+  beforeEach(() => {
+    dir = makeTempDir("clutchcode-cli-workflow-");
+    repoPath = dir;
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("list reports all three built-ins with the plan each one actually resolves to (§8.2)", async () => {
+    const result = await cmdWorkflowList({ repoPath, json: true });
+    expect(result.exitCode).toBe(EXIT.SUCCESS);
+    const entries = JSON.parse(result.output) as { id: string; kind: string; plan: { planMode: string; readonly: boolean } }[];
+
+    expect(entries.map((e) => e.id)).toEqual(["default", "quickfix", "review-only"]);
+    expect(entries.every((e) => e.kind === "builtin")).toBe(true);
+    // These are the plans AgentLoop is actually driven by — a listing that
+    // got them wrong would be actively misleading, not merely incomplete.
+    expect(entries.find((e) => e.id === "default")!.plan).toEqual({ planMode: "auto", readonly: false });
+    expect(entries.find((e) => e.id === "quickfix")!.plan).toEqual({ planMode: "never", readonly: false });
+    expect(entries.find((e) => e.id === "review-only")!.plan).toEqual({ planMode: "never", readonly: true });
+  });
+
+  it("list includes a caller-named declaration file alongside the built-ins, marked custom, with its resolved plan", async () => {
+    const file = writeDecl("always-plan.json", ALWAYS_PLAN_DECL);
+    const result = await cmdWorkflowList({ repoPath, json: true }, [file]);
+    expect(result.exitCode).toBe(EXIT.SUCCESS);
+
+    const entries = JSON.parse(result.output) as { id: string; kind: string; source?: string; stages?: string; plan?: unknown }[];
+    expect(entries).toHaveLength(4);
+    const custom = entries[3]!;
+    expect(custom.kind).toBe("custom");
+    expect(custom.id).toBe("custom-always-plan");
+    expect(custom.source).toBe(file);
+    // `params.mode: "always"` is what distinguishes this from the built-in
+    // `default`'s heuristic-driven "auto" — the whole reason to show a plan.
+    expect(custom.plan).toEqual({ planMode: "always", readonly: false });
+    expect(custom.stages).toBe("plan(always) → implement → verify");
+  });
+
+  it("list still lists the built-ins when a named file is broken, reports that file's specific error, and exits CONFIG_ERROR", async () => {
+    const bad = writeDecl("no-verify.json", {
+      apiVersion: "clutchcode/v1",
+      id: "no-verify",
+      name: "No Verify",
+      stages: [{ id: "implement", uses: "implement" }]
+    });
+    const result = await cmdWorkflowList({ repoPath, json: true }, [bad]);
+
+    // Exit code carries the failure so a script needn't parse prose...
+    expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+    const entries = JSON.parse(result.output) as { id: string; error?: string }[];
+    // ...but the listing is still complete: three built-ins plus the bad row.
+    expect(entries).toHaveLength(4);
+    expect(entries.slice(0, 3).every((e) => e.error === undefined)).toBe(true);
+    expect(entries[3]!.error).toMatch(/needs a "verify" stage too/);
+  });
+
+  it("validate accepts a real declaration file and reports the plan it resolves to, without starting a run", async () => {
+    const file = writeDecl("readonly.json", READONLY_DECL);
+    const result = await cmdWorkflowValidate({ repoPath, json: true }, file);
+    expect(result.exitCode).toBe(EXIT.SUCCESS);
+
+    const parsed = JSON.parse(result.output) as { valid: boolean; id: string; plan: unknown; stages: string };
+    expect(parsed.valid).toBe(true);
+    expect(parsed.id).toBe("custom-readonly");
+    expect(parsed.plan).toEqual({ planMode: "never", readonly: true });
+    expect(parsed.stages).toBe("implement(readonly)");
+    // No run was started: nothing was written into the repo dir but our own file.
+    expect(fs.readdirSync(dir)).toEqual(["readonly.json"]);
+  });
+
+  it("validate rejects a semantically-invalid declaration with the specific rule that failed, and exits CONFIG_ERROR", async () => {
+    const file = writeDecl("two-implements.json", {
+      apiVersion: "clutchcode/v1",
+      id: "two-implements",
+      name: "Two Implements",
+      stages: [
+        { id: "a", uses: "implement" },
+        { id: "b", uses: "implement" },
+        { id: "v", uses: "verify" }
+      ]
+    });
+    const result = await cmdWorkflowValidate({ repoPath }, file);
+    expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect(result.output).toMatch(/stage kind "implement" appears 2 times/);
+  });
+
+  it("validate rejects a schema violation (unknown stage kind) as well as a semantic one", async () => {
+    const file = writeDecl("typo.json", {
+      apiVersion: "clutchcode/v1",
+      id: "typo",
+      name: "Typo",
+      stages: [{ id: "i", uses: "implment" }]
+    });
+    const result = await cmdWorkflowValidate({ repoPath }, file);
+    expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect(result.output).toMatch(/JSON-Schema/);
+  });
+
+  it("validate names the actual mistake when given a built-in id instead of a path, rather than an ENOENT on a file called 'quickfix'", async () => {
+    const result = await cmdWorkflowValidate({ repoPath }, "quickfix");
+    expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect(result.output).toMatch(/built-in workflow id, not a declaration file/);
+    expect(result.output).toMatch(/--workflow quickfix/);
+    expect(result.output).not.toMatch(/ENOENT/);
+  });
+
+  it("validate reports a missing file clearly instead of throwing", async () => {
+    const result = await cmdWorkflowValidate({ repoPath }, path.join(dir, "nope.json"));
+    expect(result.exitCode).toBe(EXIT.CONFIG_ERROR);
+    expect(result.output).toMatch(/failed to read\/parse workflow file/);
+  });
+
+  /**
+   * The load-bearing test: `validate` must agree with what `run
+   * --workflow-file` actually does, or it is worse than useless — a
+   * second, drifting copy of the acceptance rules. Both directions are
+   * checked against a *real* `Agent.run` (FakeProvider stubs the model,
+   * nothing else), on a real git repo.
+   */
+  it("agrees with a real `agent run --workflow-file`: what validate accepts runs, and what it rejects is refused by the run too", async () => {
+    const runRepo = makeSampleRepo();
+    const stateDir = makeTempDir("clutchcode-cli-workflow-state-");
+    try {
+      const good = writeDecl("agrees-good.json", READONLY_DECL);
+      const bad = writeDecl("agrees-bad.json", {
+        apiVersion: "clutchcode/v1",
+        id: "agrees-bad",
+        name: "Agrees Bad",
+        stages: [{ id: "implement", uses: "implement" }]
+      });
+
+      expect((await cmdWorkflowValidate({ repoPath: runRepo }, good)).exitCode).toBe(EXIT.SUCCESS);
+      const ran = await cmdRun({ repoPath: runRepo, stateDir, json: true }, { task: "review the repo", providerKind: "fake", model: "n/a", yes: true, workflowFile: good });
+      expect(ran.exitCode).toBe(EXIT.SUCCESS);
+      expect((JSON.parse(ran.output) as { workflowId?: string }).workflowId ?? "custom-readonly").toBe("custom-readonly");
+
+      const validatedBad = await cmdWorkflowValidate({ repoPath: runRepo }, bad);
+      const ranBad = await cmdRun({ repoPath: runRepo, stateDir, json: true }, { task: "investigate", providerKind: "fake", model: "n/a", yes: true, workflowFile: bad });
+      // Same verdict, same documented exit code (§18.4 `4` = config error),
+      // and the same message — `validate` is the run's own acceptance rules
+      // reached earlier, not a second copy of them.
+      expect(validatedBad.exitCode).toBe(EXIT.CONFIG_ERROR);
+      expect(ranBad.exitCode).toBe(EXIT.CONFIG_ERROR);
+      expect(validatedBad.output).toMatch(/needs a "verify" stage too/);
+      expect(ranBad.output).toMatch(/needs a "verify" stage too/);
+    } finally {
+      fs.rmSync(runRepo, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

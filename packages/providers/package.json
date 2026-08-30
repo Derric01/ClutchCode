@@ -1,7 +1,7 @@
 {
   "name": "@clutchcode/providers",
   "version": "0.1.0",
-  "description": "Provider abstraction: OpenAI-compatible, Anthropic native, Ollama, and FakeProvider (PROJECT_SPEC.md §4.7).",
+  "description": "Provider abstraction: OpenAI-compatible, Anthropic native, Ollama, and FakeProvider (PROJECT_SPEC.md \u00a74.7).",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -14,5 +14,25 @@
   "dependencies": {},
   "devDependencies": {
     "typescript": "^5.7.2"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Derric01/ClutchCode.git",
+    "directory": "packages/providers"
+  },
+  "homepage": "https://github.com/Derric01/ClutchCode#readme",
+  "bugs": {
+    "url": "https://github.com/Derric01/ClutchCode/issues"
   }
 }

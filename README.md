@@ -13,7 +13,101 @@ design rationale (the authoritative Phase 0 deliverable), and
 [`LICENSE_AND_REUSE_ANALYSIS.md`](./LICENSE_AND_REUSE_ANALYSIS.md) for the
 licensing/reuse rules that govern this implementation.
 
+## What makes it different
+
+Most coding agents stop when the model says it's finished. ClutchCode stops
+when a **deterministic gate** says so: the build, the tests, and the linter
+actually have to pass. A separate cheat-detection layer exists specifically to
+catch a model that "fixes" a failing test by deleting its assertion.
+
+Three other things follow from that stance:
+
+- **Local-first.** No account, no telemetry, no mandatory cloud. Enforced by a
+  release-gate test — the eval harness completes a task offline with egress
+  blocked at the OS level against a local model.
+- **Model-agnostic.** A capability probe adapts the edit format, context
+  budget, and output reservation to whatever you point it at — a frontier API
+  or a 14B model on your own GPU.
+- **Sandboxed by default.** Commands run under real OS confinement
+  (bubblewrap + a seccomp filter on Linux), inside an isolated git worktree,
+  with a scrubbed environment and a synthetic `$HOME`.
+
+## Quickstart
+
+**Requirements:** Node ≥ 20, pnpm, git. On Linux, `bubblewrap` for the OS
+sandbox (without it ClutchCode falls back to Tier 0 — policy engine only —
+and `doctor` will tell you).
+
+Not yet published to npm. Build from source:
+
+```sh
+git clone https://github.com/Derric01/ClutchCode.git
+cd ClutchCode
+pnpm install
+pnpm build
+node apps/cli/dist/cli.js --help     # or link it onto your PATH
+```
+
+Check what your machine actually supports:
+
+```sh
+clutchcode doctor        # sandbox backend, seccomp, keychain, toolchain
+```
+
+Point it at a model. For a local model via Ollama, no key is needed:
+
+```sh
+clutchcode run "fix the failing test in src/parser.ts" \
+  --provider ollama --model qwen2.5-coder:14b
+```
+
+For a hosted provider, store the key in your OS keychain first — it is read
+from stdin, never from argv or shell history:
+
+```sh
+clutchcode providers set-key anthropic      # paste the key, then Ctrl-D
+clutchcode run "add pagination to the users endpoint" \
+  --provider anthropic --model claude-sonnet-5
+```
+
+**Review before anything touches your branch.** The run edits an isolated
+worktree; nothing lands until you approve it:
+
+```sh
+clutchcode status                # runs and their state
+clutchcode diff    <runId>       # what the agent changed
+clutchcode approve <runId>       # merge it back (--no-squash to keep checkpoints)
+clutchcode reject  <runId>       # discard the worktree entirely
+```
+
+Add `--yes` to `run` to auto-approve **only** when the deterministic gate is
+green and cheat detection flags nothing.
+
+Useful extras: `--max-steps` / `--cost-ceiling-usd` to bound a run,
+`resume <runId> --extend-steps N` to continue one that hit a budget,
+`checkpoints` / `rollback` for per-step history, and `--scope path/` to pin
+verification to one package of a monorepo.
+
+**Try it with no model at all** — `--provider fake` replays a scripted
+transcript, which is how the test suite exercises the whole loop.
+
+## Honest limitations
+
+- **Linux is the verified platform.** The bubblewrap sandbox and seccomp
+  filter are tested against the real kernel. The macOS Seatbelt profile is
+  written against the documented grammar but **has never run on real macOS**.
+  Windows Tier 1 is deliberately doc-only; WSL2 is the recommended path.
+- **Pre-1.0**, under active development, and not yet published as a package.
+- **Landlock is not implemented yet**; seccomp is.
+- Security reviews to date have been thorough but **single-reviewer**. See
+  [`SECURITY.md`](./SECURITY.md) for the threat model and how to report an
+  issue.
+
 ## Status
+
+> A running engineering log, newest sections appended as work lands — not
+> a user guide. For usage see the Quickstart above; for where the project
+> stands right now and what's next, see [`HANDOFF.md`](./HANDOFF.md).
 
 **Phase 1 shipped; Phase 2 in progress.** Per `PROJECT_SPEC.md §21`,
 Phase 1 is: one agent, one default workflow, two provider adapters
@@ -264,10 +358,8 @@ built-in or a custom workflow — proven by a test that hands `AgentLoop` a
 is persisted on `RunState` itself (`state.workflowPlan`), not re-derived
 from the source file on every load — proven by a test that deletes the
 declaration file between pausing and resuming a run and shows `resume()`
-still honors the original plan correctly. Still deliberately out of
-scope: the dedicated `agent workflow` list/select/validate CLI command
-(§18.2 marks that command itself Phase 2) — selection is `--workflow
-<id>` or `--workflow-file <path>` and nothing more structured yet.
+still honors the original plan correctly. (That last deferral — the dedicated `agent workflow` CLI command — has
+since landed; see below.)
 
 **A code-review pass over this session's own work found and fixed three
 real bugs**, not stylistic nits — worth naming because the whole point of
@@ -566,3 +658,98 @@ test with zero tokens and no API key or GPU required.
 
 Apache-2.0. Contributions via DCO (sign off your commits: `git commit -s`).
 See [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
+**`agent workflow` (§18.2) — inspect workflows without starting a run.**
+Both of §8.1's authoring layers already existed (three built-ins as a
+typed TS DSL; a JSON-Schema-validated declarative form behind `agent run
+--workflow-file`), but there was no way to look at either without
+launching a real run against a real repo — finding out whether a
+declaration file was even valid meant starting one. Two subcommands close
+that:
+
+- `clutchcode workflow list [files...]` prints the built-ins plus any
+  declaration files you name, each with the `WorkflowPlan` it actually
+  resolves to (`planMode`/`readonly` — the thing that drives `AgentLoop`,
+  not just a label). A file that fails to load is listed *with its error*
+  rather than aborting the listing, and the exit code is `4` when any file
+  you named is broken.
+- `clutchcode workflow validate <path>` runs the same schema + semantic
+  validation `agent run --workflow-file` does, with no run started and
+  nothing written, and prints the resolved plan on success. A test pins
+  that the two agree in both directions — same verdict, same exit code,
+  same message — so `validate` is the run's own acceptance rules reached
+  earlier, not a second copy that can drift.
+
+Deliberately **not** built: a discovery convention for custom workflows.
+There is no registry of "installed" declarative workflows — they are
+referenced per-run by path — and inventing one (a config key naming a
+workflow directory) is a config-schema decision, which ADR-003 rates as
+hard to reverse once users have config files. `list` therefore enumerates
+the built-ins plus exactly the files you point it at, and persists
+nothing.
+
+**A real CLI bug found while building it, reproduced against the shipped
+binary and fixed as a class.** In commander v15, when a parent command and
+its subcommand both declare the same long option, the flag is parsed onto
+the **parent** and the subcommand's own `opts()` keeps its declared
+default forever. Every `memory` and `providers` subcommand re-registered
+the shared `--repo`/`--json`/`--state-dir`/`--scope` options, so:
+
+- `clutchcode memory correct build "npm run build" --repo /other/repo`
+  wrote the corrected fact into the **current directory's** repo instead
+  of the one named — and printed a success message. Reproduced live
+  before the fix: the fact landed in the cwd repo and the named repo came
+  back `null`.
+- `clutchcode memory list --json` printed human-readable prose, breaking
+  §18.4's "`--json` always prints machine-readable output to stdout"
+  contract that scripts and CI depend on.
+
+Fixed structurally rather than per-site: a group's shared options are
+declared once, on the group parent, and subcommands read the merged view
+via `optsWithGlobals()`. The command tree moved out of the bin entry into
+`apps/cli/src/program.ts` so it can be inspected as a data structure, and
+`cli-structure.test.ts` walks the whole tree asserting **no subcommand
+ever re-declares an ancestor's option** — the same "fix the class, not the
+instance" move as `assertSafeRunId`. All four new tests were confirmed to
+fail against the pre-fix code and pass after it.
+
+**Tool-result pruning (§4.5) — a cheaper context lever, in front of
+compaction.** Until now the only answer to a run outgrowing its context
+budget was `compactHistory`, which drops **whole turns** from the oldest
+end. Correct, but expensive: a dropped turn takes the model's own
+reasoning with it. A new stage runs first and blanks only the *content* of
+tool results that are provably stale — the same tool called again later
+with byte-identical arguments, so a newer answer to the exact same
+question is already in context. The classic case is `npm test` re-run
+after an edit: the failing pre-edit output is dead weight, the passing
+post-edit output is what matters.
+
+Three properties keep it safe, each with a test that would fail without
+it: it **never removes a message** (only content is replaced, with a
+placeholder that says the call was re-run, so no turn boundary or
+tool-call/result pairing can break); it is **budget-gated**, returning the
+very same array object while history fits, so a run that never approaches
+the ceiling is byte-identical to one built without it; and it **stops as
+soon as the budget is met**, oldest-first, rather than sweeping everything
+prunable. Two `read_file` calls on the same path with different line
+ranges are different questions and are both kept. Runs emit a new
+`context.pruned` event, rendered in the VS Code extension alongside
+`context.compacted`.
+
+Verified against the real loop, not just in isolation: an integration test
+drives three genuine `shell` executions of the same command (~4KB of real
+output each) through `AgentLoop` and asserts the event fires, the
+placeholder was in the request the model was actually sent, exactly one
+full-size copy survived, and all three tool messages are still in the
+persisted transcript.
+
+**And a test helper that was lying.** `FakeProvider.requestLog` —
+documented as "every request this provider received" — pushed the caller's
+request object by reference, and `AgentLoop` appends to that same
+`messages` array every turn, so every logged entry silently mutated into
+the *final* history. `requestLog[0].messages` never described request 0,
+and any test asserting what the model saw on an early turn was really
+asserting against the end state. Found by instrumenting the pruning
+integration test (all three logged requests printed identical histories,
+impossible for the first); fixed by snapshotting the array per call, with
+a regression test proven to fail against the old one-liner.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collect } from "./types.js";
+import { collect, type NormalizedMessage } from "./types.js";
 import { FakeProvider, textTurn, toolCallTurn } from "./fake-provider.js";
 
 describe("FakeProvider", () => {
@@ -48,5 +48,25 @@ describe("FakeProvider", () => {
     controller.abort();
     const r = await collect(provider.chat({ model: "fake", messages: [], signal: controller.signal }));
     expect(r.finishReason).toBe("error");
+  });
+
+  it("logs each request's messages as an independent snapshot, not a live reference the caller can mutate afterwards", async () => {
+    // Real bug: `requestLog.push(request)` kept the caller's array by
+    // reference, and `AgentLoop` appends to that same array every turn —
+    // so every logged entry silently became the *final* history and
+    // `requestLog[0].messages` never described request 0 at all. Any test
+    // asserting what the model saw on an early turn was asserting against
+    // the end state.
+    const provider = new FakeProvider([textTurn("one"), textTurn("two")]);
+    const live: NormalizedMessage[] = [{ role: "user", content: "first" }];
+
+    await collect(provider.chat({ model: "fake", messages: live }));
+    live.push({ role: "assistant", content: "reply" }, { role: "user", content: "second" });
+    await collect(provider.chat({ model: "fake", messages: live }));
+
+    expect(provider.requestLog).toHaveLength(2);
+    expect(provider.requestLog[0]!.messages).toHaveLength(1);
+    expect(provider.requestLog[0]!.messages[0]!.content).toBe("first");
+    expect(provider.requestLog[1]!.messages).toHaveLength(3);
   });
 });

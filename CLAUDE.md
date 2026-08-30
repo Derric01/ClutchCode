@@ -17,8 +17,11 @@ philosophy" below before writing anything that looks like a stub.
 
 ## Read these first, in this order
 
-1. **`HANDOFF.md`** — current state: what's done, what's next, how long
-   things took. Read this first, every session. Update it before you stop.
+1. **`HANDOFF.md`** — current state: where the project stands, what's next,
+   and the gotchas worth knowing. Read this first, every session; update it
+   before you stop. Deliberately kept short — the full history lives in
+   **`docs/PROJECT_LOG.md`**, which you read only when you need the
+   reasoning behind a past decision, not as routine start-up.
 2. **`PROJECT_SPEC.md`** — the authoritative, section-numbered (`§`)
    architecture spec. Every feature traces back to a specific `§`-numbered
    requirement; code comments cite these (e.g. `// §5.1`, `// §13.4`). If
@@ -185,21 +188,36 @@ or vulnerability fix, not just ones a review round happens to surface:
 
 1. Run the full build/test/lint loop above — all three, not just the part
    you touched.
-2. Update `README.md`'s Status section with an honest paragraph: what's
+2. Append a "what's done" entry to `docs/PROJECT_LOG.md`, at the depth the
+   existing entries set: what was built, **what was verified and how**, and
+   what was deliberately deferred.
+3. Update `HANDOFF.md` — snapshot header and the "What's left" table — so the
+   next session doesn't have to re-derive where things stand.
+4. Update `README.md`'s Status section if the work is user-visible: what's
    done, what's verified vs. flagged, what's explicitly deferred.
-3. Update `HANDOFF.md` (see below) so the next session — yours or someone
-   else's — doesn't have to re-derive where things stand.
-4. Commit with a message that explains *why*, not just *what*, and cites
-   the relevant `§` section(s).
+5. Commit with a message that explains *why*, not just *what*, and cites the
+   relevant `§` section(s).
+6. Make sure the work is on an **open pull request** — update the existing one
+   by pushing, or open one if none exists. See the Autonomous continuation
+   loop's step 9 for the exact rule.
 
-## HANDOFF.md
+## The three continuation documents
 
-`HANDOFF.md` is the living continuation document for this project — status,
-what's next, rough effort sizing, and any in-flight context that would
-otherwise be lost between sessions. Read it at the start of every session
-and keep it current at the end of one. It is not a duplicate of this file:
-`CLAUDE.md` is timeless working conventions; `HANDOFF.md` is the
-time-stamped snapshot of where the project actually is right now.
+Three files, three deliberately different lifetimes. Keeping them separate is
+a design decision, not an accident — merging them was considered and rejected,
+because this file is injected into **every** session's context automatically
+and an ever-growing changelog inside it would cost every session for content
+almost none of them need.
+
+| File | Lifetime | Read when | Grows? |
+|---|---|---|---|
+| **`CLAUDE.md`** (this file) | Timeless conventions | Every session, automatically | Rarely — only for durable lessons |
+| **`HANDOFF.md`** | Current snapshot + what's next + gotchas | Start of every session | No — kept short on purpose |
+| **`docs/PROJECT_LOG.md`** | Full engineering history | Only when you need the reasoning behind a past decision | Yes, forever |
+
+The failure mode to avoid: letting per-unit status creep into `CLAUDE.md`, or
+letting history re-accumulate in `HANDOFF.md`. Both dilute a file that every
+session has to read. History goes in the log.
 
 ## Autonomous continuation ("start work" / "refer the handoff and work")
 
@@ -266,17 +284,33 @@ Per unit:
 5. **Do the work** to the quality bar below.
 6. **Gate: `npx tsc -b && npx vitest run && npx eslint .` all clean.** All
    three, every time, before every commit — not once at the end of the run.
-7. **Checkpoint the docs.** `HANDOFF.md` always (snapshot header, a new
-   "what's done" entry at the established depth, and "What's left"
-   maintained — row removed or updated, table kept in priority order,
-   exactly one `DO FIRST` tag moved to the next unblocked highest-value
-   row). `README.md`'s Status section when the work is user-visible.
+7. **Checkpoint the docs.** Three files, three different lifetimes — do not
+   confuse them:
+   - **`docs/PROJECT_LOG.md`** — append your "what's done" entry here, at the
+     depth the existing entries set (what was built, **what was verified and
+     how**, what was deferred). This is the archive; it grows forever.
+   - **`HANDOFF.md`** — update the snapshot header and maintain "What's left"
+     (row removed or updated, table kept in priority order, exactly one
+     `DO FIRST` tag moved to the next unblocked highest-value row). Keep it
+     **short**: it is read at the start of every session, so history belongs
+     in the log above, not here.
+   - **`README.md`**'s Status section when the work is user-visible.
+
    **This file only when the unit surfaced a genuinely new, durable
    lesson** — it holds timeless conventions, so per-unit status churn does
    not belong here and dilutes it.
 8. **Commit and push** on the branch already in force for the session.
-   Never invent a new branch or open a PR unless explicitly asked.
-9. **Next unit.**
+   Never invent a new branch.
+9. **Make sure the work is on an open pull request.** Check first
+   (`gh pr list --head <branch>`, or the GitHub tools): if a PR for this
+   branch is already open, the push in step 8 has already updated it —
+   say so and move on. If none is open, **open one** against `main`,
+   titled for the work and with a body that states what was built, **what
+   was verified and how** (test counts, stash-revert results), and what is
+   deliberately still open. Never open a second PR for a branch that
+   already has one, and never reuse a merged PR — that branch restarts
+   from `main`'s merged tip.
+10. **Next unit.**
 
 ### Stop conditions — stop and report, don't push through
 

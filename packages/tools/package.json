@@ -1,7 +1,7 @@
 {
   "name": "@clutchcode/tools",
   "version": "0.1.0",
-  "description": "Native tool set: fs read/write/edit, search, shell, git, process; output truncation (PROJECT_SPEC.md §11).",
+  "description": "Native tool set: fs read/write/edit, search, shell, git, process; output truncation (PROJECT_SPEC.md \u00a711).",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -16,5 +16,25 @@
   },
   "devDependencies": {
     "typescript": "^5.7.2"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Derric01/ClutchCode.git",
+    "directory": "packages/tools"
+  },
+  "homepage": "https://github.com/Derric01/ClutchCode#readme",
+  "bugs": {
+    "url": "https://github.com/Derric01/ClutchCode/issues"
   }
 }

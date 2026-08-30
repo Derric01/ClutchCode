@@ -1,7 +1,7 @@
 {
   "name": "@clutchcode/memory",
   "version": "0.1.0",
-  "description": "Project memory (PROJECT_SPEC.md §10): a provenance-timestamped, self-correcting cache of machine-derived facts (toolchain commands today), with human forget/correct and verification-as-truth-oracle self-healing.",
+  "description": "Project memory (PROJECT_SPEC.md \u00a710): a provenance-timestamped, self-correcting cache of machine-derived facts (toolchain commands today), with human forget/correct and verification-as-truth-oracle self-healing.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -16,5 +16,25 @@
   },
   "devDependencies": {
     "typescript": "^5.7.2"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Derric01/ClutchCode.git",
+    "directory": "packages/memory"
+  },
+  "homepage": "https://github.com/Derric01/ClutchCode#readme",
+  "bugs": {
+    "url": "https://github.com/Derric01/ClutchCode/issues"
   }
 }

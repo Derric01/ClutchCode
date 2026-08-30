@@ -40,6 +40,8 @@ export {
 
 export { estimateTokens, estimateMessageTokens, compactHistory } from "./context-compaction.js";
 export type { CompactionResult } from "./context-compaction.js";
+export { pruneSupersededToolResults } from "./tool-result-pruning.js";
+export type { ToolResultPruningResult } from "./tool-result-pruning.js";
 
 export { AgentLoop } from "./agent-loop.js";
 export type { AgentLoopDeps, AgentLoopOptions, RuntimeEvent } from "./agent-loop.js";

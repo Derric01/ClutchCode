@@ -35,7 +35,26 @@ export class FakeProvider implements Provider {
   readonly supportsParallelTools: boolean;
   readonly supportsConstrainedDecode: boolean;
 
-  /** Every request this provider received, in order — for assertions in tests. */
+  /**
+   * Every request this provider received, in order — for assertions in
+   * tests.
+   *
+   * Real bug this comment exists for: this used to push the caller's
+   * `NormalizedRequest` object straight in, keeping a **live reference**
+   * to the caller's `messages` array. `AgentLoop` pushes onto that same
+   * array as the run proceeds, so every logged entry silently mutated
+   * into the *final* history — `requestLog[0].messages` was not what the
+   * first request contained, and a test asserting "the model saw X on
+   * turn 1" could pass or fail for reasons that had nothing to do with
+   * turn 1. Caught while writing the §4.5 tool-result-pruning test, whose
+   * whole point is that earlier and later requests differ.
+   *
+   * The array is snapshotted per call below. The message objects inside
+   * are shared, which is correct: the runtime replaces messages
+   * (`replaceMessages`, and pruning's `{...message, content}`) rather
+   * than mutating them in place, so a shared object is never rewritten
+   * under a logged entry.
+   */
   readonly requestLog: NormalizedRequest[] = [];
 
   private readonly script: ScriptedTurn[];
@@ -56,7 +75,7 @@ export class FakeProvider implements Provider {
   }
 
   async *chat(request: NormalizedRequest): AsyncGenerator<Delta, void, void> {
-    this.requestLog.push(request);
+    this.requestLog.push({ ...request, messages: [...request.messages] });
 
     if (this.cursor >= this.script.length) {
       throw new Error(

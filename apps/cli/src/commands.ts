@@ -1,19 +1,26 @@
+import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { execFileSync } from "node:child_process";
 import {
   Agent,
+  BUILTIN_WORKFLOWS,
+  BUILTIN_WORKFLOW_IDS,
   clearCredential,
   correctMemoryFact,
   detectKeychainBackend,
   detectSandboxBackend,
   forgetMemoryFact,
   initRepo,
+  isBuiltinWorkflowId,
   listMemory,
   listModelProfiles,
   loadConfig,
   loadCredentials,
+  loadWorkflowDeclaration,
   markTrusted,
   probeModel,
+  resolveBuiltinWorkflowPlan,
+  resolveWorkflowPlan,
   saveCredential,
   showMemoryFact,
   type Budgets,
@@ -22,7 +29,9 @@ import {
   type FileStoreOptions,
   type ProviderKind,
   type RunState,
-  type ToolchainFactKey
+  type ToolchainFactKey,
+  type WorkflowDeclaration,
+  type WorkflowPlan
 } from "@clutchcode/agent-api";
 import { serveAgentRpc, type AgentRpcServerHandle } from "@clutchcode/agent-rpc";
 import { exitCodeForRunStatus, EXIT } from "./exit-codes.js";
@@ -531,4 +540,195 @@ export async function cmdModelsList(ctx: CliContext): Promise<CommandResult> {
  */
 export function cmdServe(ctx: CliContext, stdin: Readable, stdout: Writable): AgentRpcServerHandle {
   return serveAgentRpc({ repoPath: ctx.repoPath, stateDir: ctx.stateDir }, stdin, stdout);
+}
+
+/**
+ * `agent workflow` (PROJECT_SPEC.md §18.2 — "list/select/validate
+ * workflows (§8)", the row that table marks Phase 2).
+ *
+ * Both of §8.1's authoring layers already existed before this command:
+ * the three built-ins as a typed TS DSL, and the JSON-Schema-validated
+ * declarative form reachable via `agent run --workflow-file <path>`. What
+ * was missing is the ability to *inspect* either one without starting a
+ * run — you had to launch a real run against a real repo to find out
+ * whether a declaration file was even valid, and there was no way at all
+ * to see what the built-ins do beyond reading the source.
+ *
+ * Two subcommands, matching what §18.2 actually names:
+ *
+ * - `workflow list [files...]` — the built-ins, plus any declaration
+ *   files named on the command line, each with the `WorkflowPlan` it
+ *   actually resolves to. A file that fails to load or validate is
+ *   listed *with its error* rather than aborting the whole listing (the
+ *   useful answer to "what can I run, and what's broken?" is both halves,
+ *   not the first failure).
+ * - `workflow validate <path>` — schema + semantic validation of one
+ *   declaration file, with no run started and no repo touched.
+ *
+ * **Deliberately not built: a discovery convention for custom workflows.**
+ * There is no registry of "installed" declarative workflows today —
+ * they are referenced per-run by path — and inventing one (a config key
+ * naming a workflow directory, say) is a config-schema decision, not a
+ * CLI one. ADR-003 rates config-schema reversal as "hard once users have
+ * config files", so `list` enumerates the built-ins plus exactly the
+ * files the caller points it at, and nothing is persisted.
+ */
+
+/** One row of `agent workflow list` — a built-in or a caller-named declaration file. */
+export interface WorkflowListEntry {
+  id: string;
+  name: string;
+  kind: "builtin" | "custom";
+  /** Human-readable stage list, in §8.2's `a → b → c` notation. Absent when a custom file failed to load. */
+  stages?: string;
+  description?: string;
+  /** What `AgentLoop` would actually be driven by. Absent when a custom file failed to load. */
+  plan?: WorkflowPlan;
+  /** Custom entries only: the path as given on the command line. */
+  source?: string;
+  /** Set instead of `stages`/`plan` when a named file failed to load or validate. */
+  error?: string;
+}
+
+/**
+ * Renders a declaration's stages in the same `a → b → c` notation
+ * `BUILTIN_WORKFLOWS` uses, so built-in and custom rows read alike.
+ * `when: "on_failure"` and the two `params` the resolver actually honors
+ * (`readonly`, `mode`) are surfaced inline — a stage list that hid them
+ * would misrepresent what the workflow does.
+ */
+function describeDeclaredStages(decl: WorkflowDeclaration): string {
+  return decl.stages
+    .map((stage) => {
+      const notes: string[] = [];
+      if (stage.when === "on_failure") notes.push("on_failure");
+      if (stage.params?.["readonly"] === true) notes.push("readonly");
+      if (stage.uses === "plan" && stage.params?.["mode"] === "always") notes.push("always");
+      return notes.length > 0 ? `${stage.uses}(${notes.join(", ")})` : stage.uses;
+    })
+    .join(" → ");
+}
+
+function formatPlan(plan: WorkflowPlan): string {
+  return `planMode=${plan.planMode} readonly=${plan.readonly}`;
+}
+
+/**
+ * `agent workflow list [files...]` (§18.2).
+ *
+ * Exit code is `CONFIG_ERROR` when any *explicitly named* file failed —
+ * the caller asked about that file specifically, so a script must be able
+ * to tell "listed everything fine" from "one of the files you named is
+ * broken" without parsing prose. The built-ins alone always exit 0.
+ */
+export async function cmdWorkflowList(ctx: CliContext, files: string[] = []): Promise<CommandResult> {
+  const entries: WorkflowListEntry[] = BUILTIN_WORKFLOW_IDS.map((id) => {
+    const descriptor = BUILTIN_WORKFLOWS[id];
+    return {
+      id: descriptor.id,
+      name: descriptor.name,
+      kind: "builtin" as const,
+      stages: descriptor.stages,
+      description: descriptor.description,
+      plan: resolveBuiltinWorkflowPlan(id)
+    };
+  });
+
+  for (const file of files) {
+    try {
+      const decl = loadWorkflowDeclaration(file);
+      entries.push({
+        id: decl.id,
+        name: decl.name,
+        kind: "custom",
+        stages: describeDeclaredStages(decl),
+        plan: resolveWorkflowPlan(decl),
+        source: file
+      });
+    } catch (e) {
+      entries.push({
+        id: path.basename(file),
+        name: path.basename(file),
+        kind: "custom",
+        source: file,
+        error: e instanceof Error ? e.message : String(e)
+      });
+    }
+  }
+
+  const anyFailed = entries.some((entry) => entry.error !== undefined);
+  const exitCode = anyFailed ? EXIT.CONFIG_ERROR : EXIT.SUCCESS;
+  if (ctx.json) return { exitCode, output: JSON.stringify(entries, null, 2) };
+
+  const lines: string[] = [];
+  for (const entry of entries) {
+    if (entry.error) {
+      lines.push(`${entry.source} [custom] — INVALID`);
+      lines.push(`  error: ${entry.error}`);
+      continue;
+    }
+    lines.push(`${entry.id} [${entry.kind}] — ${entry.name}`);
+    lines.push(`  stages: ${entry.stages}`);
+    lines.push(`  plan: ${formatPlan(entry.plan!)}`);
+    if (entry.description) lines.push(`  ${entry.description}`);
+    if (entry.source) lines.push(`  source: ${entry.source}`);
+  }
+  lines.push(
+    "",
+    "run a built-in with `agent run <task> --workflow <id>`; run a custom declaration with `agent run <task> --workflow-file <path>`.",
+    "custom workflows are referenced by path, not installed — `agent workflow list <path>...` includes the ones you name."
+  );
+  return { exitCode, output: lines.join("\n") };
+}
+
+/**
+ * `agent workflow validate <path>` (§18.2): schema + semantic validation
+ * of one declaration file, without starting a run. Prints the resolved
+ * `WorkflowPlan` on success — the point is not just "this parses" but
+ * "here is what it would actually do", since §8.1's semantic pass can
+ * accept a file whose behavior still surprises its author (a `plan` stage
+ * without `params.mode: "always"` resolves to `auto`, not `always`).
+ */
+export async function cmdWorkflowValidate(ctx: CliContext, filePath: string): Promise<CommandResult> {
+  // A built-in id given where a path belongs is the likeliest user error
+  // here, and `loadWorkflowDeclaration` would report it as an unhelpful
+  // ENOENT on a file named "quickfix". Name the actual mistake instead.
+  if (isBuiltinWorkflowId(filePath)) {
+    const message = `"${filePath}" is a built-in workflow id, not a declaration file — built-ins have no file to validate; see \`agent workflow list\`, and select one with \`agent run <task> --workflow ${filePath}\``;
+    return {
+      exitCode: EXIT.CONFIG_ERROR,
+      output: ctx.json ? JSON.stringify({ valid: false, file: filePath, error: message }, null, 2) : message
+    };
+  }
+
+  let decl: WorkflowDeclaration;
+  try {
+    decl = loadWorkflowDeclaration(filePath);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return {
+      exitCode: EXIT.CONFIG_ERROR,
+      output: ctx.json ? JSON.stringify({ valid: false, file: path.resolve(filePath), error: message }, null, 2) : message
+    };
+  }
+
+  const plan = resolveWorkflowPlan(decl);
+  const stages = describeDeclaredStages(decl);
+  if (ctx.json) {
+    return {
+      exitCode: EXIT.SUCCESS,
+      output: JSON.stringify({ valid: true, file: path.resolve(filePath), id: decl.id, name: decl.name, apiVersion: decl.apiVersion, stages, plan }, null, 2)
+    };
+  }
+  return {
+    exitCode: EXIT.SUCCESS,
+    output: [
+      `valid: ${path.resolve(filePath)}`,
+      `id: ${decl.id}  (apiVersion ${decl.apiVersion})`,
+      `name: ${decl.name}`,
+      `stages: ${stages}`,
+      `plan: ${formatPlan(plan)}`,
+      `run it with \`agent run <task> --workflow-file ${filePath}\``
+    ].join("\n")
+  };
 }
