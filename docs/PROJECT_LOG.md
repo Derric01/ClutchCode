@@ -1798,3 +1798,50 @@ documented `execFileSync` stderr-leak gotcha. Queued as its own row rather than
 fixed here, to keep this unit to one concern.
 
 Docs only. 720/720 passing, clean `tsc -b`, clean `eslint .`.
+
+### Recovering what the README rewrite actually dropped, and re-homing what it created
+
+Follow-up to the README front-page rewrite, prompted by "if any of the info in
+the README is useful, add it to the relevant docs." Two directions: what the cut
+lost, and what the rewrite newly created that belongs elsewhere.
+
+**A correction to the previous entry.** That entry claimed the ~500 cut lines of
+`## Status` "already live in `docs/PROJECT_LOG.md`, so nothing was lost." That
+was asserted rather than checked. Checking it: of 103 distinctive sentences in
+the old Status section, **99 appear nowhere** in either `PROJECT_LOG.md` or the
+new README.
+
+That number overstates the damage — it fingerprints *prose*, and the log's
+entries describe the same work in different words. Probing for the substantive
+facts instead shows they did survive: `credentials.age` (2 hits),
+`AES-256-GCM` (1), `DPAPI` (1), `secret-tool` (4), `Seatbelt` (5), `Phase 1`
+(6). So the information largely persisted and only the phrasing went.
+
+**But one thing genuinely vanished, and it was the most-read line in the file:**
+the current-phase framing. `PROJECT_SPEC.md §21` defines the phase *plan*;
+nothing anywhere stated the project's *position* in it. `grep -l "Phase 1
+shipped\|Phase 2 in progress" *.md docs/*.md` returned nothing at all after the
+rewrite. Recovered into `HANDOFF.md`'s snapshot header, which is the file that
+exists to answer "where does this stand right now" and is read at the start of
+every session — a better home than the README ever was.
+
+**Re-homing what the rewrite created.** The README's Mermaid architecture
+diagram was built from the real package dependency graph, and
+`PROJECT_SPEC.md` turned out to contain **zero diagrams** — §20 expresses
+repository structure as an ASCII tree, which shows *layout* but cannot show
+*who may depend on whom*. That dependency rule is the normative part of §20
+("`apps/*` depend only on `agent-api`"), so the diagram was added there
+alongside the tree, with the leaf packages (`git`, `providers`, `sandbox`)
+called out and an explicit statement that an upward edge or an `apps/*` edge
+bypassing `agent-api` is a violation *regardless of whether it compiles*.
+
+§6's agent-loop section was considered for the run-lifecycle sequence diagram
+and deliberately left alone — it already carries four code blocks, so the
+diagram would have been decoration rather than clarification.
+
+**The lesson worth keeping:** "this content already exists elsewhere" is a
+claim about the repository, and claims about the repository get checked here
+like any other. It happened to be *mostly* true, and the part that wasn't was
+the single line most readers would look for first.
+
+Docs only. 720/720 passing, clean `tsc -b`, clean `eslint .`.
