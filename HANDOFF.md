@@ -7,7 +7,7 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-30
 **Branch:** `claude/start-work-handoff-referral-52eyj1`
-**Latest commit:** `1e198cc` — "test: pin the symlink-cycle hop guard in resolveInWorkspace"
+**Latest commit:** `67e6694` — "feat(runtime): tool-result pruning as a distinct compaction stage (§4.5)"
 **Test suite:** 720/720 passing, 78 test files, clean `tsc -b`, clean `eslint .`
 **CI:** `.github/workflows/ci.yml` added — build/test/lint on Node 20 + 22, on
 every PR. **Not yet observed running.** Verified: the file is valid YAML, is on
@@ -20,11 +20,23 @@ working until a run is observed.
 **Note:** the "what's done" history moved to `docs/PROJECT_LOG.md`; this file is
 kept short on purpose. Append your entry there, not here.
 
-**PR:** [#14](https://github.com/Derric01/ClutchCode/pull/14) — **open**, awaiting
-merge. #4–#12 merged cleanly before it. Convention: one PR per phase of work,
-never reused once merged; restart the branch from `main`'s merged tip before
-new commits land on it. **Push work to the open PR's branch; open a new PR
-only once #14 is merged.**
+**PR:** [#14](https://github.com/Derric01/ClutchCode/pull/14) is **MERGED**
+(closed 2026-08-22 at head `486e34b`) — this file previously said "open,
+awaiting merge", which was stale. **There is no open PR for this branch, and
+none anywhere in the repo** (verified against the GitHub API: zero open PRs;
+`git merge-base --is-ancestor 486e34b origin/main` confirms #14 landed).
+
+**Eight commits sit unmerged on `claude/start-work-handoff-referral-52eyj1`**
+on top of what #14 merged — `06ca21e`, `726bd51`, `faa9ea5`, `1e198cc`,
+`8d2dde0` from earlier sessions, plus `9bdd71c`, `28ef4b1`, `67e6694` from
+this one. They are pushed and safe, but **not on any pull request**.
+
+**Next session: this is the first thing to fix.** `CLAUDE.md`'s convention is
+one PR per phase, never reused once merged, and the branch restarts from
+`main`'s merged tip before new commits land on it — so the correct move is a
+**new PR against `main` for these eight commits** (this run was explicitly
+instructed not to open one, and did not). #4–#12 and #14 all merged cleanly
+before this.
 
 ---
 
