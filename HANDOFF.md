@@ -7,7 +7,7 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-30
 **Branch:** `claude/start-work-handoff-referral-52eyj1`
-**Latest commit:** `11be036` — "docs: rewrite README as a project front page"
+**Latest commit:** `8477233` — "docs: recover the phase status the README cut, and give §20 a dependency diagram"
 **Phase:** Phase 1 shipped (§21) — one agent, one default workflow, three provider
 adapters, SEARCH/REPLACE edits with fallback, worktree isolation, deterministic
 verification with cheat detection, terminal CLI. **Phase 2 in progress:** the
