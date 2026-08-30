@@ -1747,3 +1747,54 @@ rather than skipped quietly: they exercise a brand-new module through direct
 assertions on its return value, with no pre-fix code for them to discriminate
 against — `CLAUDE.md`'s carve-out for a fix "whose correctness is unambiguous
 from its own assertions."
+
+### README rewritten as a project front page — and two false claims caught in my own draft
+
+The README was 755 lines that opened with a 500-line engineering log and had no
+Install section until well past the fold. Rewritten as an actual front page:
+centred header with live shields.io badges, a real terminal transcript, "why
+this exists", a **Mermaid architecture diagram** generated from the true package
+dependency graph (GitHub renders Mermaid natively, so no image assets and no
+drift), a **Mermaid sequence diagram** of the run lifecycle, a feature table,
+collapsible quickstart steps, a roadmap gantt, and contributing rules. 755 → 370
+lines, and the history it used to carry already lives in this file.
+
+Two clearly-marked comment slots were left for a logo and a demo GIF, each with
+the exact command to produce the asset (`vhs`, or `asciinema` + `agg`) rather
+than a vague TODO. Those are the only things here that cannot be generated
+without a human.
+
+**The part worth recording: two claims in the first draft were false, and both
+were caught by checking rather than by review.**
+
+1. **"🔌 MCP client — speaks the open Model Context Protocol"** was listed as a
+   shipped feature. `grep -rl "modelcontextprotocol\|McpClient\|mcp"
+   packages/*/src` returns **nothing**. MCP is specified (§15) and named in the
+   reuse analysis as the one genuine protocol REUSE, but it is not implemented.
+   Row deleted, and the roadmap gantt corrected to move MCP from *Shipped* to
+   *Next* where it belongs.
+2. **The terminal demo was invented.** The draft showed a spinner UI
+   (`⠋ planning … ⠹ verifying …`) that does not exist. Running the real binary
+   prints a plain status block instead. Replaced with genuine output — which is
+   strictly better marketing anyway, because the real thing prints
+   `verification: green; cheat flags: 0`, i.e. the actual differentiator, rather
+   than decoration.
+
+A README is marketing, and marketing is exactly where a project whose whole
+premise is "don't trust what the model claims, trust what the gate proves" can
+least afford an unbacked claim. The performance section was written the same
+way: no invented benchmarks, because there are none — the eval scoreboard is a
+roadmap row. In its place is a table of what *is* verified and **how** (the
+sandbox test that writes outside the workspace and asserts the read fails; the
+per-syscall `EPERM` check with an unfiltered control run; the redaction canary;
+the recorded run where a model deletes an assertion and completion is blocked
+anyway). That table is more persuasive than a benchmark number would have been.
+
+Also found while capturing the real CLI output: on a repo with no `AGENTS.md`,
+`clutchcode run` leaks `fatal: path 'AGENTS.md' does not exist in '<sha>'` to
+the console before its status block — a raw git error for a benign, expected
+condition, and the literal first thing a new user sees. Same class as the
+documented `execFileSync` stderr-leak gotcha. Queued as its own row rather than
+fixed here, to keep this unit to one concern.
+
+Docs only. 720/720 passing, clean `tsc -b`, clean `eslint .`.
