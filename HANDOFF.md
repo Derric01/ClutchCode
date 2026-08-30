@@ -20,23 +20,10 @@ working until a run is observed.
 **Note:** the "what's done" history moved to `docs/PROJECT_LOG.md`; this file is
 kept short on purpose. Append your entry there, not here.
 
-**PR:** [#14](https://github.com/Derric01/ClutchCode/pull/14) is **MERGED**
-(closed 2026-08-22 at head `486e34b`) — this file previously said "open,
-awaiting merge", which was stale. **There is no open PR for this branch, and
-none anywhere in the repo** (verified against the GitHub API: zero open PRs;
-`git merge-base --is-ancestor 486e34b origin/main` confirms #14 landed).
-
-**Eight commits sit unmerged on `claude/start-work-handoff-referral-52eyj1`**
-on top of what #14 merged — `06ca21e`, `726bd51`, `faa9ea5`, `1e198cc`,
-`8d2dde0` from earlier sessions, plus `9bdd71c`, `28ef4b1`, `67e6694` from
-this one. They are pushed and safe, but **not on any pull request**.
-
-**Next session: this is the first thing to fix.** `CLAUDE.md`'s convention is
-one PR per phase, never reused once merged, and the branch restarts from
-`main`'s merged tip before new commits land on it — so the correct move is a
-**new PR against `main` for these eight commits** (this run was explicitly
-instructed not to open one, and did not). #4–#12 and #14 all merged cleanly
-before this.
+**PR:** [#15](https://github.com/Derric01/ClutchCode/pull/15) — **open**, carrying the
+nine commits that landed after #14 merged. #4–#14 merged cleanly before it.
+Convention: one PR per phase of work, never reused once merged. **Push work to
+#15's branch; open a new PR only once #15 is merged.**
 
 ---
 
