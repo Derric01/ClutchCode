@@ -1371,3 +1371,115 @@ discrimination check needs a timeout and an exit-code assertion, not a test
 result. Absence of a red test is not evidence the test is worthless.
 
 689 tests (up from 687), clean `tsc -b`, clean `eslint .`.
+
+### Landlock (§12.6) — attempted, and **stopped**: this kernel has no Landlock at all
+
+The `DO FIRST` row. The plan queued for it was specific: pin
+`@deepseek-ai/node-addon-landlock-run`, add a `landlock?: LandlockDetection`
+field to `SandboxCapability` (**not** a `SandboxBackend` variant — that union
+is closed, publicly re-exported, and guarded by an exhaustive `never` check),
+emit the launcher into the argv `buildBwrapSpawn` already produces, write our
+own status-gated failure classification, and prove all of it with **real tests
+on this Linux host** in the style of the existing bwrap/seccomp suites.
+
+The last clause is where it stopped. **This host's kernel cannot enforce
+Landlock, so not one confined process can be observed here** — and a Landlock
+ruleset's failure mode is precisely the one this project already decided not to
+risk blind (`seccomp-linux.ts`'s header: *"Landlock's failure mode (a
+slightly-wrong rule silently granting more access than intended) is a worse
+category of mistake to risk without that same empirical backstop"*).
+
+**What was verified, and how — the dependency is fine; the kernel is not.**
+
+The package half of the plan checks out completely. Installed clean
+(`npm install @deepseek-ai/node-addon-landlock-run@0.1.1` in a throwaway dir,
+2 packages, 0 vulnerabilities), the `linux-x64` optional dependency resolved,
+and the launcher is a real, runnable, statically-linked ELF:
+
+```
+landlock-run: ELF 64-bit LSB executable, x86-64, statically linked, stripped
+```
+
+It executes and its fail-closed contract is observable — a usage error exits
+`125` with a launcher-owned fatal line, exactly as documented:
+
+```
+$ landlock-run                       → landlock-run: usage error: missing `-- <argv>...` command   (exit 125)
+```
+
+But every attempt to actually *confine* anything fails on the kernel:
+
+```
+$ landlock-run --probe               → landlock-run: landlock is not enforced by this kernel (ABI unsupported or disabled)   (exit 125)
+$ landlock-run --ro /usr --rw /tmp -- /bin/echo hello
+                                     → landlock-run: landlock is not enforced by this kernel (ABI unsupported or disabled)   (exit 125)
+$ node -e "probe()"                  → 'unusable'
+```
+
+Three independent confirmations that this is the kernel, not the package —
+reproduced rather than inferred, per `CLAUDE.md`'s "reproduce before fixing":
+
+1. **The active LSM list has no Landlock.** `securityfs` isn't mounted by
+   default here; mounting it (`mount -t securityfs securityfs
+   /sys/kernel/security`) gives `/sys/kernel/security/lsm` =
+   `capability,selinux`.
+2. **The syscall itself is absent.** Calling `landlock_create_ruleset(NULL, 0,
+   LANDLOCK_CREATE_RULESET_VERSION)` (syscall 444 on x86_64) directly via
+   `ctypes` returns `-1` with `errno 38 — ENOSYS, "Function not implemented"`.
+   A kernel that had Landlock compiled in but disabled would return the ABI
+   version or `EOPNOTSUPP`, not `ENOSYS`.
+3. **The kernel's own config says so.** `zcat /proc/config.gz | grep -i
+   landlock` →
+   ```
+   # CONFIG_SECURITY_LANDLOCK is not set
+   ```
+   Not disabled at boot, not gated behind an `lsm=` parameter — **not compiled
+   in**. `CONFIG_LSM` doesn't list it either. This is a Firecracker microVM
+   kernel (`6.18.44-fc-v22`, `rdinit=/process_api --firecracker-init`); it is
+   not reconfigurable from inside the guest, so there is no `apt-get install`
+   or sysctl that makes this testable.
+
+**Why this is a stop and not a "write it and flag it".** The repo does have a
+convention for un-exercisable platform code — split out a pure
+command/profile builder, assert it directly, flag it loudly (that is how
+Seatbelt and the macOS keychain shipped). It was considered and rejected here
+for three reasons specific to Landlock:
+
+- **The un-exercisable part is the security property itself, not a
+  platform-formatting detail.** `buildSeatbeltProfile` is a pure string
+  builder whose correctness is legible from the profile text. A Landlock rung's
+  correctness is *which roots got granted `--ro` vs `--rw`* — and an
+  over-permissive grant looks exactly like a correct one until a real kernel
+  denies a real read. Nothing on this host can ever produce that denial.
+- **The one test §2a makes binding is the one that would pass for the wrong
+  reason.** `LICENSE_AND_REUSE_ANALYSIS.md §2a` condition 3 requires "a real
+  test on this Linux host asserting that an unusable/absent launcher yields no
+  Landlock rung rather than an unconfined run." That test is writable here —
+  but on this host *every* launcher probes `unusable`, so it would pass
+  identically against an implementation that never had a working rung at all.
+  It would discriminate nothing. Per `CLAUDE.md`'s stash-revert discipline,
+  that is not a test, it is a decoration.
+- **The row's own plan assumed a capability this host lacks.** Step (4) says
+  "real tests on this Linux host … a file outside the allow-list genuinely
+  unreadable." That is unsatisfiable here, and the honest response to an
+  unsatisfiable acceptance criterion is to say so, not to quietly weaken it.
+
+**What is now known that wasn't before** (the point of writing this down): the
+blocker on this row has *changed identity*. It is no longer "no vetted helper
+exists" — that objection is genuinely retired, the helper exists, installs,
+and is fail-closed by construction. It is now purely **"no Landlock-capable
+kernel is reachable from this environment."** That is a host problem with a
+concrete, checkable trigger, recorded on the row in `HANDOFF.md`: any host
+where `zcat /proc/config.gz | grep -i landlock` shows
+`CONFIG_SECURITY_LANDLOCK=y` **and** `landlock-run --probe` exits `0` unblocks
+the row immediately, and the implementation plan already audited into that row
+(the `SandboxCapability.landlock` field, *not* a `SandboxBackend` variant)
+stands as written.
+
+**Nothing was committed to `packages/sandbox`, and the dependency was not
+added** — a pinned dependency whose only consumer would be untested
+security-critical code is worse than no dependency. `pnpm-lock.yaml` is
+untouched; the probing was done entirely in a scratch directory outside the
+repo.
+
+No code change. 689/689 still passing, clean `tsc -b`, clean `eslint .`.
