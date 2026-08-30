@@ -81,6 +81,22 @@ describe("resolveInWorkspace", () => {
     expect(real).toBe(fs.realpathSync(path.join(workspace, ".env")));
   });
 
+  it("a symlink cycle is refused loudly instead of spinning forever — the 40-hop guard (mirrors Linux's MAXSYMLINKS) that the escape fixes above depend on to terminate at all", () => {
+    // Without the hop limit this input does not fail, it *hangs*: realpathSync
+    // throws ELOOP so the component walk takes over, and the walk follows
+    // a -> b -> a forever. A guard whose only job is to stop an infinite loop
+    // is exactly the kind of error path that silently rots untested, so it is
+    // pinned here.
+    fs.symlinkSync(path.join(workspace, "loop-b"), path.join(workspace, "loop-a"));
+    fs.symlinkSync(path.join(workspace, "loop-a"), path.join(workspace, "loop-b"));
+    expect(() => resolveInWorkspace(workspace, "loop-a")).toThrow(/too many levels of symbolic links/);
+  });
+
+  it("a self-referential symlink is refused the same way", () => {
+    fs.symlinkSync(path.join(workspace, "self"), path.join(workspace, "self"));
+    expect(() => resolveInWorkspace(workspace, "self")).toThrow(/too many levels of symbolic links/);
+  });
+
   it("a chain of symlinks (some dangling) that eventually escapes the workspace is NOT reported as inside", () => {
     const outsideDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "clutchcode-workspace-path-chain-"));
     try {

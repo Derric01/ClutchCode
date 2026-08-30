@@ -1342,3 +1342,32 @@ a unit of work", and to both skill files' prompts.
 
 No behavior change — CI config, docs, manifest metadata and skills only.
 687/687 passing, clean `tsc -b`, clean `eslint .`.
+
+### Test the guard, not just the fix: pinning the symlink-cycle hop limit
+
+Small unit, self-inflicted. Reviewing the earlier dangling-symlink fix for an
+external write-up, I noticed `resolveRealAsFarAsPossible` had gained a 40-hop
+symlink-cycle guard (mirroring Linux's `MAXSYMLINKS`) and **no test covered
+it**. Every actual bug fix in that commit had a test proven to fail against the
+pre-fix code; the error path added alongside them had nothing. That is exactly
+the shape of thing this project's conventions exist to catch, and it got in
+anyway.
+
+Two tests added to `workspace-path.test.ts`: a two-node cycle
+(`loop-a -> loop-b -> loop-a`) and a self-referential symlink, both asserting
+the resolver throws rather than spinning.
+
+**Verified by removing the guard, and the result was worse than assumed.** The
+expectation was "the test fails without it." What actually happens: the run
+**hangs and has to be killed** (`timeout` returns 143). The component walk is
+fully synchronous, so a cycle blocks the event loop and vitest's own per-test
+timeout never gets a chance to fire — one bad path takes down the whole worker,
+not one test. Guard restored, both tests pass.
+
+Worth recording as a general lesson: *"prove the test fails against the
+pre-fix code"* has a failure mode of its own. For a guard against
+non-termination there is no failing assertion to observe, only a hang — so the
+discrimination check needs a timeout and an exit-code assertion, not a test
+result. Absence of a red test is not evidence the test is worthless.
+
+689 tests (up from 687), clean `tsc -b`, clean `eslint .`.
