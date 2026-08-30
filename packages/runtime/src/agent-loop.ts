@@ -17,6 +17,7 @@ import { LoopDetector, initLoopDetectorState, type LoopDetectorState, type LoopW
 import { shouldPlan } from "./planning-heuristic.js";
 import { buildCheatReviewMessage, buildInitialMessages, buildRepairMessage, toolsToSchemas } from "./message-builder.js";
 import { compactHistory } from "./context-compaction.js";
+import { pruneSupersededToolResults } from "./tool-result-pruning.js";
 import { classifyToolError } from "./error-taxonomy.js";
 import { isBuiltinWorkflowId, resolveBuiltinWorkflowPlan, type WorkflowPlan } from "./workflow.js";
 
@@ -44,6 +45,15 @@ export type RuntimeEvent =
   | { type: "budget.hit"; kinds: BudgetLimitKind[] }
   | { type: "loop.detected"; warning: LoopWarning }
   | { type: "context.compacted"; droppedCount: number }
+  // §4.5's cheaper first stage: superseded tool results blanked in place.
+  // Additive to this union rather than folded into `context.compacted` —
+  // it drops no messages and no turns, so reporting it as a compaction
+  // would misdescribe what happened. The union is re-exported as public
+  // API from `@clutchcode/agent-api` and consumed by an exhaustive
+  // `never` switch in `apps/vscode/src/presentation.ts`, which is updated
+  // alongside; over `agent-rpc` events cross as `unknown`, so no wire
+  // contract changes.
+  | { type: "context.pruned"; prunedCount: number; reclaimedTokens: number }
   | { type: "escalation"; reason: string }
   | { type: "run.end"; status: RunStatus };
 
@@ -310,6 +320,19 @@ export class AgentLoop {
           this.state.escalationReason = `budget exceeded: ${budgetResult.exceeded.join(", ")}`;
         }
         return "stopped";
+      }
+
+      // §4.5, cheapest lever first: blank tool results that a later,
+      // byte-identical call already superseded. Both stages are inert
+      // while history fits, and pruning often clears the pressure on its
+      // own — dropping stale `shell`/`read_file` output costs the model
+      // far less than compaction dropping whole turns of its own
+      // reasoning. Compaction still runs after, for the cases pruning
+      // can't reach.
+      const pruning = pruneSupersededToolResults(this.messages, this.historyTokenBudget);
+      if (pruning.pruned) {
+        this.replaceMessages(pruning.messages);
+        this.emit({ type: "context.pruned", prunedCount: pruning.prunedCount, reclaimedTokens: pruning.reclaimedTokens });
       }
 
       const compaction = compactHistory(this.messages, this.historyTokenBudget);

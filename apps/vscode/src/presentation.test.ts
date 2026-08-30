@@ -16,6 +16,7 @@ describe("formatRuntimeEventLine", () => {
     [{ type: "budget.hit", kinds: ["steps", "tokens"] }, /budget hit: steps, tokens/],
     [{ type: "loop.detected", warning: { kind: "repeated-call", count: 3, escalate: false } }, /loop detected: repeated-call/],
     [{ type: "context.compacted", droppedCount: 4 }, /4 message\(s\) dropped/],
+    [{ type: "context.pruned", prunedCount: 2, reclaimedTokens: 1800 }, /2 superseded, ~1800 tokens reclaimed/],
     [{ type: "escalation", reason: "needs human" }, /escalated: needs human/],
     [{ type: "run.end", status: "DONE" }, /run ended: DONE/]
   ];

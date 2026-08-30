@@ -28,6 +28,8 @@ export function formatRuntimeEventLine(event: RuntimeEvent): string {
       return `⚠ loop detected: ${event.warning.kind}`;
     case "context.compacted":
       return `… context compacted (${event.droppedCount} message(s) dropped)`;
+    case "context.pruned":
+      return `… tool results pruned (${event.prunedCount} superseded, ~${event.reclaimedTokens} tokens reclaimed)`;
     case "escalation":
       return `⚠ escalated: ${event.reason}`;
     case "run.end":

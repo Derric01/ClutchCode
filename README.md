@@ -712,3 +712,44 @@ via `optsWithGlobals()`. The command tree moved out of the bin entry into
 ever re-declares an ancestor's option** — the same "fix the class, not the
 instance" move as `assertSafeRunId`. All four new tests were confirmed to
 fail against the pre-fix code and pass after it.
+
+**Tool-result pruning (§4.5) — a cheaper context lever, in front of
+compaction.** Until now the only answer to a run outgrowing its context
+budget was `compactHistory`, which drops **whole turns** from the oldest
+end. Correct, but expensive: a dropped turn takes the model's own
+reasoning with it. A new stage runs first and blanks only the *content* of
+tool results that are provably stale — the same tool called again later
+with byte-identical arguments, so a newer answer to the exact same
+question is already in context. The classic case is `npm test` re-run
+after an edit: the failing pre-edit output is dead weight, the passing
+post-edit output is what matters.
+
+Three properties keep it safe, each with a test that would fail without
+it: it **never removes a message** (only content is replaced, with a
+placeholder that says the call was re-run, so no turn boundary or
+tool-call/result pairing can break); it is **budget-gated**, returning the
+very same array object while history fits, so a run that never approaches
+the ceiling is byte-identical to one built without it; and it **stops as
+soon as the budget is met**, oldest-first, rather than sweeping everything
+prunable. Two `read_file` calls on the same path with different line
+ranges are different questions and are both kept. Runs emit a new
+`context.pruned` event, rendered in the VS Code extension alongside
+`context.compacted`.
+
+Verified against the real loop, not just in isolation: an integration test
+drives three genuine `shell` executions of the same command (~4KB of real
+output each) through `AgentLoop` and asserts the event fires, the
+placeholder was in the request the model was actually sent, exactly one
+full-size copy survived, and all three tool messages are still in the
+persisted transcript.
+
+**And a test helper that was lying.** `FakeProvider.requestLog` —
+documented as "every request this provider received" — pushed the caller's
+request object by reference, and `AgentLoop` appends to that same
+`messages` array every turn, so every logged entry silently mutated into
+the *final* history. `requestLog[0].messages` never described request 0,
+and any test asserting what the model saw on an early turn was really
+asserting against the end state. Found by instrumenting the pruning
+integration test (all three logged requests printed identical histories,
+impossible for the first); fixed by snapshotting the array per call, with
+a regression test proven to fail against the old one-liner.

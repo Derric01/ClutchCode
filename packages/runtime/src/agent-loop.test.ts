@@ -307,6 +307,68 @@ describe("AgentLoop capability wiring (§4.2/§4.4/§4.5)", () => {
       fx.cleanup();
     }
   }, 30_000);
+
+  it("prunes superseded tool results and emits context.pruned — §4.5's cheaper stage, running for real against a real shell", async () => {
+    const fx = setupAgentLoopFixture("run00000013");
+    try {
+      // The canonical stale-result shape: the same command re-run as the
+      // model iterates. Real `shell` execution, real output — the pruner
+      // has to correlate each result back to its call through the
+      // assistant message that made it.
+      const cmd = JSON.stringify({ cmd: "node -e \"process.stdout.write('z'.repeat(4000))\"" });
+      const turns = Array.from({ length: 3 }, (_, i) => toolCallTurn(`c${i}`, "shell", cmd));
+      const provider = new FakeProvider(turns);
+      const state = createRunState({
+        runId: fx.run.runId,
+        task: "scratch work",
+        provider: "fake",
+        model: "fake",
+        budgets: { steps: 3, wallclockMs: 60_000, tokens: 1_000_000, costUsd: 0 }
+      });
+      // ~1500 tokens of history budget (0.75 of effective context): room
+      // for one 4KB shell result but not two, so the third turn's request
+      // is the first one that must shed something.
+      const capability: EffectiveCapability = { effectiveContext: 2000, diffApplicationAccuracy: 0.75, constrainedDecodeAvailable: false, probed: true };
+
+      const events: RuntimeEvent[] = [];
+      const loop = new AgentLoop(
+        state,
+        {
+          provider,
+          tools: fx.tools,
+          toolContext: fx.toolContext,
+          run: fx.run,
+          toolchainCommands: fx.toolchainCommands,
+          evidenceDir: fx.evidenceDir,
+          capability
+        },
+        { yesMode: true, onEvent: (e) => events.push(e) }
+      );
+      const finalState = await loop.run();
+
+      const pruneEvents = events.filter((e): e is Extract<RuntimeEvent, { type: "context.pruned" }> => e.type === "context.pruned");
+      expect(pruneEvents.length).toBeGreaterThan(0);
+      expect(pruneEvents[0]!.prunedCount).toBeGreaterThan(0);
+      expect(pruneEvents[0]!.reclaimedTokens).toBeGreaterThan(0);
+
+      // The model genuinely saw the placeholder in the request it was
+      // sent, and exactly one full-size copy of that shell output
+      // survived — the newest one.
+      const lastSent = provider.requestLog.at(-1)!.messages;
+      expect(lastSent.some((m) => m.content.includes("tool result pruned"))).toBe(true);
+      expect(lastSent.filter((m) => m.role === "tool" && m.content.includes("z".repeat(200)))).toHaveLength(1);
+
+      // Pruning is the *cheap* stage: it blanks content, it never drops a
+      // message. All three tool results are still in the persisted
+      // transcript with their turn boundaries intact — one of them just
+      // carries the placeholder instead of 4KB of superseded output.
+      const toolMessages = finalState.messages.filter((m) => m.role === "tool");
+      expect(toolMessages).toHaveLength(3);
+      expect(toolMessages.filter((m) => m.content.includes("tool result pruned"))).toHaveLength(1);
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
 });
 
 describe("AgentLoop resume + transcript redaction (§5.2/§6.2/§6.3)", () => {

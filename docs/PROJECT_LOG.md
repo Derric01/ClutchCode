@@ -1619,3 +1619,131 @@ were unaffected either way, correctly: they test a different thing.
 **Cleanup worth noting:** reproducing the bug wrote a fact into this repo's
 own real memory store. It was removed (`memory forget build`) once the fix was
 confirmed, not left behind.
+
+### Tool-result pruning as a distinct compaction stage (§4.5) — and a test helper that was lying
+
+Next unblocked row after `agent workflow`. Checked the rows above it first and
+skipped each for a stated reason rather than by preference: the **npm release**
+row needs human decisions (npm org/scope ownership, lockstep-vs-independent
+versioning); **provider stop/finish-reason conformance** says of itself "left
+queued rather than decided unilaterally" — widening `FinishReason` and deciding
+what `AgentLoop` does with a paused turn is the gated part, and building
+conformance tests around it while pinning the known-wrong `pause_turn → "stop"`
+mapping would bless a defect rather than surface it; **ACP** would add a new
+runtime dependency; the **generated model catalog** is `BLOCKED` on an ADR
+decision. `HANDOFF.md`'s `DO FIRST` tag was moved off the provider row to this
+one accordingly — it had been placed there earlier in this same run before that
+self-declared gate was weighed properly.
+
+**Coherence check before writing code.** §4.5 names "summarization checkpoints
+(compact tool history into a running summary at thresholds)" as a mandatory
+technique. `context-compaction.ts` already answers the pressure by dropping
+whole turns and says openly that model-driven summarization is a Phase-7 memory
+feature it does not build. Pruning tool results is neither of those — it is a
+third, cheaper stage in front of compaction — so it extends §4.5 rather than
+contradicting it, and no ADR speaks to it. `docs/PRIOR_ART.md` already carried
+the row recording exactly what was studied (that a model-free tool-result
+pruner belongs in its own stage, separate from the compactor) and what must not
+be copied (their pruner, heuristics, and seam structure).
+
+**Built:** `packages/runtime/src/tool-result-pruning.ts` —
+`pruneSupersededToolResults(messages, budgetTokens)`, running as its own stage
+immediately before `compactHistory` in `AgentLoop.actLoop`.
+
+The rule is deliberately narrow and entirely model-free: a tool result is
+superseded when the **same tool** was later called with **byte-identical
+arguments**, so a newer answer to the exact same question is already in
+context. That needs correlating each `tool` message back through its
+`toolCallId` to the assistant message that made the call, since
+`NormalizedMessage` carries the tool name and args on one and only the id on
+the other. Not pruned: two `read_file` calls on the same path with different
+line ranges (different questions, both live), the same arguments to a different
+tool, any result with no later identical twin, and any result whose orphaned
+call is no longer in the transcript (what a resumed, already-compacted history
+looks like).
+
+Three properties make it strictly safer than compaction, and each has a test:
+
+- **It never removes anything.** Only the `content` of a superseded result is
+  replaced, with a placeholder that says the call was re-run and the newer
+  result is still present. Every message, role, `toolCallId`, `toolCalls`
+  array, and turn boundary survives — so, unlike compaction, it can never
+  strand a tool result whose call was dropped.
+- **It is budget-gated and inert until needed.** Under budget it returns the
+  *same array object*, asserted by identity, not equality: a run that never
+  approaches the ceiling is byte-identical to one built without this module.
+- **It stops as soon as the budget is met.** Oldest-first, one at a time — the
+  least intervention that clears the pressure, not a sweep of everything
+  prunable.
+
+The interesting case, called out in the module header rather than glossed: an
+identical `shell` command run before and after an edit produces *different*
+output, and pruning the earlier one drops the "before" state. That is the
+intended behavior — the failing pre-edit `npm test` is the canonical stale tool
+result §4.5's lever is aimed at — which is why the placeholder states plainly
+that the call was re-run instead of leaving an unexplained hole.
+
+**Blast radius, checked before writing (loop step 4).** The new
+`context.pruned` event widens `RuntimeEvent`, which **is** re-exported as
+public API from `@clutchcode/agent-api` and **is** consumed by an exhaustive
+`const exhaustive: never = event` switch in `apps/vscode/src/presentation.ts`.
+Judged additive rather than a break, and the reasoning is recorded so a
+reviewer can disagree: an event *stream* union is a designed-for extension
+point (the VS Code switch's fallback already prints "? unknown event"),
+`agent-rpc` forwards events as `unknown` so no wire contract moves, and
+`context.compacted` itself was added the same way. It was **not** folded into
+`context.compacted` as an extra field, because pruning drops no messages and
+reporting it as a compaction with `droppedCount: 0` would misdescribe what
+happened. `presentation.ts` is updated in the same commit.
+
+---
+
+**A real bug found in a test helper, and it was quietly undermining assertions.**
+`FakeProvider.requestLog` is documented as "every request this provider
+received, in order — for assertions in tests." It pushed the caller's
+`NormalizedRequest` **by reference**, and `AgentLoop` appends to that same
+`messages` array every turn — so every logged entry silently mutated into the
+*final* history. `requestLog[0].messages` never described request 0.
+
+Found by instrumenting the failing pruning integration test: all three logged
+requests printed identical 3-tool-result histories, which is impossible for the
+first one. Fixed by snapshotting the array per call. The message objects stay
+shared, which is correct and stated in the comment: the runtime replaces
+messages (`replaceMessages`, and pruning's `{...message, content}`) rather than
+mutating them in place, so a shared object is never rewritten under a logged
+entry. No existing test changed behavior — this widened what `requestLog` can
+honestly be used for rather than narrowing it.
+
+**What was verified, and how.** 720/720 passing (up from 707 — **13 new
+tests**), 78 test files, clean `tsc -b`, clean `eslint .`.
+
+- 10 unit tests in `tool-result-pruning.test.ts`: the under-budget no-op
+  asserted by array *identity*; a stale `npm test` result blanked while the
+  fresh one stays byte-intact; message count, roles, `toolCallId`s and
+  `toolCalls` all unchanged and the input array unmutated; same tool with
+  different args not pruned; same args to a different tool not pruned;
+  oldest-first with exactly one prune when one suffices (budget derived from
+  the real estimate, so the test states the rule rather than encoding today's
+  arithmetic); two prunes when one does not, with the reported
+  `reclaimedTokens` checked against the actual before/after difference; a short
+  superseded result deliberately left alone because the placeholder would cost
+  more than it saves; an orphaned result ignored; empty history.
+- 1 integration test in `agent-loop.test.ts` driving the **real loop against a
+  real shell** — three genuine `shell` executions of the same command, each
+  ~4KB of real output, with a capability tuned so the third turn is the first
+  that must shed something. Asserts `context.pruned` fires with a real
+  `prunedCount`/`reclaimedTokens`, that the placeholder was in the request the
+  model was actually sent, that exactly one full-size copy survived, and that
+  the persisted transcript still holds all three tool messages.
+- 1 regression test in `fake-provider.test.ts` for the snapshot bug, and 1 in
+  `presentation.test.ts` for the new event's rendering.
+
+**Discrimination checks (both, and both real).** Flipping the pruning stage off
+in `AgentLoop` (replacing the call with an inert result) turned the integration
+test red, and it went green again on restore. Reverting the one-line
+`requestLog` fix turned the new snapshot test red, and green again on restore.
+The 10 pure-function unit tests were not stash-reverted, and that is stated
+rather than skipped quietly: they exercise a brand-new module through direct
+assertions on its return value, with no pre-fix code for them to discriminate
+against — `CLAUDE.md`'s carve-out for a fix "whose correctness is unambiguous
+from its own assertions."
