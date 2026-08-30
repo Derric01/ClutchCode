@@ -7,14 +7,14 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-08-30
 **Branch:** `claude/start-work-handoff-referral-52eyj1`
-**Latest commit:** `8477233` — "docs: recover the phase status the README cut, and give §20 a dependency diagram"
+**Latest commit:** `8beff1b` — "fix(git): stop execFileSync leaking stderr to the console, ship a real demo GIF"
 **Phase:** Phase 1 shipped (§21) — one agent, one default workflow, three provider
 adapters, SEARCH/REPLACE edits with fallback, worktree isolation, deterministic
 verification with cheat detection, terminal CLI. **Phase 2 in progress:** the
 adaptation layer (capability probe §4.9, context budgeter §4.5, edit-format
 selector §4.4) is wired into the live loop; workflow engine §8.1/§8.2, VS Code
 §18.5, credentials §5.1 and sandbox Tier 1 §12.5/§12.6 landed early.
-**Test suite:** 720/720 passing, 78 test files, clean `tsc -b`, clean `eslint .`
+**Test suite:** 725/725 passing, 78 test files, clean `tsc -b`, clean `eslint .`
 **CI:** `.github/workflows/ci.yml` added — build/test/lint on Node 20 + 22, on
 every PR. **Not yet observed running.** Verified: the file is valid YAML, is on
 the PR branch, and is in the PR diff — but the GitHub API reports `0` registered
