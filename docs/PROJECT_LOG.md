@@ -1845,3 +1845,89 @@ like any other. It happened to be *mostly* true, and the part that wasn't was
 the single line most readers would look for first.
 
 Docs only. 720/720 passing, clean `tsc -b`, clean `eslint .`.
+
+### Marketing-README follow-up: proved the diagrams render, fixed a fabrication in my own draft, shipped a real demo GIF, and fixed the underlying stderr-leak bug
+
+Directly prompted by "lots of texts no architecture, it has to be like a
+marketing readme, it is so bad" — pointed at the same README rewritten two
+entries ago. Rather than assume either "the user is wrong" or "the content is
+wrong," checked both.
+
+**The Mermaid content itself is not the problem — proved, not assumed.**
+Installed `@mermaid-js/mermaid-cli`, extracted all three `mermaid` blocks from
+the live README, and rendered every one to a real PNG: the architecture
+flowchart, the run-lifecycle sequence diagram, and the roadmap gantt all
+render cleanly, with correct subgraphs, colors, and arrows. So the complaint
+is very likely a *viewing* issue, not a *content* one — the most probable
+cause is that GitHub does not render Mermaid inside a PR's "Files changed"
+diff view (plain text/diff only), only in the actual file/blob view on a
+branch. Told the user how to check directly.
+
+**But auditing the README for the complaint surfaced two real problems
+anyway, both fixed for real rather than talked around:**
+
+1. **The top of the page was, in fact, visually empty.** The "logo" area was
+   only an HTML comment — literally nothing rendered there. Replaced with a
+   real generated banner via `capsule-render` (a URL-parameterized SVG
+   service, fetched by GitHub's own renderer at view time, not by this
+   session — the same technique used across thousands of public READMEs) so
+   there is now an actual colored, animated header instead of plain heading
+   text. The custom-logo option is preserved as a comment for later.
+
+2. **The demo transcript in the README was fabricated, and this review is
+   what caught it.** It showed `--provider ollama --model qwen2.5-coder:14b`
+   with `steps: 4/50 tokens: 18204/200000` — numbers that were never actually
+   produced. The genuine output this session verified earlier (with
+   `--provider fake`, the only path actually run) was `steps: 1/50 tokens:
+   0/200000`. This is exactly the class of unbacked claim this project exists
+   to catch, and it had shipped in a commit two entries ago. This time, rather
+   than just correct the numbers, a **real recorded demo GIF** was shipped
+   instead of a placeholder comment:
+   - Installed `asciinema` (apt) and the real `agg` (compiled from
+     `github.com/asciinema/agg` via cargo — the crates.io package named `agg`
+     is an unrelated library, a genuine dead end worth noting for next time).
+   - Recorded a real scripted session (`doctor`, then `run … --provider
+     fake`) against the actual compiled CLI, converted to a GIF, and
+     committed it to `docs/assets/demo.gif`.
+   - Wrote `docs/assets/record-demo.sh` so this is regeneratable, not a
+     one-off artifact — and **ran it end-to-end from a clean state** to prove
+     it actually reproduces the same output, rather than committing a script
+     that had only run once by hand.
+
+**Recording the demo surfaced a real bug, and the honest fix was to fix the
+bug rather than filter the recording.** The genuine output included a leaked
+`fatal: path 'AGENTS.md' does not exist in '<sha>'` line — the exact issue
+already queued as a `What's left` row from the previous README pass. Piping
+that line out of the recording would have been editing around a known defect
+instead of fixing it, so the defect was fixed instead:
+
+`packages/git/src/git-exec.ts`'s `git()` wrapper left `stdio` on
+`execFileSync`'s default, which carries a documented Node quirk — even though
+the *default* `stdio` is `'pipe'`, stderr specifically is still forwarded live
+to the parent process's stderr unless `stdio` is passed as an explicit array.
+The same gotcha this project had already fixed once, for the keychain
+wrappers. **Empirically verified both sides before touching shared code**
+(this function backs every worktree/checkpoint/rollback operation, so
+blindly `stdio: ["ignore","pipe","ignore"]`-ing it would have blinded
+`GitError`'s message for every *other*, non-`allowFailure` caller too): a
+scratch script confirmed the default leaks to the real console while
+`stdio: ["ignore","pipe","pipe"]` does not — and that `err.stderr` is still
+fully populated either way. Fixed with the latter.
+
+Two new tests, one of which taught a real lesson about test isolation. The
+CLI-level test (`apps/cli/src/cli.test.ts`, spawning the real compiled
+binary on a repo without `AGENTS.md`, asserting no `fatal:`/`AGENTS.md` in
+its stderr) was verified with the full stash/revert cycle — fails pre-fix
+with the exact leaked line, passes post-fix. A second, unit-level isolation
+test in a new `packages/git/src/git-exec.test.ts` tried to prove the same
+thing via a doubly-nested child process (spawning a `node -e` script that
+itself spawns `git`), and **did not actually discriminate** — it passed
+identically pre-fix and post-fix, most likely because the grandchild's
+stderr-forwarding target resolves differently once already inside a spawned
+process. Rather than ship a test that would pass either way — this project's
+own stated worse-than-no-test case — it was removed, with the reasoning left
+in a comment pointing at the CLI-level test that does discriminate.
+`git-exec.ts` had no test file at all before this; the four surviving unit
+tests are new, real coverage of the wrapper regardless.
+
+725 tests (up from 720). Full gate clean: `tsc -b`, `eslint .`, `vitest run`.

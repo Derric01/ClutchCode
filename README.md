@@ -1,14 +1,9 @@
 <div align="center">
 
-<!-- ┌─────────────────────────────────────────────────────────────┐
-     │  LOGO SLOT — drop a 200px PNG/SVG at docs/assets/logo.png    │
-     │  then replace this comment with:                            │
-     │  <img src="docs/assets/logo.png" width="140" alt="ClutchCode"/>
-     └─────────────────────────────────────────────────────────────┘ -->
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:1f6feb,100:3fb950&height=180&section=header&text=ClutchCode&fontSize=58&fontColor=ffffff&fontAlignY=38&desc=The%20coding%20agent%20that%20has%20to%20prove%20it%27s%20done&descAlignY=60&descSize=17&animation=fadeIn" width="100%" alt="ClutchCode"/>
 
-# 🔧 ClutchCode
-
-### **The coding agent that has to prove it's done.**
+<!-- Custom logo: replace the banner above with
+     <img src="docs/assets/logo.png" width="140" alt="ClutchCode"/> once one exists. -->
 
 *A model-agnostic, local-first coding-agent runtime. It never phones home, and "done" means your build and tests actually passed — not that the model said so.*
 
@@ -32,24 +27,14 @@
 
 <div align="center">
 
-<!-- ┌─────────────────────────────────────────────────────────────┐
-     │  DEMO SLOT — record with:  vhs demo.tape   (charmbracelet/vhs)
-     │  or:  asciinema rec && agg demo.cast demo.gif               │
-     │  save to docs/assets/demo.gif, then replace this block with:
-     │  <img src="docs/assets/demo.gif" width="720" alt="demo"/>
-     └─────────────────────────────────────────────────────────────┘ -->
+<img src="docs/assets/demo.gif" width="760" alt="clutchcode doctor, then a real run to AWAITING_APPROVAL"/>
+
+*Real terminal output, recorded from this build — `doctor`'s sandbox/keychain detection, then a `run` against `--provider fake` (no API key, no model, exercises the exact same lifecycle a real provider would). Recorded with [asciinema](https://asciinema.org) + [agg](https://github.com/asciinema/agg); regenerate with `bash docs/assets/record-demo.sh` after any user-facing CLI change.*
 
 ```console
-$ clutchcode run "fix the failing parser test" --provider ollama --model qwen2.5-coder:14b
-
-run 23d3c311a6084cf5b1e16ecc186b7296 — AWAITING_APPROVAL
-task: fix the failing parser test
-steps: 4/50  tokens: 18204/200000
-verification: green; cheat flags: 0
-reason: awaiting human approval of the diff
-
-$ clutchcode diff    23d3c311      # review what it actually changed
-$ clutchcode approve 23d3c311      # only now does it touch your branch
+$ clutchcode run "fix the failing test" --provider ollama --model qwen2.5-coder:14b
+$ clutchcode diff    <runId>      # review what it actually changed
+$ clutchcode approve <runId>      # only now does it touch your branch
 ```
 
 </div>
