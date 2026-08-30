@@ -26,12 +26,13 @@ working until a run is observed.
 **Note:** the "what's done" history moved to `docs/PROJECT_LOG.md`; this file is
 kept short on purpose. Append your entry there, not here.
 
-**PR:** [#16](https://github.com/Derric01/ClutchCode/pull/16) — **open**, carrying the
-README front-page rewrite. #4–#15 merged cleanly before it. Convention: one PR
-per phase of work, never reused once merged — #14 and #15 were each merged
-mid-session, so **check a PR's actual state before assuming pushes are landing
-on it** (`pull_request_read`, or `git merge-base --is-ancestor <head> origin/main`).
-Push work to #16's branch; open a new PR only once #16 is merged.
+**PR:** [#17](https://github.com/Derric01/ClutchCode/pull/17) — **open**, carrying the
+README banner/demo-GIF work and the stderr-leak fix. #4–#16 merged cleanly
+before it — #14, #15, and #16 were all merged *mid-session* (three times in
+one session), so **check a PR's actual state before assuming pushes are
+landing on it** (`pull_request_read`, or `git merge-base --is-ancestor
+<head> origin/main`) before every push in this convention, not just once.
+Push work to #17's branch; open a new PR only once #17 is merged.
 
 ---
 
