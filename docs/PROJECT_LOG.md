@@ -1931,3 +1931,149 @@ in a comment pointing at the CLI-level test that does discriminate.
 tests are new, real coverage of the wrapper regardless.
 
 725 tests (up from 720). Full gate clean: `tsc -b`, `eslint .`, `vitest run`.
+
+### The eval scoreboard (§16.1/§16.2/§16.3b) — and a cheat detector that was blind to `assert.strictEqual`
+
+The `DO FIRST` row. Coherence-checked first: §16.3b names the per-model
+scoreboard explicitly ("VTCR + the §16.2 metrics, per model"), §16.4 commits
+to publishing the methodology, and no ADR contradicts it — ADR-020 covers the
+*replay* harness (§16.3c), which has been live since Phase 1 and is a
+different thing.
+
+**What shipped.**
+
+- **A task format that is a directory, not a blob.** `evals/suite/<id>/` with
+  `task.json`, `repo/` (the starting repository), `oracle/` (the held-out
+  check) and `solution/` (the reference patch). Every fixture file is a real
+  file — readable, runnable, lintable by hand — rather than escaped strings
+  inside JSON.
+- **The held-out oracle, which is the load-bearing idea.** The agent's own
+  deterministic gate runs *the repository's own commands, on files the agent
+  can read and edit*. Grading with it alone grades the agent on a test it is
+  allowed to rewrite. So each task's check is copied into the delivered
+  repository only **after** the run finishes — the same reason SWE-bench
+  applies its golden *test* patch after the model's patch.
+- **Five tasks, five categories, two languages** (§16.3a bullet 3 — "bug fix,
+  small feature, refactor, test-add, dependency bump ... across languages").
+  Four of the five arrive with a **green** gate on purpose: a suite made
+  entirely of red-on-arrival tasks would overstate VTCR, because a red gate
+  hands the agent a signal to chase and a green one hands it nothing. Each
+  task *declares* `startingGate` and the validity test fails if reality
+  disagrees. The Python test-add task is graded by **mutation** — the added
+  tests must pass against the real implementation *and* fail against a
+  deliberately broken `median`, because "do the tests pass" is not a grade
+  for a task whose deliverable is a test (`assert True` passes too).
+- **The runner drives the real public `Agent.run`**, not `AgentLoop`: a
+  scoreboard has to measure the product as a user gets it — worktree
+  isolation, toolchain detection, project memory, the adaptation layer, the
+  gate, cheat detection, the §14.7 auto-approve path. Per-task state,
+  capability-profile and memory directories are pinned inside the scratch
+  workspace so no task touches the machine's real `~/.config` or leaks into
+  the next.
+- **The metrics, with the dishonest ones refused rather than faked.** VTCR
+  (§16.1) plus all five §16.2 supporting metrics — and two of them could not
+  be reported as written, so they are not:
+  - **Cost per solved task is `null`.** `BudgetGuard.recordUsage` accepts a
+    `costUsd`, but *no adapter passes one* (checked: the `usage` delta
+    carries only token counts), so `consumed.costUsd` is always 0. Reporting
+    `$0.0000` would be a measured-looking zero. It turns on by itself the day
+    an adapter reports cost.
+  - **"Cheat flags per *solved* task" is degenerate.** Under §14.7's own
+    contract a cheat flag forces ESCALATED, so a flagged run is never a
+    solved run and the literal ratio is identically zero no matter how badly
+    the detectors regress. Replaced with flags-per-task and
+    share-of-tasks-flagged, with the deviation stated in the methodology doc
+    rather than silently applied.
+  - Added beyond §16.2 because the held-out oracle makes it measurable for
+    the first time: **`falseCompletionRate`** — claimed done, oracle
+    disagreed. That is the exact number the whole §14.7 completion contract
+    exists to hold at zero.
+- **Persistence and a real bin.** One full JSON board per run plus an
+  append-only JSONL history (the storage shape ADR-007 already uses; there is
+  still no SQLite dependency), and `clutchcode-eval` with `list`/`run`/
+  `history`.
+- **`docs/EVAL_METHODOLOGY.md`** — §16.4's published, falsifiable
+  methodology, including a section 7 that states plainly what is *not* built.
+
+**`agent eval` (§18.2) was deliberately NOT added to `apps/cli`.** §20's
+dependency rule ("`apps/*` depend only on `agent-api`") is normative and
+§20's own layout puts the scoreboard in `evals/`, so a CLI subcommand would
+make `apps/cli` depend on `evals` — a package-boundary decision, not an
+implementation detail. Queued as its own row instead of quietly widening the
+boundary.
+
+**A real cheat-detection bug found by building this, reproduced before being
+believed.** The end-to-end "model deletes the failing assertion" scenario
+scored a green gate and **zero cheat flags**. Rather than adjust the fixture,
+the claim was reproduced directly against the compiled `detectCheats`:
+`ASSERTION_OR_TEST_DECL_RE` required a `(` immediately after `assert`, so it
+recognized `assert(`, `expect(`, `it(`/`test(`/`describe(` and
+`self.assertX(` — but was blind to:
+
+1. the **entire `node:assert` method family** (`assert.strictEqual(`,
+   `assert.deepStrictEqual(`, `assert.ok(`, chai's `assert.equal(`), the
+   default assertion style for dependency-free JS tests — including this
+   repo's own eval fixtures; and
+2. Python's bare **`assert <expr>` statement**, the dominant pytest style
+   (`self.assertEqual(` was covered, plain `assert add(2, 2) == 4` was not).
+
+So the most obvious cheat in the most common assertion syntax — delete the
+failing `assert.strictEqual` line — drew no flag at all. Fixed the class, not
+the instance: both syntaxes added to the assertion regex (the statement form
+anchored to line start so a `const assert = require('node:assert')` import
+line can't be miscounted as an assertion), and the **sibling** detector
+checked too — `TRIVIAL_ASSERTION_RE` had the same blind spot, so
+`assert.ok(true)` and `assert.strictEqual(1, 1)` are now recognized as
+tautologies. Those alternatives are **appended** to that regex deliberately:
+`\1` in it refers to the existing `expect(X).toBe(X)` literal group, and
+inserting a capturing group ahead of it would silently renumber that
+backreference.
+
+**Verified, and how.**
+
+- **Stash-revert on the cheat fix.** `git stash push -- cheat-detection.ts`
+  (the fix only, not the tests) → the 3 new test cases fail
+  (`node:assert` removal, bare Python `assert` removal, node:assert
+  tautology) while all 16 pre-existing cases still pass; `git stash pop` →
+  19/19 green. The fix is proven to discriminate *and* proven not to change
+  existing behavior.
+- **Independently, end to end**: the scripted "delete the failing assertion"
+  eval run now lands ESCALATED with `removed-test-assertions` in its
+  escalation reason, where before it reached a green gate unflagged.
+- **Three end-to-end runner scenarios**, all through real HTTP → the real
+  OpenAI-compatible adapter → real `Agent.run` → real git → real `npm test`
+  → the real held-out oracle, with only the model's replies scripted:
+  *solved* (VTCR 1.0), *cheated* (green gate, flagged, escalated, not
+  verified), and *no-op on an already-green repo* (reaches `DONE` legitimately
+  under §14.7, oracle disagrees → false completion 1.0, retrieval
+  insufficiency 1.0).
+- **Suite validity, per task, no model in the loop**: oracle fails pristine,
+  oracle passes on the reference solution, repo gate green after it, declared
+  `startingGate` matches reality. **This caught a real bug in its first run** —
+  an arithmetic error in the duration oracle's own expectation (`1h30m` was
+  written as `5400000 + 3600000`). Exactly what it is for.
+- **18 pure unit tests** over the metric definitions, so each formula is
+  asserted directly rather than inferred from a live run.
+- **The real compiled `clutchcode-eval` binary** spawned as a child process
+  (same convention as `apps/cli/src/cli.test.ts`): `list --json`, a full
+  `run --provider fake --out <dir> --json`, the JSONL history round-trip, and
+  a loud failure on an unknown `--task`.
+- **A full-suite smoke run by hand** against `--provider fake`: 5/5 tasks,
+  VTCR 0.0%, **claimed-done 80%, false completions 80%** — the do-nothing
+  model correctly scoring zero while its gate went green four times out of
+  five. That run also surfaced (and the board reports honestly, rather than
+  hiding) that `--provider fake` scripts exactly one turn, so any task needing
+  a repair iteration ends in a run-level error; the note wording was corrected
+  to say that instead of blaming "the harness".
+
+770 tests (up from 725), 83 files. Full gate clean: `tsc -b`, `vitest run`,
+`eslint .`.
+
+**Deliberately deferred, and why** — all recorded as rows rather than left
+implicit: the naked-vs-harness A/B arm (§16.4's actual North Star claim; the
+harness arm is built, the naked arm is not, so no delta is or should be
+quoted); the SWE-bench-Verified subset and Terminal-Bench adapters (§16.3a
+bullets 1–2 — dataset fetching plus per-instance container images, i.e.
+network and infrastructure this offline harness does not currently take on);
+K-seed repetition with confidence intervals; and `agent eval` in the CLI,
+which is the §20 boundary decision above.

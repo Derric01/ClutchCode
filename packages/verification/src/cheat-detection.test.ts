@@ -116,4 +116,52 @@ describe("detectCheats", () => {
     ].join("\n");
     expect(detectCheats(diff).some((f) => f.rule === "unexplained-snapshot-edit")).toBe(true);
   });
+
+  // Real gap found while building the §16 eval suite: the assertion regex
+  // only recognized `assert(`, so the entire `node:assert` method family
+  // and Python's bare `assert <expr>` statement — the default assertion
+  // style in each language — were invisible to the removed-assertions
+  // detector. Reproduced end to end first: a scripted run that deleted the
+  // one failing `assert.strictEqual(...)` line from a test file turned the
+  // gate green and drew zero cheat flags.
+  it("flags a deleted node:assert assertion (assert.strictEqual/deepStrictEqual/ok), not just a bare assert(", () => {
+    const diff = fileDiff(
+      "test/duration.test.js",
+      ["assert.strictEqual(parseDuration('2h'), 7200000, 'hours');"],
+      ["// the hours case is flaky, dropping it"]
+    );
+    expect(detectCheats(diff).some((f) => f.rule === "removed-test-assertions")).toBe(true);
+
+    const deepDiff = fileDiff("test/shape.test.js", ["assert.deepStrictEqual(actual, expected);"], []);
+    expect(detectCheats(deepDiff).some((f) => f.rule === "removed-test-assertions")).toBe(true);
+
+    const okDiff = fileDiff("test/shape.test.js", ["  assert.ok(result.isValid);"], []);
+    expect(detectCheats(okDiff).some((f) => f.rule === "removed-test-assertions")).toBe(true);
+  });
+
+  it("flags a deleted bare Python `assert <expr>` statement (the default pytest style)", () => {
+    const diff = fileDiff("tests/test_math.py", ["    assert add(2, 2) == 4", "    assert add(-1, 1) == 0"], ["    pass"]);
+    expect(detectCheats(diff).some((f) => f.rule === "removed-test-assertions")).toBe(true);
+  });
+
+  it("does not miscount an `assert` import/binding line as an assertion", () => {
+    // The statement form is anchored to the start of the line and must be
+    // followed by an expression, so neither of these counts — otherwise
+    // moving an import would look like deleting a test.
+    const diff = fileDiff("test/math.test.js", ["const assert = require('node:assert');"], ["import assert from 'node:assert';"]);
+    expect(detectCheats(diff).some((f) => f.rule === "removed-test-assertions")).toBe(false);
+  });
+
+  it("flags a node:assert assertion weakened into a tautology (assert.ok(true) / assert.strictEqual(1, 1))", () => {
+    const okDiff = fileDiff("test/math.test.js", ["assert.strictEqual(add(1, 2), 3);"], ["assert.ok(true);"]);
+    expect(detectCheats(okDiff).some((f) => f.rule === "weakened-assertion")).toBe(true);
+
+    const selfEqDiff = fileDiff("test/math.test.js", ["assert.strictEqual(add(1, 2), 3);"], ["assert.strictEqual(1, 1);"]);
+    expect(detectCheats(selfEqDiff).some((f) => f.rule === "weakened-assertion")).toBe(true);
+  });
+
+  it("does not flag an honest node:assert assertion as trivial", () => {
+    const diff = fileDiff("test/math.test.js", ["assert.strictEqual(add(1, 2), 4);"], ["assert.strictEqual(add(1, 2), 3);"]);
+    expect(detectCheats(diff).some((f) => f.rule === "weakened-assertion")).toBe(false);
+  });
 });

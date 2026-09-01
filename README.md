@@ -275,15 +275,17 @@ Replays a scripted transcript through the whole loop. It's how the test suite wo
 
 ## 📊 What we're actually sure of
 
-No invented benchmarks here. **The eval scoreboard (SWE-bench-style) is on the roadmap, not built** — so instead, here is precisely what is verified and how:
+No invented benchmarks here. The eval scoreboard now exists — **but no VTCR number for any real model is published, because none has been measured** (this project's CI has neither an API key nor a local GPU). What the scoreboard gives you is the machinery to measure your own, and a methodology you can argue with: [`docs/EVAL_METHODOLOGY.md`](./docs/EVAL_METHODOLOGY.md).
 
 | Claim | How it's proven |
 |---|---|
-| **720 tests, 78 files** | `pnpm test`. Real git repos, real shells, real filesystems — `FakeProvider` stubs *only* the model. |
+| **770 tests, 83 files** | `pnpm test`. Real git repos, real shells, real filesystems — `FakeProvider` stubs *only* the model. |
 | **Sandbox actually confines** | A test writes outside the workspace, then asserts a sandboxed `cat` of it fails. Network fetch inside the sandbox asserted unreachable. |
 | **Seccomp actually blocks** | Each denied syscall invoked by number inside real bwrap → `EPERM`, with an unfiltered control run proving the syscall otherwise succeeds. |
 | **Secrets don't leak** | A canary secret injected into a full recorded run, asserted absent from every transcript, event log and artifact. |
 | **Cheat detection works** | A recorded run where the model deletes an assertion — verification goes green, completion is blocked anyway. |
+| **The scoreboard can't be fooled by a green gate** | Every eval task carries a **held-out** check, copied in only after the run finishes. A scripted run that changes nothing on an already-passing repo reaches `DONE` with a green gate — and is scored a *false completion*, not a success. |
+| **The eval tasks are real tasks** | Every task is validated on each test run against real repos: its held-out check must fail on the pristine repo and pass on the reference solution. It caught a bad expectation in one of its own oracles the first time it ran. |
 | **Local-first is real** | A task completed offline with egress blocked at the OS level, against a local model. |
 
 <details>
@@ -293,6 +295,7 @@ No invented benchmarks here. **The eval scoreboard (SWE-bench-style) is on the r
 
 - **Linux is the verified platform.** The macOS Seatbelt profile is written against the documented SBPL grammar but **has never run on real macOS**. Windows Tier 1 is deliberately doc-only; WSL2 is the recommended path.
 - **Landlock is not implemented.** Seccomp is. The blocker is documented in `HANDOFF.md`.
+- **No benchmark numbers are published for any model.** The eval suite, the VTCR/§16.2 metrics and the held-out grading all work and are tested — but the only scored runs so far are deterministic scripted ones. The naked-vs-harness A/B that would substantiate "makes small local models usable", and the SWE-bench-Verified subset, are both explicitly not built; see [`docs/EVAL_METHODOLOGY.md`](./docs/EVAL_METHODOLOGY.md) §7.
 - **Pre-1.0**, not yet published to npm.
 - **Security reviews have been thorough but single-reviewer.** See [`SECURITY.md`](./SECURITY.md) for the threat model and how to report an issue.
 
@@ -313,12 +316,14 @@ gantt
         Agent loop · edit cascade · worktrees   :done, a1, 2026-01-01, 90d
         Sandbox Tier 1 · seccomp · credentials  :done, a2, after a1, 60d
         Workflow engine · VS Code extension      :done, a3, after a2, 45d
+        Eval suite · VTCR scoreboard             :done, a4, after a3, 30d
     section Next
         npm release (npx clutchcode)            :active, b1, 2026-08-01, 30d
-        Landlock rung                           :b2, after b1, 30d
-        ACP editor protocol · MCP client         :b3, after b1, 45d
+        Naked-vs-harness A/B (the North Star)   :b2, after b1, 30d
+        Landlock rung                           :b3, after b1, 30d
+        ACP editor protocol · MCP client         :b4, after b1, 45d
     section Later
-        Eval scoreboard (SWE-bench subset)      :c1, after b3, 60d
+        SWE-bench Verified subset adapter       :c1, after b4, 60d
         PageRank repo map                       :c2, after c1, 45d
 ```
 

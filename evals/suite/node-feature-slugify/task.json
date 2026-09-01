@@ -1,0 +1,17 @@
+{
+  "id": "node-feature-slugify",
+  "category": "feature",
+  "language": "node",
+  "description": "Add a maxLength option to an existing slugify helper. The repository's own gate is GREEN on arrival, so only the held-out oracle can tell a real implementation from a no-op.",
+  "prompt": "Add an options argument to `slugify` in src/slug.js: `slugify(text, options)`. When `options.maxLength` is a positive number, the returned slug must be truncated to at most that many characters and then have any trailing \"-\" removed. Called with one argument, or with no maxLength, `slugify` must behave exactly as it does today. Keep the existing tests passing.",
+  "solutionPaths": [
+    "src/slug.js"
+  ],
+  "startingGate": "green",
+  "oracle": {
+    "command": [
+      "node",
+      "oracle.check.js"
+    ]
+  }
+}

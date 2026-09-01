@@ -1,0 +1,17 @@
+{
+  "id": "python-test-add-median",
+  "category": "test-add",
+  "language": "python",
+  "description": "Add real tests for an untested function. Graded by mutation: the new tests must pass, and must actually fail against a deliberately broken median.",
+  "prompt": "stats.py has two functions, `mean` and `median`, but only `mean` has tests. Add tests for `median` in a new file tests/test_median.py, covering an odd-length list, an even-length list, unsorted input, and the ValueError raised for an empty list. Do not modify stats.py. `pytest -q` and `ruff check .` must both pass.",
+  "solutionPaths": [
+    "tests/test_median.py"
+  ],
+  "startingGate": "green",
+  "oracle": {
+    "command": [
+      "python3",
+      "oracle_check.py"
+    ]
+  }
+}

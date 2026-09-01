@@ -1,14 +1,18 @@
 {
   "name": "@clutchcode/evals",
   "version": "0.1.0",
-  "description": "Recorded-transcript replay harness against FakeProvider (PROJECT_SPEC.md §16.3c, ADR-020) and the §5.2 redaction canary.",
+  "description": "The eval suite and per-model scoreboard (PROJECT_SPEC.md §16.1/§16.2/§16.3b), the recorded-transcript replay harness (§16.3c, ADR-020), and the §5.2 redaction canary.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "clutchcode-eval": "./dist/eval-bin.js"
+  },
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b",
+    "eval": "node dist/eval-bin.js",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
@@ -18,7 +22,8 @@
     "@clutchcode/runtime": "workspace:*",
     "@clutchcode/sandbox": "workspace:*",
     "@clutchcode/tools": "workspace:*",
-    "@clutchcode/verification": "workspace:*"
+    "@clutchcode/verification": "workspace:*",
+    "commander": "^15.0.0"
   },
   "devDependencies": {
     "typescript": "^5.7.2"

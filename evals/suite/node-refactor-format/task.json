@@ -1,0 +1,17 @@
+{
+  "id": "node-refactor-format",
+  "category": "refactor",
+  "language": "node",
+  "description": "Extract duplicated normalization logic into one exported helper without changing any observable behavior.",
+  "prompt": "src/format.js has the same normalization logic copy-pasted into `titleCase` and `sentenceCase` (lowercase, trim, collapse runs of whitespace to a single space). Refactor it: add a `normalize(text)` function, export it alongside the other two, and make both existing functions use it. Observable behavior of `titleCase` and `sentenceCase` must not change, and the existing tests must keep passing.",
+  "solutionPaths": [
+    "src/format.js"
+  ],
+  "startingGate": "green",
+  "oracle": {
+    "command": [
+      "node",
+      "oracle.check.js"
+    ]
+  }
+}
