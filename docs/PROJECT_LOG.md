@@ -2077,3 +2077,115 @@ bullets 1–2 — dataset fetching plus per-instance container images, i.e.
 network and infrastructure this offline harness does not currently take on);
 K-seed repetition with confidence intervals; and `agent eval` in the CLI,
 which is the §20 boundary decision above.
+
+### CI was red on `main` — and the cause was a production bug, not a test bug
+
+The new `DO FIRST` row, opened by a finding relayed mid-session: `HANDOFF.md`
+claimed CI had "not yet been observed running" and that Actions was probably
+disabled for the repo. **Verified independently against the API before acting
+on it, and the file was wrong on every count**: workflow `CI` (id `346002960`)
+is registered and `active`, has run **9 times**, and has never once succeeded —
+6 failures, 3 cancelled — *including two `push` runs on `main` itself* (run #3
+at `80d374c`, run #7 at `4633f7d`). The snapshot header is corrected rather
+than carried forward; a continuation document that lies about the gate is worse
+than the gate being red.
+
+**The relayed diagnosis was right about the class and incomplete about the
+scope, so the logs were read rather than trusted.** It named 4 failing
+assertions in 2 files; the actual job log shows **16 tests failing across 4
+files** (`tier1-linux.test.ts`, `seccomp-linux.test.ts`, `shell.test.ts`,
+`search.test.ts`), from **two independent causes**:
+
+1. `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`. bwrap *is*
+   installed on the runner (ci.yml installs it and asserts `command -v bwrap`)
+   and does start — it dies setting up the loopback interface under
+   `--unshare-net`. The guards deciding whether to run those suites checked
+   **PATH presence, not capability**, so they ran instead of skipping.
+2. ci.yml installs bubblewrap/libsecret/gnome-keyring/dbus but **not ripgrep**,
+   and the `search` tool *is* ripgrep (§9 Tier 0, no fallback by design), so
+   all 3 of its tests failed on `search-backend-unavailable`.
+
+**Reproduced first — and the reproduction found something much worse than a CI
+annoyance.** A stub `bwrap` that is present, executable, and fails exactly the
+way a runner's does was put first on `PATH`, then the *production* path was run
+against it. `detectSandboxBackend()` returned:
+
+```
+backend: bwrap — "bubblewrap found on PATH"
+```
+
+…and the real `shellTool`, running one ordinary `echo`, returned **exit 1,
+empty stdout**, with `bwrap: loopback: Failed RTM_NEWADDR` on stderr. That is
+not a test-guard problem: **on any host where bwrap is installed but cannot
+create namespaces — a CI runner, an unprivileged container, a kernel with
+unprivileged user namespaces disabled — ClutchCode reports itself sandboxed via
+`agent doctor` and then cannot execute a single command.** The red CI was the
+symptom; the agent being inoperable on a whole class of hosts was the disease.
+
+This is the same class as the `detectKeychainBackend` gotcha already in
+`HANDOFF.md` ("reports a backend based on PATH alone, not actual
+reachability") — so it is fixed the same way, and the class was swept rather
+than the instance patched.
+
+**The fix.** `detectBwrapUsable()` in `tier1-linux.ts` actually runs bwrap
+(`/bin/true` under the real namespace flags) and checks its exit status,
+memoized per PATH value since it forks. Crucially the probe's namespace flags
+are a **shared constant** with `buildBwrapSpawn`, not a copy — a probe that
+unshares less than the real spawn would pass where the real spawn fails, which
+is the exact failure being fixed — and a test asserts the overlap so the two
+cannot drift. `detectSandboxBackend` now decides on the probe, and falls back
+to Tier 0 with a `reason` that names the real cause. `detectBwrapOnPath` is
+kept and still exported: "is it installed at all?" is still the right question
+for an install-it-first diagnostic, it just must not be a *capability*
+decision.
+
+Class sweep, all four call sites moved to the probe:
+`tier1.ts` (production), `tier1-linux.test.ts`, `seccomp-linux.test.ts`,
+`shell.test.ts`, plus `agent-api/src/agent.test.ts`'s Tier 1 guard, which the
+relayed diagnosis had not identified. The duplicated `detectPython3OnPath`
+presence guard (two copies, two packages) became a real `python3 -c "print(1)"`
+run in both, and `search.test.ts` gained a real `rg --version` guard. Two
+siblings were found and deliberately **not** changed, with reasons:
+`detectSecretToolOnPath` degrades gracefully (a failed `keychainGet` returns
+undefined and `loadCredentials` falls through to env vars — checked, not
+assumed) and is already documented; `detectSandboxExecOnPath` (macOS) and
+`detectPowerShellOnPath` (Windows) have the same shape but **cannot be verified
+in this environment**, so adding an unexercised probe there would be exactly the
+"silence implying completeness" this project treats as a defect. Recorded as a
+row instead.
+
+ci.yml now installs `ripgrep`, asserts `command -v rg` (so a skip can never
+quietly cost coverage there), and replaces "verify present" with a step that
+runs the real bwrap probe and *reports* whether this runner can confine —
+informational, not fatal, since a hosted runner legitimately cannot.
+
+**Verified, and how.**
+
+- **Live before/after on the same reproduction script.** Before: backend
+  `bwrap`, `echo` exits 1 with no output — the agent is inoperable. After:
+  backend `none` with the reason `bubblewrap is installed but cannot confine on
+  this host (bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted) …
+  falling back to Tier 0`, and the same `echo` exits **0** with
+  `hello-from-the-agent`. And on this dev container, where bwrap genuinely
+  works, it still selects `bwrap` — the confinement is not weakened to buy a
+  green CI.
+- **Discrimination, done behaviorally rather than by stashing.** Stashing a
+  *new* function only produces an import error, which proves little, so the
+  probe body was instead reverted to pre-fix semantics (presence ⇒ capability)
+  in place: **2 of the new tests fail**, 13 pass; restored, 15/15 pass. The
+  failing one is the test that builds a real incapable `bwrap` and asserts the
+  presence check is fooled while the probe is not.
+- **No silent coverage loss** — the thing most likely to go wrong with a
+  "make CI green" change. `packages/sandbox` + the shell/search suites report
+  **86 passed, 0 skipped** on this host: every real confinement, seccomp and
+  ripgrep test still actually runs here. A regression that made them all skip
+  would also fail the "reports usable on this host" assertion.
+- Full gate: 774 tests (up from 770), 83 files, `tsc -b`, `vitest run`,
+  `eslint .` all clean.
+
+**What this does NOT prove.** CI itself has not been observed green — that
+needs an actual run against this branch, which happens after the push. The
+prediction is that the bwrap suites skip on the runner and the ripgrep ones
+pass; if a run still comes back red, this entry is the starting point, not the
+conclusion. Nothing here should be recorded as "CI works" until a green run
+exists.

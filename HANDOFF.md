@@ -15,31 +15,23 @@ adaptation layer (capability probe §4.9, context budgeter §4.5, edit-format
 selector §4.4) is wired into the live loop; workflow engine §8.1/§8.2, VS Code
 §18.5, credentials §5.1, sandbox Tier 1 §12.5/§12.6 and the §16 eval scoreboard
 landed early.
-**Test suite (locally):** 770/770 passing, 83 test files, clean `tsc -b`, clean
-`eslint .`
-**CI — RUNNING, AND RED. The previous snapshot's claim here was false; this
-block replaces it.** The old text said CI had "not yet been observed running",
-that the API reported `0` registered workflows and `0` check runs, and that
-Actions was probably disabled for the repo. All three are wrong. Verified
-directly against the GitHub API this session: workflow `CI` (id `346002960`) is
-registered and `active`, and it has run **9 times** — 6 failures, 3 cancelled,
-**0 successes**, including two `push` runs on `main` itself (run #3 at
-`80d374c`, run #7 at `4633f7d`). So **`main` is red, not just the PR**, and has
-been since CI was added.
-Root cause, read off the actual job logs (identical on Node 20 and 22):
-**16 tests fail across 4 files**, and one line explains almost all of them —
-`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`. bwrap *is*
-installed (ci.yml installs it and verifies `command -v bwrap`) and does start;
-it dies setting up the loopback interface under `--unshare-net`, which a GitHub
-Actions runner does not permit. The guards that decide whether to run those
-tests (`detectBwrapOnPath`, `detectPython3OnPath`) check **PATH presence, not
-capability** — the exact class already documented below for
-`detectKeychainBackend` — so the tests run instead of skipping. Separately,
-`packages/tools/src/tools/search.test.ts`'s 3 tests fail for a plainer reason:
-ci.yml installs bubblewrap/libsecret/gnome-keyring but **not ripgrep**, and the
-search tool correctly reports `search-backend-unavailable` without it.
-Being fixed now (see the `DO FIRST` row). Do not record CI as working until a
-run is actually observed green.
+**Test suite (locally):** 774/774 passing, 83 test files, clean `tsc -b`, clean
+`eslint .` — and **0 skipped**: bwrap genuinely confines in this dev container,
+so every real Tier 1/seccomp test still runs here.
+**CI — was red on `main`; the cause is fixed, a green run has NOT yet been
+observed.** An earlier snapshot claimed CI had "not yet been observed running"
+and that Actions was probably disabled. That was false: workflow `CI` (id
+`346002960`) is registered and `active` and had run **9 times with 0 successes**
+— including two `push` runs on `main` (`80d374c`, `4633f7d`). Root cause (read
+off the job logs, 16 tests failing across 4 files, both causes now fixed):
+`detectSandboxBackend`/the sandbox test guards decided capability from **PATH
+presence**, so on a runner — where bwrap installs fine but `--unshare-net` dies
+with `loopback: Failed RTM_NEWADDR: Operation not permitted` — the suites ran
+instead of skipping; and ci.yml never installed **ripgrep**, which the `search`
+tool *is*. Both fixed (`detectBwrapUsable`, and ripgrep in ci.yml). **Do not
+record CI as working until an actually-green run is observed** — that can only
+happen after this push.
+
 **Note:** the "what's done" history moved to `docs/PROJECT_LOG.md`; this file is
 kept short on purpose. Append your entry there, not here.
 
@@ -85,7 +77,9 @@ loose "MVP" estimate.
 
 | Item | Spec ref | Rough effort | Notes |
 |---|---|---|---|
-| **CI is red — on `main`, not just the PR** | §16.3c/§12.6, A11 | small–medium, **DO FIRST** | See the corrected CI block in the snapshot header for the evidence. Two independent causes, both real: **(1)** the bwrap-dependent suites (`tier1-linux.test.ts`, `seccomp-linux.test.ts`, and `shell.test.ts`'s §12.6 block) *run* on a GitHub runner instead of skipping, because `detectBwrapOnPath`/`detectPython3OnPath` prove the binary is **on PATH**, not that it can actually confine anything — and on a runner `bwrap --unshare-net` dies with `loopback: Failed RTM_NEWADDR: Operation not permitted`. This is the same class as the `detectKeychainBackend` gotcha below, so the fix is a guard that proves bwrap *works* (a real smoke-test spawn whose exit status is checked), and a grep for every other `detect*OnPath`-shaped guard making the same presence-implies-capability assumption. **(2)** `search.test.ts` fails because ci.yml installs bubblewrap/libsecret/gnome-keyring but **not ripgrep**. Note the fix must keep these tests *real* where the binary genuinely works (this dev container does confine for real — that coverage is load-bearing and must not be weakened into a mock to get CI green). |
+| Confirm CI actually goes green | — | small, **DO FIRST** | The two causes of the red are fixed and pushed (`detectBwrapUsable` + ripgrep in ci.yml); what is *not* done is observing a green run. Check the latest run on this branch. Expected: the bwrap confinement/seccomp suites **skip** on the runner (honest — a hosted runner cannot create those namespaces) while everything else passes. If it is still red, read the job log before changing anything: the fix predicts a specific outcome and a different failure means a different cause. Then consider whether §12.6's confinement coverage should be proven somewhere CI *can* run it (a self-hosted or privileged-container runner), since skipping means CI no longer proves the sandbox works — this dev container still does, on every local run. |
+| macOS/Windows siblings of the PATH-presence bug | §12.5, A11 | small, **needs a macOS/Windows host** | `detectSandboxExecOnPath` (macOS) and `detectPowerShellOnPath` (Windows) decide capability from PATH presence, exactly like the bwrap bug just fixed. They are *not* fixed, deliberately: neither can be exercised here, and shipping an unverified probe for them would be the "silence implying completeness" this project treats as a defect. `detectSecretToolOnPath` shares the shape but degrades gracefully (a failed `keychainGet` falls through to env vars — checked) and is already documented in the gotchas. |
+
 | `agent eval` in the CLI — **needs a §20 boundary decision, do not just wire it** | §18.2/§16.3b | small, **gated** | The scoreboard ships as its own `clutchcode-eval` bin because §20's dependency rule ("`apps/*` depend only on `agent-api`") is normative and §20's layout puts the scoreboard in `evals/`. Adding `agent eval` to `apps/cli` means either (a) `apps/cli` depends on `evals` — a boundary violation "regardless of whether it compiles" — or (b) the runner moves behind `agent-api`, which bloats the boundary package with benchmark machinery. Pick one deliberately, in an ADR or a spec amendment, before implementing. |
 | The naked-vs-harness A/B — the actual North Star claim | §16.4 | medium | The scoreboard measures the **ClutchCode arm** only. §16.4's claim ("a 14B model under ClutchCode materially beats the same model naked") needs the **naked arm**: one model call, the task plus file contents, whole-file output applied directly, no repair loop, no verification feedback — then the same held-out oracle, and a published VTCR *delta* with confidence intervals over K seeds. Until this exists **no VTCR delta may be quoted**, and `docs/EVAL_METHODOLOGY.md` §7 says so. Also queued with it: K-seed repetition (the runner executes a suite once today). |
 | SWE-bench Verified subset + Terminal-Bench adapters | §16.3a | medium–large | §16.3a bullets 1 and 2. The `evals/suite/<id>/{repo,oracle,solution}` task format is the intended adapter target and is not Node/Python-specific. Blocked on infrastructure rather than design: SWE-bench Verified needs dataset fetching and per-instance container images, which an offline local-first harness does not currently take on. Do not fake it with a hand-copied slice — the value is in the real, citable instances. |
@@ -157,6 +151,24 @@ loose "MVP" estimate.
   keychain lookup with nothing stored, no session bus, etc.) needs
   `stdio: ["ignore"|"pipe", "pipe", "ignore"]` explicitly, or its stderr
   text shows up uninvited in every test run and every real agent run.
+- **A binary being on PATH does not mean it can do its job — and for
+  `bwrap` that mistake made the agent inoperable, not just noisy.**
+  `detectSandboxBackend` used to answer "is there a file named `bwrap` on
+  PATH". On a host where bwrap installs fine but cannot create namespaces
+  (a GitHub Actions runner, an unprivileged container, unprivileged
+  user namespaces disabled) it reported `backend: "bwrap"`, every shell
+  command was then wrapped in bwrap, and every one died with `bwrap:
+  loopback: Failed RTM_NEWADDR: Operation not permitted`, exit 1, no
+  output — while `agent doctor` claimed the run was sandboxed. Fixed by
+  `detectBwrapUsable`, which actually runs bwrap and checks its exit
+  status. Two general lessons worth keeping: **(a)** a capability probe
+  must exercise the *same* capability the real call does — the probe
+  shares its `--unshare-*` flags with `buildBwrapSpawn` as one constant,
+  because a probe that unshares less passes exactly where the real spawn
+  fails; **(b)** when a guard like this is wrong, grep every call site
+  before calling it fixed — this one had five, in four packages, and the
+  diagnosis that surfaced it had only spotted two of them.
+
 - **`detectKeychainBackend` reports a backend based on PATH alone, not
   actual reachability.** On this dev container `secret-tool` is always on
   PATH, so the backend is always `"secret-service"` even with no D-Bus

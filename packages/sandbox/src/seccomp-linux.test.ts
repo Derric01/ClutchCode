@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { buildBwrapSpawn, detectBwrapOnPath } from "./tier1-linux.js";
+import { buildBwrapSpawn, detectBwrapUsable } from "./tier1-linux.js";
 import { DENIED_SYSCALLS_X86_64, buildSeccompFilterX86_64, detectSeccompSupport, ensureSeccompFilterFile } from "./seccomp-linux.js";
 
 describe("detectSeccompSupport", () => {
@@ -94,15 +94,26 @@ describe("ensureSeccompFilterFile", () => {
  * dev/CI Python — used here purely as a precise raw-syscall probe, the
  * same role `bwrap` itself plays for the namespace-confinement tests;
  * neither is a runtime dependency of the feature itself, only of proving
- * it). Skips itself if `bwrap` or a `python3` genuinely aren't on PATH,
- * rather than faking success — same convention as `tier1-linux.test.ts`.
+ * it). Skips itself when `bwrap` or `python3` genuinely can't do the job
+ * here, rather than faking success — same convention as
+ * `tier1-linux.test.ts`.
  */
-function detectPython3OnPath(): boolean {
-  const pathDirs = (process.env.PATH ?? "").split(":").filter(Boolean);
-  return pathDirs.some((dir) => fs.existsSync(`${dir}/python3`));
+
+/**
+ * Capability, not presence — the same lesson as `detectBwrapUsable` (and,
+ * before it, `detectKeychainBackend`): actually run the thing. A copy of
+ * this guard lives in `packages/tools/src/tools/shell.test.ts`, which needs
+ * the identical check from another package; keep the two in step.
+ */
+function detectPython3Usable(): boolean {
+  const proc = spawnSync("python3", ["-c", "print(1)"], { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] });
+  return !proc.error && proc.status === 0;
 }
 
-const canRunRealTest = detectBwrapOnPath() && detectPython3OnPath() && detectSeccompSupport().supported;
+// `detectBwrapUsable`, not `detectBwrapOnPath`: bwrap being installed does
+// not mean it can confine, and on a host where it can't these tests used to
+// run and fail instead of skipping. See `tier1-linux.ts`.
+const canRunRealTest = detectBwrapUsable().usable && detectPython3Usable() && detectSeccompSupport().supported;
 const maybeIt = canRunRealTest ? it : it.skip;
 
 describe("seccomp filter under real bwrap — actual kernel enforcement, not mocked", () => {

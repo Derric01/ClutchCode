@@ -1,5 +1,6 @@
 import fs from "node:fs";
-import { detectBwrapOnPath, detectSeccompSupport } from "@clutchcode/sandbox";
+import { spawnSync } from "node:child_process";
+import { detectBwrapUsable, detectSeccompSupport } from "@clutchcode/sandbox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeTempWorkspace, makeTestContext } from "../test-helpers.js";
 import { commandClassOf, shellTool } from "./shell.js";
@@ -119,14 +120,25 @@ describe("commandClassOf (§12.2 remembered-decision key)", () => {
  * `shellTool` end to end — not just `tier1-linux.ts`'s own unit tests —
  * against a real bwrap+kernel, same convention as the rest of this
  * package's sandbox tests. Skips itself if `bwrap`/`python3` genuinely
- * aren't on PATH, or this isn't x86_64, rather than faking success.
+ * genuinely can't do the job here, or this isn't x86_64, rather than
+ * faking success.
  */
-function detectPython3OnPath(): boolean {
-  const pathDirs = (process.env.PATH ?? "").split(":").filter(Boolean);
-  return pathDirs.some((dir) => fs.existsSync(`${dir}/python3`));
+/**
+ * Capability, not presence — see `detectBwrapUsable` in
+ * `@clutchcode/sandbox`. A copy of this guard lives in that package's
+ * `seccomp-linux.test.ts`, which needs the identical check; keep the two
+ * in step.
+ */
+function detectPython3Usable(): boolean {
+  const proc = spawnSync("python3", ["-c", "print(1)"], { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] });
+  return !proc.error && proc.status === 0;
 }
 
-const canRunSeccompTest = detectBwrapOnPath() && detectPython3OnPath() && detectSeccompSupport().supported;
+// `detectBwrapUsable`, not `detectBwrapOnPath`: a bwrap that is installed
+// but cannot create namespaces (CI runners, unprivileged containers) used
+// to make these tests run and fail rather than skip — the cause of this
+// repo's CI being red on `main`.
+const canRunSeccompTest = detectBwrapUsable().usable && detectPython3Usable() && detectSeccompSupport().supported;
 const maybeIt = canRunSeccompTest ? it : it.skip;
 
 describe("shell tool under a real bwrap + seccomp sandbox context (§12.6)", () => {

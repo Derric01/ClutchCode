@@ -2,8 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { describe, expect, it } from "vitest";
-import { buildBwrapSpawn, detectBwrapOnPath } from "./tier1-linux.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { buildBwrapProbeArgs, buildBwrapSpawn, detectBwrapOnPath, detectBwrapUsable, resetBwrapProbeCache } from "./tier1-linux.js";
 
 describe("detectBwrapOnPath", () => {
   it("finds a real binary on PATH (this repo's dev container has bubblewrap installed)", () => {
@@ -14,6 +14,57 @@ describe("detectBwrapOnPath", () => {
 
   it("returns false when PATH has no bwrap", () => {
     expect(detectBwrapOnPath({ PATH: "/definitely/not/a/real/dir" })).toBe(false);
+  });
+});
+
+describe("detectBwrapUsable — capability, not presence", () => {
+  afterEach(() => resetBwrapProbeCache());
+
+  it("probes with the same namespace flags the real spawn uses, so it can't test weaker isolation", () => {
+    // The whole point of the probe is that it fails wherever the real
+    // spawn would. If these two ever diverge it silently stops proving
+    // anything, so the overlap is asserted rather than assumed.
+    const probeArgs = buildBwrapProbeArgs();
+    const realArgs = buildBwrapSpawn({ workspaceRoot: "/tmp/ws", cwd: "/tmp/ws", command: "true", homeDir: "/home/sandboxed" }).args;
+    for (const flag of ["--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-net", "--unshare-cgroup"]) {
+      expect(probeArgs, `probe is missing ${flag}`).toContain(flag);
+      expect(realArgs).toContain(flag);
+    }
+    expect(probeArgs.at(-1)).toBe("/bin/true");
+  });
+
+  it("reports usable on this host, where bwrap really can confine", () => {
+    const probe = detectBwrapUsable();
+    expect(probe.usable).toBe(true);
+    expect(probe.reason).toMatch(/successfully created a confined namespace/);
+  });
+
+  it("reports NOT usable when bwrap is on PATH but cannot actually confine", () => {
+    // The bug this whole probe exists for, reproduced: a `bwrap` that is
+    // present and executable but fails exactly the way a GitHub Actions
+    // runner's does. `detectBwrapOnPath` says yes; the probe must say no,
+    // and must carry the real reason rather than a generic one.
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "clutchcode-fake-bwrap-"));
+    try {
+      const stub = path.join(fakeBin, "bwrap");
+      fs.writeFileSync(stub, "#!/bin/sh\necho 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted' >&2\nexit 1\n", "utf8");
+      fs.chmodSync(stub, 0o755);
+
+      const env = { PATH: `${fakeBin}:/usr/bin:/bin` };
+      expect(detectBwrapOnPath(env)).toBe(true); // presence check is fooled...
+      const probe = detectBwrapUsable(env); // ...the capability probe is not.
+      expect(probe.usable).toBe(false);
+      expect(probe.reason).toMatch(/cannot confine on this host/);
+      expect(probe.reason).toMatch(/RTM_NEWADDR/);
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it("reports NOT usable, without spawning anything, when bwrap isn't installed at all", () => {
+    const probe = detectBwrapUsable({ PATH: "/definitely/not/a/real/dir" });
+    expect(probe.usable).toBe(false);
+    expect(probe.reason).toMatch(/not found on PATH/);
   });
 });
 
@@ -57,8 +108,15 @@ describe("buildBwrapSpawn", () => {
 });
 
 describe("buildBwrapSpawn — real confinement, run against the actual bwrap binary", () => {
-  const hasBwrap = detectBwrapOnPath();
-  const maybeIt = hasBwrap ? it : it.skip;
+  // `detectBwrapUsable`, not `detectBwrapOnPath`: on a host where bwrap is
+  // installed but cannot create namespaces (a GitHub Actions runner, an
+  // unprivileged container) the presence check said yes and every test
+  // below then failed with `bwrap: loopback: Failed RTM_NEWADDR` instead of
+  // skipping. That is what kept this repo's CI red on `main`. These tests
+  // still run for real wherever bwrap genuinely works — including this dev
+  // container, where the assertion above proves the probe returns usable,
+  // so a regression that made everything skip would itself fail.
+  const maybeIt = detectBwrapUsable().usable ? it : it.skip;
 
   let workspaceRoot: string;
   let outsideFile: string;

@@ -12,7 +12,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=for-the-badge)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-720%20passing-brightgreen?style=for-the-badge)](#-what-were-actually-sure-of)
+[![Tests](https://img.shields.io/badge/tests-774%20passing-brightgreen?style=for-the-badge)](#-what-were-actually-sure-of)
 
 [![Stars](https://img.shields.io/github/stars/Derric01/ClutchCode?style=flat-square&color=f5c518)](https://github.com/Derric01/ClutchCode/stargazers)
 [![Forks](https://img.shields.io/github/forks/Derric01/ClutchCode?style=flat-square)](https://github.com/Derric01/ClutchCode/network/members)
@@ -279,8 +279,8 @@ No invented benchmarks here. The eval scoreboard now exists — **but no VTCR nu
 
 | Claim | How it's proven |
 |---|---|
-| **770 tests, 83 files** | `pnpm test`. Real git repos, real shells, real filesystems — `FakeProvider` stubs *only* the model. |
-| **Sandbox actually confines** | A test writes outside the workspace, then asserts a sandboxed `cat` of it fails. Network fetch inside the sandbox asserted unreachable. |
+| **774 tests, 83 files** | `pnpm test`. Real git repos, real shells, real filesystems — `FakeProvider` stubs *only* the model. |
+| **Sandbox actually confines** | A test writes outside the workspace, then asserts a sandboxed `cat` of it fails. Network fetch inside the sandbox asserted unreachable. These run for real wherever bwrap can genuinely create namespaces (this project's dev container can); where it can't — a hosted CI runner, an unprivileged container — they skip and ClutchCode falls back to Tier 0 **and says so**, rather than claiming a confinement it isn't getting. |
 | **Seccomp actually blocks** | Each denied syscall invoked by number inside real bwrap → `EPERM`, with an unfiltered control run proving the syscall otherwise succeeds. |
 | **Secrets don't leak** | A canary secret injected into a full recorded run, asserted absent from every transcript, event log and artifact. |
 | **Cheat detection works** | A recorded run where the model deletes an assertion — verification goes green, completion is blocked anyway. |
