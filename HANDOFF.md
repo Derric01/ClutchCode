@@ -7,7 +7,7 @@ file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-09-01
 **Branch:** `claude/start-work-handoff-referral-52eyj1`
-**Latest commit:** `4684d8a` — "feat(evals): the §16 eval suite and per-model scoreboard, and a cheat detector blind to `assert.strictEqual`"
+**Latest commit:** `8788697` — "fix(sandbox): decide Tier 1 by probing bwrap, not by finding it on PATH — and unbreak CI"
 **Phase:** Phase 1 shipped (§21) — one agent, one default workflow, three provider
 adapters, SEARCH/REPLACE edits with fallback, worktree isolation, deterministic
 verification with cheat detection, terminal CLI. **Phase 2 in progress:** the
