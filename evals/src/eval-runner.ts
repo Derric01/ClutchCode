@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 
 import { Agent, markTrusted, type Budgets, type ProviderKind, type RunState } from "@clutchcode/agent-api";
 
-import { materializeTaskRepo, runOracle, type EvalTask } from "./eval-task.js";
+import { checkTaskRequirements, materializeTaskRepo, runOracle, type EvalTask } from "./eval-task.js";
 import { makeTempDir } from "./fixture-repo.js";
 import { computeScoreboard, summarizeRun, type EvalTaskResult, type Scoreboard } from "./scoreboard.js";
 
@@ -84,6 +84,42 @@ export async function runEvalTask(task: EvalTask, opts: RunEvalOptions): Promise
   };
 
   const startedAt = Date.now();
+
+  // A missing interpreter or linter says nothing about the agent, so a
+  // task whose declared requirements aren't usable here is refused up
+  // front and reported as a run-level error rather than run and scored
+  // unsolved — which would silently depress VTCR for an environment
+  // reason. `checkTaskRequirements` runs each binary; it does not merely
+  // look for it on PATH.
+  const requirements = checkTaskRequirements(task);
+  if (!requirements.ok) {
+    const result: EvalTaskResult = {
+      taskId: task.id,
+      category: task.category,
+      language: task.language,
+      runId: "",
+      status: "FAILED",
+      gateGreen: false,
+      cheatFlags: 0,
+      claimedDone: false,
+      oraclePassed: false,
+      verified: false,
+      editAttempts: 0,
+      editsApplied: 0,
+      neededHuman: false,
+      readAnySolutionPath: false,
+      tokens: 0,
+      costUsd: 0,
+      wallclockMs: 0,
+      steps: 0,
+      repairIterations: 0,
+      oracleExitCode: null,
+      error: `not run: this host is missing ${requirements.missing.join(", ")} (declared in the task's "requires")`
+    };
+    opts.onTaskResult?.(result);
+    return { result };
+  }
+
   try {
     materializeTaskRepo(task, repoPath);
     trustAndCommit(repoPath);

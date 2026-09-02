@@ -55,6 +55,16 @@ export interface EvalTask {
    * entirely of `red` tasks would silently overstate VTCR.
    */
   startingGate: "red" | "green";
+  /**
+   * Binaries this task genuinely cannot run without — its toolchain
+   * (`pytest`, `ruff`) or its oracle's interpreter. Checked by actually
+   * **running** each one, not by looking for it on PATH: the same lesson
+   * `detectBwrapUsable` exists for. A task whose requirements aren't met is
+   * skipped by the validity test and refused by the runner, rather than
+   * scored as a failure the model caused — a missing interpreter says
+   * nothing about the agent.
+   */
+  requires: string[];
   /** argv for the held-out check, run from the delivered repository's root. No shell: the array is exec'd directly. */
   oracleCommand: string[];
   /** Absolute path to the task directory this was loaded from. */
@@ -119,6 +129,13 @@ export function parseTaskJson(raw: unknown, dir: string): EvalTask {
     return p;
   });
 
+  const requiresRaw = o.requires ?? [];
+  if (!Array.isArray(requiresRaw)) fail(source, `"requires" must be an array of binary names when present`);
+  const requires = requiresRaw.map((r, i) => {
+    if (typeof r !== "string" || !/^[A-Za-z0-9._-]+$/.test(r)) fail(source, `requires[${i}] must be a bare binary name`);
+    return r as string;
+  });
+
   const startingGate = str("startingGate");
   if (startingGate !== "red" && startingGate !== "green") fail(source, `"startingGate" must be "red" or "green", got "${startingGate}"`);
 
@@ -143,6 +160,7 @@ export function parseTaskJson(raw: unknown, dir: string): EvalTask {
     description: str("description"),
     prompt: str("prompt"),
     solutionPaths,
+    requires,
     startingGate,
     oracleCommand,
     dir
@@ -225,6 +243,36 @@ export function applyReferenceSolution(task: EvalTask, repoPath: string): void {
  * overwriting anything the agent happened to create at the same path,
  * which is deliberate: the held-out check always wins.
  */
+export interface RequirementCheck {
+  ok: boolean;
+  /** Binaries that are missing or could not be executed. */
+  missing: string[];
+}
+
+/**
+ * Are this task's declared requirements actually usable here?
+ *
+ * Runs `<binary> --version` rather than looking for the file on PATH —
+ * a binary being present does not mean it works (this repo learned that
+ * the expensive way with bwrap, see `detectBwrapUsable`). Results are
+ * memoized per binary since a suite re-asks the same question per task.
+ */
+const requirementCache = new Map<string, boolean>();
+
+export function checkTaskRequirements(task: EvalTask): RequirementCheck {
+  const missing: string[] = [];
+  for (const bin of task.requires) {
+    let usable = requirementCache.get(bin);
+    if (usable === undefined) {
+      const proc = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] });
+      usable = !proc.error && proc.status === 0;
+      requirementCache.set(bin, usable);
+    }
+    if (!usable) missing.push(bin);
+  }
+  return { ok: missing.length === 0, missing };
+}
+
 export function runOracle(task: EvalTask, repoPath: string): OracleResult {
   copyTree(path.join(task.dir, "oracle"), repoPath);
 

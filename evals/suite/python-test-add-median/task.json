@@ -7,6 +7,11 @@
   "solutionPaths": [
     "tests/test_median.py"
   ],
+  "requires": [
+    "pytest",
+    "ruff",
+    "python3"
+  ],
   "startingGate": "green",
   "oracle": {
     "command": [

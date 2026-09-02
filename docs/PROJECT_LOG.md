@@ -2189,3 +2189,58 @@ prediction is that the bwrap suites skip on the runner and the ripgrep ones
 pass; if a run still comes back red, this entry is the starting point, not the
 conclusion. Nothing here should be recorded as "CI works" until a green run
 exists.
+
+### Host-honest eval requirements, and tests that stopped asserting facts about the dev container
+
+**Context.** The previous entry fixed `detectBwrapUsable` so *production* decides
+Tier 1 by probing rather than by finding `bwrap` on PATH. That left the same
+mistake in two other places, which is exactly the "fix the class, not the
+instance" case `CLAUDE.md` calls out: the §16 eval suite decided a task was
+runnable by assuming its toolchain existed, and several tests asserted **facts
+about this dev container** (`backend === "bwrap"`, `probe.usable === true`)
+rather than facts about the code. Both are the same error — treating "this host
+happens to have X" as an invariant.
+
+**What was built.**
+
+- **`requires: string[]` on `EvalTask`** (`eval-task.ts`), parsed and validated
+  in `parseTaskJson` (bare binary names only, `/^[A-Za-z0-9._-]+$/`). The one
+  Python task declares `["pytest", "ruff", "python3"]`.
+- **`checkTaskRequirements()`** — runs `<bin> --version` and checks the exit
+  status; it does not stat PATH. Memoized per binary, since a suite re-asks the
+  same question once per task.
+- **`runEvalTask` refuses** a task whose requirements are unusable, returning a
+  run-level `error` instead of running it and scoring it unsolved. This matters
+  for the metric, not just tidiness: a missing interpreter says nothing about
+  the agent, and scoring it as a failure would silently depress VTCR for an
+  environment reason.
+- **The validity test skips** such a task, naming the missing binaries in the
+  test title rather than failing opaquely.
+- **`ci.yml`** installs `pytest`/`ruff` and asserts both actually run, so a skip
+  on CI is caught rather than quietly costing coverage.
+- **Three test files stopped asserting host facts** (`tier1.test.ts`,
+  `tier1-linux.test.ts`, `apps/cli/src/commands.test.ts`). The replacement
+  invariant is that the probe's verdict **matches directly executing `bwrap`**
+  on whichever host runs the suite — which catches a probe stuck always-true
+  (the original bug) *and* one stuck always-false (which would silently disable
+  Tier 1 for everyone). `doctor`'s tests likewise now assert it reports what
+  detection found, not a hard-coded `"bwrap"`.
+
+**Verified, and how.**
+
+- **The probe discriminates, re-proven independently of the suite** rather than
+  taken on the previous round's word. Three real scenarios through the compiled
+  module: a real host (`usable: true`, "successfully created a confined
+  namespace"); a **real fake `bwrap`** on PATH that exits 1 with `No permissions
+  to creating new namespace` (`usable: false`, "installed but cannot confine on
+  this host … common on CI runners"); and no `bwrap` at all (`usable: false`,
+  "not found on PATH"). The middle case is the CI failure mode reproduced
+  directly.
+- Full gate: `tsc -b` clean, **774/774 passing across 83 files**, `eslint .`
+  clean.
+
+**What this does NOT prove.** Still no observed-green CI run — the same caveat
+as the previous entry, and it remains the open item. The pytest/ruff install
+step in `ci.yml` has never executed on a runner; if it is wrong, the Python
+task will skip on CI rather than fail, which the "assert they are present" step
+is there to catch. Treat the first real run as the test of this, not this entry.

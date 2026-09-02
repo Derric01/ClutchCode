@@ -47,6 +47,16 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             bubblewrap libsecret-tools gnome-keyring dbus-x11 ripgrep
 
+      # The §16 eval suite's Python task declares `requires: [pytest, ruff,
+      # python3]` and is graded by running them for real. Without them the
+      # suite-validity test skips that task honestly rather than failing —
+      # but skipping on CI would cost real coverage, so they are installed
+      # here and asserted below.
+      - name: Install the eval suite's Python toolchain
+        run: |
+          python3 -m pip install --user --quiet pytest ruff
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       # `command -v` proves the binary is on PATH; it does NOT prove the
       # binary can do its job. bwrap in particular installs fine on a runner
       # and then cannot create namespaces, which is exactly the mistake
@@ -61,6 +71,8 @@ jobs:
           command -v gnome-keyring-daemon
           command -v dbus-run-session
           command -v rg
+          pytest --version
+          ruff --version
           echo "--- can bwrap actually confine on this runner? ---"
           if bwrap --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /lib /lib \
                --proc /proc --dev /dev --unshare-pid --unshare-ipc --unshare-uts \

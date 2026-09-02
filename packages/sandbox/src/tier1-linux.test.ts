@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildBwrapProbeArgs, buildBwrapSpawn, detectBwrapOnPath, detectBwrapUsable, resetBwrapProbeCache } from "./tier1-linux.js";
 
@@ -33,10 +33,22 @@ describe("detectBwrapUsable — capability, not presence", () => {
     expect(probeArgs.at(-1)).toBe("/bin/true");
   });
 
-  it("reports usable on this host, where bwrap really can confine", () => {
+  it("agrees with what a directly-executed bwrap actually does on this host", () => {
+    // Deliberately NOT "this host can confine" — that is a fact about the
+    // machine, not about the code, and asserting it made CI fail on a
+    // runner where bwrap legitimately cannot confine. What must hold
+    // everywhere is that the probe's verdict matches reality: run bwrap
+    // ourselves and compare. This catches a probe stuck at always-true
+    // (the original bug) and one stuck at always-false (which would
+    // silently disable Tier 1 for everyone) on whichever host runs it.
     const probe = detectBwrapUsable();
-    expect(probe.usable).toBe(true);
-    expect(probe.reason).toMatch(/successfully created a confined namespace/);
+    if (!detectBwrapOnPath()) {
+      expect(probe.usable).toBe(false);
+      return;
+    }
+    const direct = spawnSync("bwrap", buildBwrapProbeArgs(), { stdio: ["ignore", "pipe", "pipe"] });
+    expect(probe.usable).toBe(direct.status === 0);
+    expect(probe.reason).toMatch(probe.usable ? /successfully created a confined namespace/ : /cannot confine on this host|could not be executed/);
   });
 
   it("reports NOT usable when bwrap is on PATH but cannot actually confine", () => {
@@ -114,8 +126,9 @@ describe("buildBwrapSpawn — real confinement, run against the actual bwrap bin
   // below then failed with `bwrap: loopback: Failed RTM_NEWADDR` instead of
   // skipping. That is what kept this repo's CI red on `main`. These tests
   // still run for real wherever bwrap genuinely works — including this dev
-  // container, where the assertion above proves the probe returns usable,
-  // so a regression that made everything skip would itself fail.
+  // container. The cross-check above is what stops a skip here from hiding
+  // a broken probe: it fails if the probe's verdict ever disagrees with
+  // directly executing bwrap on this same host.
   const maybeIt = detectBwrapUsable().usable ? it : it.skip;
 
   let workspaceRoot: string;

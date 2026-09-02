@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { execFileSync } from "node:child_process";
-import { detectKeychainBackend, markTrusted } from "@clutchcode/agent-api";
+import { detectKeychainBackend, detectSandboxBackend, markTrusted } from "@clutchcode/agent-api";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   cmdApprove,
@@ -125,20 +125,36 @@ describe("CLI commands (pure functions, no process spawning)", () => {
     expect(result.output).not.toContain("sk-");
   });
 
-  it("doctor reports the real, detected sandbox backend (bubblewrap is installed in this dev container)", async () => {
+  // These two assert that `doctor` reports **what detection actually
+  // found**, not that this particular machine has bubblewrap. They used to
+  // assert the latter, which only ever passed because sandbox detection was
+  // presence-based and therefore wrong — on a host where bwrap is installed
+  // but cannot confine, it claimed "bwrap" and every sandboxed command then
+  // failed. With detection made honest, hard-coding "bwrap" here would just
+  // be re-asserting the bug from the other side.
+  it("doctor reports the real, detected sandbox backend rather than a fabricated one", async () => {
     const result = await cmdDoctor({ repoPath, json: true });
     const parsed = JSON.parse(result.output) as { checks: Array<{ name: string; ok: boolean; detail: string }> };
     const sandbox = parsed.checks.find((c) => c.name.startsWith("sandbox"));
-    expect(sandbox?.ok).toBe(true);
-    expect(sandbox?.detail).toMatch(/^bwrap/);
+    const detected = detectSandboxBackend();
+    expect(sandbox).toBeDefined();
+    expect(sandbox!.ok).toBe(detected.backend !== "none");
+    expect(sandbox!.detail).toMatch(new RegExp(`^${detected.backend}`));
   });
 
-  it("doctor reports seccomp hardening (§12.6) as supported on this x86_64 Linux container", async () => {
+  it("doctor reports seccomp hardening (§12.6) consistently with the detected backend", async () => {
     const result = await cmdDoctor({ repoPath, json: true });
     const parsed = JSON.parse(result.output) as { checks: Array<{ name: string; ok: boolean; detail: string }> };
     const seccomp = parsed.checks.find((c) => c.name.startsWith("seccomp"));
-    expect(seccomp?.ok).toBe(true);
-    expect(seccomp?.detail).toContain("x86_64");
+    const detected = detectSandboxBackend();
+    if (detected.backend === "bwrap") {
+      // seccomp (§12.6) is a hardening layer *under* bwrap — it is only
+      // reported when there is a bwrap to layer it under.
+      expect(seccomp?.ok).toBe(detected.seccomp?.supported === true);
+      if (process.arch === "x64") expect(seccomp?.detail).toContain("x86_64");
+    } else {
+      expect(seccomp?.ok).not.toBe(true);
+    }
   });
 
   it("doctor runs real, non-fabricated checks", async () => {

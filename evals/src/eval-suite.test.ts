@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectToolchain, runPipeline } from "@clutchcode/verification";
 
-import { applyReferenceSolution, defaultSuiteDir, loadSuite, materializeTaskRepo, parseTaskJson, runOracle } from "./eval-task.js";
+import { applyReferenceSolution, checkTaskRequirements, defaultSuiteDir, loadSuite, materializeTaskRepo, parseTaskJson, runOracle } from "./eval-task.js";
 import { makeTempDir } from "./fixture-repo.js";
 
 /**
@@ -59,8 +59,18 @@ describe("eval suite validity (§16.3a)", () => {
   });
 
   for (const task of tasks) {
-    it(
-      `${task.id}: unsolved on arrival, solvable by its reference solution, and green afterwards`,
+    // A task whose toolchain genuinely isn't installed here can prove
+    // nothing — its gate would be red for reasons that have nothing to do
+    // with the task. Skip it honestly rather than either failing (which is
+    // what broke CI: the runner has no pytest) or quietly weakening the
+    // task to whatever happens to be installed. CI installs these, and
+    // asserts they are present in a separate step, so a skip there would
+    // be caught rather than silently costing coverage.
+    const requirements = checkTaskRequirements(task);
+    const maybeIt = requirements.ok ? it : it.skip;
+
+    maybeIt(
+      `${task.id}: unsolved on arrival, solvable by its reference solution, and green afterwards${requirements.ok ? "" : ` (needs: ${requirements.missing.join(", ")})`}`,
       () => {
         const pristine = path.join(makeTempDir("clutchcode-eval-validity-"), "repo");
         const solved = path.join(makeTempDir("clutchcode-eval-validity-"), "repo");

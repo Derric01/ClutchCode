@@ -8,6 +8,7 @@ export { makeFixtureRepo, makeTempDir } from "./fixture-repo.js";
 export {
   EVAL_CATEGORIES,
   applyReferenceSolution,
+  checkTaskRequirements,
   copyTree,
   defaultSuiteDir,
   loadEvalTask,
@@ -16,7 +17,7 @@ export {
   parseTaskJson,
   runOracle
 } from "./eval-task.js";
-export type { EvalCategory, EvalTask, OracleResult } from "./eval-task.js";
+export type { EvalCategory, EvalTask, OracleResult, RequirementCheck } from "./eval-task.js";
 export { DEFAULT_EVAL_BUDGETS, runEvalTask, runSuite } from "./eval-runner.js";
 export type { RunEvalOptions, RunEvalTaskResult, RunSuiteOptions } from "./eval-runner.js";
 export { computeScoreboard, formatScoreboard, summarizeRun } from "./scoreboard.js";
