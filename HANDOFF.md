@@ -5,33 +5,46 @@ session; update it before you stop. See `CLAUDE.md` for timeless working
 conventions (build/test/lint, testing philosophy, quality bar) — this
 file is the time-stamped snapshot of where the project actually stands.
 
-**Snapshot as of:** 2026-08-30
+**Snapshot as of:** 2026-09-01
 **Branch:** `claude/start-work-handoff-referral-52eyj1`
-**Latest commit:** `8477233` — "docs: recover the phase status the README cut, and give §20 a dependency diagram"
+**Latest commit:** `5ce4eba` — "fix(evals,sandbox): decide capability by running it, not by finding it — the same class, three more places"
 **Phase:** Phase 1 shipped (§21) — one agent, one default workflow, three provider
 adapters, SEARCH/REPLACE edits with fallback, worktree isolation, deterministic
 verification with cheat detection, terminal CLI. **Phase 2 in progress:** the
 adaptation layer (capability probe §4.9, context budgeter §4.5, edit-format
 selector §4.4) is wired into the live loop; workflow engine §8.1/§8.2, VS Code
-§18.5, credentials §5.1 and sandbox Tier 1 §12.5/§12.6 landed early.
-**Test suite:** 720/720 passing, 78 test files, clean `tsc -b`, clean `eslint .`
-**CI:** `.github/workflows/ci.yml` added — build/test/lint on Node 20 + 22, on
-every PR. **Not yet observed running.** Verified: the file is valid YAML, is on
-the PR branch, and is in the PR diff — but the GitHub API reports `0` registered
-workflows and `0` check runs on PR #14. This repo had no workflows before, so
-the most likely cause is that **GitHub Actions is disabled for the repository**
-(Settings → Actions → General). A human needs to enable it; the workflow itself
-cannot be confirmed green until a run actually happens. Do not record CI as
-working until a run is observed.
+§18.5, credentials §5.1, sandbox Tier 1 §12.5/§12.6 and the §16 eval scoreboard
+landed early.
+**Test suite (locally):** 774/774 passing, 83 test files, clean `tsc -b`, clean
+`eslint .` — and **0 skipped**: bwrap genuinely confines in this dev container,
+so every real Tier 1/seccomp test still runs here.
+**CI — GREEN, observed.** Run [#12](https://github.com/Derric01/ClutchCode/actions/runs/33593109279)
+at `b7970cc` is the **first successful run in this repo's history** (runs #1–#11:
+0 successes). Both matrix legs pass: `758 passed | 16 skipped (774)` across 83
+files, plus `tsc -b` and `eslint .`. The 16 skips are exactly the 16 that used
+to *fail* — the bwrap confinement/seccomp suites, which a hosted runner cannot
+create namespaces for; they skip honestly there and **all 774 still run locally**
+(0 skipped) where bwrap genuinely works. Earlier snapshots claimed CI had "not
+yet been observed running" and that Actions was probably disabled; that was
+false — the workflow was registered and had run 9 times, all red. Root causes,
+both now fixed: `detectSandboxBackend` decided Tier 1 from **PATH presence**, so
+on a runner it claimed `bwrap` and every sandboxed command then failed (a
+*production* bug, not a test bug); and ci.yml never installed **ripgrep**, which
+the `search` tool is, nor the eval suite's **pytest/ruff**.
+**Caveat worth keeping:** CI green no longer proves the sandbox confines —
+that coverage now lives only in environments where bwrap works. See the
+"Prove §12.6 confinement somewhere CI can run it" row below.
+
 **Note:** the "what's done" history moved to `docs/PROJECT_LOG.md`; this file is
 kept short on purpose. Append your entry there, not here.
 
-**PR:** [#16](https://github.com/Derric01/ClutchCode/pull/16) — **open**, carrying the
-README front-page rewrite. #4–#15 merged cleanly before it. Convention: one PR
-per phase of work, never reused once merged — #14 and #15 were each merged
-mid-session, so **check a PR's actual state before assuming pushes are landing
-on it** (`pull_request_read`, or `git merge-base --is-ancestor <head> origin/main`).
-Push work to #16's branch; open a new PR only once #16 is merged.
+**PR:** [#17](https://github.com/Derric01/ClutchCode/pull/17) — **open**, carrying the
+README banner/demo-GIF work and the stderr-leak fix. #4–#16 merged cleanly
+before it — #14, #15, and #16 were all merged *mid-session* (three times in
+one session), so **check a PR's actual state before assuming pushes are
+landing on it** (`pull_request_read`, or `git merge-base --is-ancestor
+<head> origin/main`) before every push in this convention, not just once.
+Push work to #17's branch; open a new PR only once #17 is merged.
 
 ---
 
@@ -67,8 +80,13 @@ loose "MVP" estimate.
 
 | Item | Spec ref | Rough effort | Notes |
 |---|---|---|---|
+| Prove §12.6 confinement somewhere CI *can* run it | §12.6 | medium | **New, and it is the direct cost of getting CI green.** The bwrap/seccomp suites now skip on hosted runners (16 tests), so CI no longer proves OS-level confinement works — only local runs on a bwrap-capable host do, and nothing in CI would catch a regression that broke confinement. Options, in rough order of cost: a privileged/`--cap-add` container job, a self-hosted runner, or a nested-VM job. Until one exists, treat "sandbox verified" as a claim about developer machines and this dev container, not about CI. Do not close this by loosening the skip guard — the guard is correct; the gap is the runner. |
+| macOS/Windows siblings of the PATH-presence bug | §12.5, A11 | small, **needs a macOS/Windows host** | `detectSandboxExecOnPath` (macOS) and `detectPowerShellOnPath` (Windows) decide capability from PATH presence, exactly like the bwrap bug just fixed. They are *not* fixed, deliberately: neither can be exercised here, and shipping an unverified probe for them would be the "silence implying completeness" this project treats as a defect. `detectSecretToolOnPath` shares the shape but degrades gracefully (a failed `keychainGet` falls through to env vars — checked) and is already documented in the gotchas. |
+
+| `agent eval` in the CLI — **needs a §20 boundary decision, do not just wire it** | §18.2/§16.3b | small, **gated** | The scoreboard ships as its own `clutchcode-eval` bin because §20's dependency rule ("`apps/*` depend only on `agent-api`") is normative and §20's layout puts the scoreboard in `evals/`. Adding `agent eval` to `apps/cli` means either (a) `apps/cli` depends on `evals` — a boundary violation "regardless of whether it compiles" — or (b) the runner moves behind `agent-api`, which bloats the boundary package with benchmark machinery. Pick one deliberately, in an ADR or a spec amendment, before implementing. |
+| The naked-vs-harness A/B — the actual North Star claim | §16.4 | medium, **DO FIRST** (the top genuinely-ungated row — 83 needs an infra/security-posture call on a privileged runner, 84 needs a macOS/Windows host, 86 needs a §20 boundary decision) | The scoreboard measures the **ClutchCode arm** only. §16.4's claim ("a 14B model under ClutchCode materially beats the same model naked") needs the **naked arm**: one model call, the task plus file contents, whole-file output applied directly, no repair loop, no verification feedback — then the same held-out oracle, and a published VTCR *delta* with confidence intervals over K seeds. Until this exists **no VTCR delta may be quoted**, and `docs/EVAL_METHODOLOGY.md` §7 says so. Also queued with it: K-seed repetition (the runner executes a suite once today). |
+| SWE-bench Verified subset + Terminal-Bench adapters | §16.3a | medium–large | §16.3a bullets 1 and 2. The `evals/suite/<id>/{repo,oracle,solution}` task format is the intended adapter target and is not Node/Python-specific. Blocked on infrastructure rather than design: SWE-bench Verified needs dataset fetching and per-instance container images, which an offline local-first harness does not currently take on. Do not fake it with a hand-copied slice — the value is in the real, citable instances. |
 | Landlock — **BLOCKED on the host kernel, not on us** | §12.6 | medium, blocked | **Attempted and stopped this round; read the reason before re-queueing it.** The *old* blocker ("needs either a native helper binary or a vetted raw-syscall binding — neither exists yet") is genuinely retired: **`@deepseek-ai/node-addon-landlock-run`** (BSD-3-Clause, `0.1.1`) installs clean, its `linux-x64` prebuilt is a real statically-linked ELF that runs, and its fail-closed contract is observable (a usage error exits `125` with a launcher-owned fatal line). **A different blocker replaced it: this environment's kernel has no Landlock at all**, so not one confined process can be observed here and the security property itself would ship unverified. Three independent confirmations, all reproduced live (see the `docs/PROJECT_LOG.md` entry for the exact commands and output): `/sys/kernel/security/lsm` = `capability,selinux`; `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)` (syscall 444) returns `ENOSYS`; and the kernel's own config says `# CONFIG_SECURITY_LANDLOCK is not set` — **not compiled in**, on a Firecracker microVM kernel that cannot be reconfigured from inside the guest. No `apt-get` fixes this. **Revisit trigger (concrete, checkable):** a host where `zcat /proc/config.gz | grep -i landlock` shows `CONFIG_SECURITY_LANDLOCK=y` **and** `landlock-run --probe` exits `0`. **The implementation plan below is already audited and stands as written — do not redesign it:** (1) add the dep, pinned; (2) add an optional `landlock?: LandlockDetection` field to `SandboxCapability` alongside the existing `seccomp?: SeccompDetection`, and emit the launcher into the argv `buildBwrapSpawn` already produces — Landlock is a *hardening layer under bwrap*, exactly as seccomp is; (3) **do NOT add `"landlock"` to the `SandboxBackend` union** — it is a closed union re-exported as public API from `@clutchcode/agent-api` and guarded by an exhaustive `const exhaustive: never = backend` switch in `buildConfinedSpawn`, and a `"landlock"` backend would falsely imply an unconfined-namespace path that does not exist; (4) write our own **status-gated** runner-failure classification (exit `125` **and** a launcher-owned fatal line, with the exact informational partial-enforcement line excluded) — never a substring bag, per their postmortem 0004 and the two times our own `classifyFailure` was bitten by the same shape; (5) real tests on a Landlock-capable host — a file outside the allow-list genuinely unreadable, **plus** the `§2a` condition-3 fail-closed test. **Consume as a dependency, never vendor** (`LICENSE_AND_REUSE_ANALYSIS.md §2a`, five binding conditions); do not copy their provider, argv construction, or classification code — sandbox policy is CLEAN-ROOM-REQUIRED per §3. Study note: `research/repos/deepseek-harness.md`. |
-| First-run polish: `git show` stderr leaks on a repo without `AGENTS.md` | §10.3 | small | Found while capturing real CLI output for the README. On any repo that has no `AGENTS.md`, `clutchcode run` prints `fatal: path 'AGENTS.md' does not exist in '<sha>'` to the console before its normal status output. Harmless — the absence of `AGENTS.md` is the common case and the code handles it correctly — but it is a raw git error surfacing for a *benign, expected* condition, and it is the very first thing a new user sees. This is the same class as the documented `execFileSync` stderr-leak gotcha (a wrapper around a CLI expected to fail routinely needs explicit `stdio` handling). Fix: suppress stderr on that specific `git show` and treat a non-zero exit as "no AGENTS.md", with a test asserting a clean console on a repo lacking the file. |
 | Coordinated npm release (`npx clutchcode`) | §18/§21 | medium | **The last adoption blocker.** Publish metadata now exists on all 11 manifests (`files`, `publishConfig.access: public`, `engines`, `repository.directory`, `bugs`, `homepage`) — what's missing is the release itself. `@clutchcode/cli` depends on `@clutchcode/agent-api` and `@clutchcode/agent-rpc` via `workspace:*`, which transitively requires publishing **all ten** workspace packages as one coordinated release, so this is a release *process*, not a publish command: decide the npm org/scope ownership, pick a versioning strategy (lockstep vs. independent — lockstep is simpler for a pre-1.0 monorepo where the packages only ever ship together), verify `pnpm publish -r` rewrites `workspace:*` to real ranges, add a release workflow gated on the CI gate, and confirm `npx clutchcode --help` works from a clean machine. Deliberately not half-started: partial publishes of an interdependent scope are worse than none. Until this lands the README quickstart correctly says "build from source". |
 | Provider stop/finish-reason conformance — incl. Anthropic `pause_turn` | §4.7/§6.8 | small–medium, **gated** — see the note (its central deliverable needs a decision) | **Confirmed real, currently unreachable** (same posture as the old `snapshot-backup.ts` row). `mapStopReason` in `packages/providers/src/anthropic.ts` has no `pause_turn` case, so it falls through `default:` → `"stop"`. Per Anthropic's published API docs, `pause_turn` means the model **paused a long-running turn and the client is expected to resume it** — so the loop would treat a paused turn as a completed one, the exact defect signature round 3 found six instances of. Not reachable today: `pause_turn` only arises when the request declares Anthropic **server** tools (web search / web fetch / code execution) and we declare none (verified by grep — all our tools are client-side). Doing this right is a small **design decision, not a one-liner**: `FinishReason` is `"stop" \| "tool_use" \| "length" \| "error"` with no paused variant, so it needs a new variant plus a decision about what `AgentLoop` does with it (resubmit? treat as a budgeted continuation?). Left queued rather than decided unilaterally. Scope the work as a **table-driven conformance test per adapter** covering the full documented stop/finish vocabulary — `pause_turn`, `aborted`, `content_filter`, `refusal`, `max_tokens`/`length`, `stop_sequence`, `tool_use`/`tool_calls` — with each case's meaning taken from the **provider's own documentation**, using `@earendil-works/pi-ai`'s vocabulary only as a checklist of what to go look up (`research/repos/pi-agent-harness.md`). Adapters stay ours; do not vendor or port pi-ai. **Blast radius, audited so it is neither over- nor under-estimated:** `finishReason` is confined to `packages/providers` (`types.ts`, the three adapters, `fake-provider.ts`) and one consumer, `packages/runtime/src/agent-loop.ts`. It is **not** part of the `agent-rpc` wire contract and **not** re-exported through `agent-api`, so widening the union does **not** break the JSON-RPC protocol, the VS Code extension, or any `apps/*` consumer. Two packages, one loop — contained. |
 | ACP (Agent Client Protocol) binding | §18.1/§20/§26 | medium | `PROJECT_SPEC.md` already names ACP three times — §18.1 says our stdio JSON-RPC binding is "deliberately the **same shape as ACP** … so future editor clients are cheap," §20's layer table calls the boundary "ACP-shaped," and §26's risk register commits us to "leaning into those protocols as a client rather than fighting them." We built `@clutchcode/agent-rpc` *shaped like* ACP but never implemented ACP, so no ACP client can actually talk to us. There is now an official **`@agentclientprotocol/sdk`** (`0.25.1`, spec at <https://agentclientprotocol.com>) and a working open-source consumer to study (DeepSeek Harness `packages/acp`, MIT, study-only). Because ACP is an **open protocol**, this is the same verdict as MCP — **REUSE — protocol impl**, not a clean-room problem (`LICENSE_AND_REUSE_ANALYSIS.md §2`). Payoff: Zed/Neovim/Emacs clients for roughly the cost of one adapter over the existing `Agent` boundary, without touching the runtime. Scope it as a *second binding alongside* `agent-rpc`, not a replacement, so the VS Code extension keeps working unchanged. Study note (incl. the working reference consumer): `research/repos/deepseek-harness.md`. |
@@ -76,7 +94,6 @@ loose "MVP" estimate.
 | arm64 seccomp | §12.6 | small, needs an arm64 host | The x86_64 filter is done and verified; arm64 has a different syscall number table with no way to verify it in this (x86_64) environment — needs either an arm64 host/CI runner or a very high-confidence authoritative source cross-checked the same way libseccomp's resolver was used for x86_64. **Note (new):** this blocker is specific to *seccomp*, whose filter we hand-assemble from architecture-specific syscall numbers. The Landlock row above does **not** inherit it — `@deepseek-ai/node-addon-landlock-run` ships a prebuilt `linux-arm64` binary and carries the ABI burden upstream, so Landlock-on-arm64 arrives free with that work while arm64 *seccomp* stays blocked on a real arm64 host. |
 | VS Code multi-file "changes" view | §18.5, minor | small | The extension opens one real `vscode.diff` editor per changed file (done, see "what's done") rather than combining several into VS Code's newer `vscode.changes` command — deliberately skipped since that command isn't universally available across the `^1.85.0` engine range this extension targets. Revisit if the minimum supported VS Code version is ever raised. |
 | PageRank repo map | §9, Phase 7 | medium | Tier 0 (ripgrep + on-demand tree-sitter) is what's live; the Aider-style PageRank map is Tier 1, triggered by measured retrieval-accuracy failures on large repos, not built preemptively. |
-| Eval scoreboard | §16, Phase 8 | medium–large, **DO FIRST** (the top genuinely-ungated row — everything above it is blocked on a kernel, an ADR, a human decision, a new runtime dependency, or an arm64/Windows/VS Code host) | The replay harness (§16.3c) is live and gates every phase; the full SWE-bench-Verified-subset + Terminal-Bench-style scoreboard with published methodology is not. |
 | Full non-git `AgentLoop` execution path | — | large, separate project | Snapshot-backed (not worktree-backed) execution for non-git directories. `Agent.run` currently refuses cleanly with a "run git init" error instead of attempting this. `SnapshotBackup`'s own traversal gap is already closed (see "what's done"), so this row is now purely "wire the execution path up," not blocked on any open correctness/security gap in the fallback it would use. |
 | Multi-agent orchestration | §7, Phase 9 | large | Explicitly out of scope until the §7 rule justifies it — the spec argues *against* building this by default. Don't start it without re-reading §7's reasoning first. |
 | Windows sandbox Tier 1 — **revisit trigger only, decision stands** | §12.5/§12.6, A11 | n/a (watch item) | The doc-only/WSL2-recommended decision closed earlier this branch is **not** reopened by this research, and a future session should not treat it as reopened. Recording the evidence honestly so the trigger is legible: DeepSeek Harness ships `sandbox-windows-acl`, a real native Windows rung (a koffi port of a `WRITE_RESTRICTED`-token + restricting-SID mechanism). It **self-reports `enforcement: 'partial'`, not full** — ambient `Everyone` write ACEs and NTFS hard-links leak through, since ACLs bind to file objects rather than paths — and their own design note rejects AppContainer because it "cannot do arbitrary-path reads at all." Both facts **corroborate** §12.5's `[C:Low]` rating of the native path rather than contradicting it, and §29's team-size reasoning is untouched. Revisit only if (a) a Windows contributor/CI host materializes, **and** (b) a native path appears that reports *full*, not partial, enforcement. |
@@ -137,6 +154,24 @@ loose "MVP" estimate.
   keychain lookup with nothing stored, no session bus, etc.) needs
   `stdio: ["ignore"|"pipe", "pipe", "ignore"]` explicitly, or its stderr
   text shows up uninvited in every test run and every real agent run.
+- **A binary being on PATH does not mean it can do its job — and for
+  `bwrap` that mistake made the agent inoperable, not just noisy.**
+  `detectSandboxBackend` used to answer "is there a file named `bwrap` on
+  PATH". On a host where bwrap installs fine but cannot create namespaces
+  (a GitHub Actions runner, an unprivileged container, unprivileged
+  user namespaces disabled) it reported `backend: "bwrap"`, every shell
+  command was then wrapped in bwrap, and every one died with `bwrap:
+  loopback: Failed RTM_NEWADDR: Operation not permitted`, exit 1, no
+  output — while `agent doctor` claimed the run was sandboxed. Fixed by
+  `detectBwrapUsable`, which actually runs bwrap and checks its exit
+  status. Two general lessons worth keeping: **(a)** a capability probe
+  must exercise the *same* capability the real call does — the probe
+  shares its `--unshare-*` flags with `buildBwrapSpawn` as one constant,
+  because a probe that unshares less passes exactly where the real spawn
+  fails; **(b)** when a guard like this is wrong, grep every call site
+  before calling it fixed — this one had five, in four packages, and the
+  diagnosis that surfaced it had only spotted two of them.
+
 - **`detectKeychainBackend` reports a backend based on PATH alone, not
   actual reachability.** On this dev container `secret-tool` is always on
   PATH, so the backend is always `"secret-service"` even with no D-Bus

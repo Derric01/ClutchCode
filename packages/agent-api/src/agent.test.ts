@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { detectBwrapOnPath } from "@clutchcode/sandbox";
+import { detectBwrapUsable } from "@clutchcode/sandbox";
 import { saveCapabilityProfile, type CapabilityProfile } from "@clutchcode/capability";
 import { Agent } from "./agent.js";
 import { addBareOrigin, makeMonorepo, makeSampleRepo, makeTempDir, sseChunk, startScriptedServer, type ScriptedServer } from "./test-helpers.js";
@@ -728,8 +728,12 @@ describe("Agent sandbox Tier 1 (§12.5/§12.6) — real confinement, not just pl
   // under the `policy.sandboxTier = "tier0"` escape hatch, which has no OS-
   // level confinement — only the policy engine, which doesn't gate a raw
   // `cat` of an absolute path the way it gates tool calls.
-  const hasBwrap = detectBwrapOnPath();
-  const maybeIt = hasBwrap ? it : it.skip;
+  // `detectBwrapUsable`, not `detectBwrapOnPath`: bwrap being installed
+  // does not mean it can confine. On a host where it can't (a CI runner, an
+  // unprivileged container) the presence check said yes, and this test then
+  // failed on a bwrap that exits 1 instead of skipping. See
+  // `detectBwrapUsable` in @clutchcode/sandbox.
+  const maybeIt = detectBwrapUsable().usable ? it : it.skip;
 
   let repoPath: string;
   let stateDir: string;

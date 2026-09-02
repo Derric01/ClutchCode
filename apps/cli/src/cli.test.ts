@@ -182,6 +182,20 @@ describe.skipIf(!fs.existsSync(cliEntry))("clutchcode CLI argv parsing (spawns t
     }
   }, 20_000);
 
+  it("`run` on a repo without AGENTS.md prints no raw git error to the console (real bug found while capturing genuine CLI output for the README: git()'s allowFailure:true probe for an optional AGENTS.md leaked 'fatal: path ... does not exist' to stderr on every run of a repo lacking one — the literal first thing a new user saw)", () => {
+    const repoPath = makeSampleRepo();
+    const stateDir = makeTempDir("clutchcode-cli-test-state-");
+    try {
+      expect(fs.existsSync(path.join(repoPath, "AGENTS.md"))).toBe(false);
+      const result = runCli(["run", "demo task", "--repo", repoPath, "--state-dir", stateDir, "--provider", "fake"], repoPath);
+      expect(result.stderr).not.toMatch(/fatal:/);
+      expect(result.stderr).not.toMatch(/AGENTS\.md/);
+    } finally {
+      fs.rmSync(repoPath, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it("`memory list --json` emits JSON, not prose (§18.4: --json always prints machine-readable output)", () => {
     const repoPath = makeSampleRepo();
     const fakeHome = makeTempDir("clutchcode-cli-home-");

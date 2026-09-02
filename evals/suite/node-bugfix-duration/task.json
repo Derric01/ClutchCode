@@ -1,0 +1,17 @@
+{
+  "id": "node-bugfix-duration",
+  "category": "bug-fix",
+  "language": "node",
+  "description": "A duration parser converts hours with the wrong multiplier; the repo's own test suite is red on arrival.",
+  "prompt": "The tests in this repository are failing. `parseDuration` in src/duration.js is supposed to turn a duration string like \"1h30m\", \"90m\" or \"45s\" into a number of milliseconds, but it converts hours with the wrong multiplier. Fix src/duration.js so every unit converts correctly and `npm test` passes. Do not change any file under test/.",
+  "solutionPaths": [
+    "src/duration.js"
+  ],
+  "startingGate": "red",
+  "oracle": {
+    "command": [
+      "node",
+      "oracle.check.js"
+    ]
+  }
+}

@@ -1845,3 +1845,447 @@ like any other. It happened to be *mostly* true, and the part that wasn't was
 the single line most readers would look for first.
 
 Docs only. 720/720 passing, clean `tsc -b`, clean `eslint .`.
+
+### Marketing-README follow-up: proved the diagrams render, fixed a fabrication in my own draft, shipped a real demo GIF, and fixed the underlying stderr-leak bug
+
+Directly prompted by "lots of texts no architecture, it has to be like a
+marketing readme, it is so bad" — pointed at the same README rewritten two
+entries ago. Rather than assume either "the user is wrong" or "the content is
+wrong," checked both.
+
+**The Mermaid content itself is not the problem — proved, not assumed.**
+Installed `@mermaid-js/mermaid-cli`, extracted all three `mermaid` blocks from
+the live README, and rendered every one to a real PNG: the architecture
+flowchart, the run-lifecycle sequence diagram, and the roadmap gantt all
+render cleanly, with correct subgraphs, colors, and arrows. So the complaint
+is very likely a *viewing* issue, not a *content* one — the most probable
+cause is that GitHub does not render Mermaid inside a PR's "Files changed"
+diff view (plain text/diff only), only in the actual file/blob view on a
+branch. Told the user how to check directly.
+
+**But auditing the README for the complaint surfaced two real problems
+anyway, both fixed for real rather than talked around:**
+
+1. **The top of the page was, in fact, visually empty.** The "logo" area was
+   only an HTML comment — literally nothing rendered there. Replaced with a
+   real generated banner via `capsule-render` (a URL-parameterized SVG
+   service, fetched by GitHub's own renderer at view time, not by this
+   session — the same technique used across thousands of public READMEs) so
+   there is now an actual colored, animated header instead of plain heading
+   text. The custom-logo option is preserved as a comment for later.
+
+2. **The demo transcript in the README was fabricated, and this review is
+   what caught it.** It showed `--provider ollama --model qwen2.5-coder:14b`
+   with `steps: 4/50 tokens: 18204/200000` — numbers that were never actually
+   produced. The genuine output this session verified earlier (with
+   `--provider fake`, the only path actually run) was `steps: 1/50 tokens:
+   0/200000`. This is exactly the class of unbacked claim this project exists
+   to catch, and it had shipped in a commit two entries ago. This time, rather
+   than just correct the numbers, a **real recorded demo GIF** was shipped
+   instead of a placeholder comment:
+   - Installed `asciinema` (apt) and the real `agg` (compiled from
+     `github.com/asciinema/agg` via cargo — the crates.io package named `agg`
+     is an unrelated library, a genuine dead end worth noting for next time).
+   - Recorded a real scripted session (`doctor`, then `run … --provider
+     fake`) against the actual compiled CLI, converted to a GIF, and
+     committed it to `docs/assets/demo.gif`.
+   - Wrote `docs/assets/record-demo.sh` so this is regeneratable, not a
+     one-off artifact — and **ran it end-to-end from a clean state** to prove
+     it actually reproduces the same output, rather than committing a script
+     that had only run once by hand.
+
+**Recording the demo surfaced a real bug, and the honest fix was to fix the
+bug rather than filter the recording.** The genuine output included a leaked
+`fatal: path 'AGENTS.md' does not exist in '<sha>'` line — the exact issue
+already queued as a `What's left` row from the previous README pass. Piping
+that line out of the recording would have been editing around a known defect
+instead of fixing it, so the defect was fixed instead:
+
+`packages/git/src/git-exec.ts`'s `git()` wrapper left `stdio` on
+`execFileSync`'s default, which carries a documented Node quirk — even though
+the *default* `stdio` is `'pipe'`, stderr specifically is still forwarded live
+to the parent process's stderr unless `stdio` is passed as an explicit array.
+The same gotcha this project had already fixed once, for the keychain
+wrappers. **Empirically verified both sides before touching shared code**
+(this function backs every worktree/checkpoint/rollback operation, so
+blindly `stdio: ["ignore","pipe","ignore"]`-ing it would have blinded
+`GitError`'s message for every *other*, non-`allowFailure` caller too): a
+scratch script confirmed the default leaks to the real console while
+`stdio: ["ignore","pipe","pipe"]` does not — and that `err.stderr` is still
+fully populated either way. Fixed with the latter.
+
+Two new tests, one of which taught a real lesson about test isolation. The
+CLI-level test (`apps/cli/src/cli.test.ts`, spawning the real compiled
+binary on a repo without `AGENTS.md`, asserting no `fatal:`/`AGENTS.md` in
+its stderr) was verified with the full stash/revert cycle — fails pre-fix
+with the exact leaked line, passes post-fix. A second, unit-level isolation
+test in a new `packages/git/src/git-exec.test.ts` tried to prove the same
+thing via a doubly-nested child process (spawning a `node -e` script that
+itself spawns `git`), and **did not actually discriminate** — it passed
+identically pre-fix and post-fix, most likely because the grandchild's
+stderr-forwarding target resolves differently once already inside a spawned
+process. Rather than ship a test that would pass either way — this project's
+own stated worse-than-no-test case — it was removed, with the reasoning left
+in a comment pointing at the CLI-level test that does discriminate.
+`git-exec.ts` had no test file at all before this; the four surviving unit
+tests are new, real coverage of the wrapper regardless.
+
+725 tests (up from 720). Full gate clean: `tsc -b`, `eslint .`, `vitest run`.
+
+### The eval scoreboard (§16.1/§16.2/§16.3b) — and a cheat detector that was blind to `assert.strictEqual`
+
+The `DO FIRST` row. Coherence-checked first: §16.3b names the per-model
+scoreboard explicitly ("VTCR + the §16.2 metrics, per model"), §16.4 commits
+to publishing the methodology, and no ADR contradicts it — ADR-020 covers the
+*replay* harness (§16.3c), which has been live since Phase 1 and is a
+different thing.
+
+**What shipped.**
+
+- **A task format that is a directory, not a blob.** `evals/suite/<id>/` with
+  `task.json`, `repo/` (the starting repository), `oracle/` (the held-out
+  check) and `solution/` (the reference patch). Every fixture file is a real
+  file — readable, runnable, lintable by hand — rather than escaped strings
+  inside JSON.
+- **The held-out oracle, which is the load-bearing idea.** The agent's own
+  deterministic gate runs *the repository's own commands, on files the agent
+  can read and edit*. Grading with it alone grades the agent on a test it is
+  allowed to rewrite. So each task's check is copied into the delivered
+  repository only **after** the run finishes — the same reason SWE-bench
+  applies its golden *test* patch after the model's patch.
+- **Five tasks, five categories, two languages** (§16.3a bullet 3 — "bug fix,
+  small feature, refactor, test-add, dependency bump ... across languages").
+  Four of the five arrive with a **green** gate on purpose: a suite made
+  entirely of red-on-arrival tasks would overstate VTCR, because a red gate
+  hands the agent a signal to chase and a green one hands it nothing. Each
+  task *declares* `startingGate` and the validity test fails if reality
+  disagrees. The Python test-add task is graded by **mutation** — the added
+  tests must pass against the real implementation *and* fail against a
+  deliberately broken `median`, because "do the tests pass" is not a grade
+  for a task whose deliverable is a test (`assert True` passes too).
+- **The runner drives the real public `Agent.run`**, not `AgentLoop`: a
+  scoreboard has to measure the product as a user gets it — worktree
+  isolation, toolchain detection, project memory, the adaptation layer, the
+  gate, cheat detection, the §14.7 auto-approve path. Per-task state,
+  capability-profile and memory directories are pinned inside the scratch
+  workspace so no task touches the machine's real `~/.config` or leaks into
+  the next.
+- **The metrics, with the dishonest ones refused rather than faked.** VTCR
+  (§16.1) plus all five §16.2 supporting metrics — and two of them could not
+  be reported as written, so they are not:
+  - **Cost per solved task is `null`.** `BudgetGuard.recordUsage` accepts a
+    `costUsd`, but *no adapter passes one* (checked: the `usage` delta
+    carries only token counts), so `consumed.costUsd` is always 0. Reporting
+    `$0.0000` would be a measured-looking zero. It turns on by itself the day
+    an adapter reports cost.
+  - **"Cheat flags per *solved* task" is degenerate.** Under §14.7's own
+    contract a cheat flag forces ESCALATED, so a flagged run is never a
+    solved run and the literal ratio is identically zero no matter how badly
+    the detectors regress. Replaced with flags-per-task and
+    share-of-tasks-flagged, with the deviation stated in the methodology doc
+    rather than silently applied.
+  - Added beyond §16.2 because the held-out oracle makes it measurable for
+    the first time: **`falseCompletionRate`** — claimed done, oracle
+    disagreed. That is the exact number the whole §14.7 completion contract
+    exists to hold at zero.
+- **Persistence and a real bin.** One full JSON board per run plus an
+  append-only JSONL history (the storage shape ADR-007 already uses; there is
+  still no SQLite dependency), and `clutchcode-eval` with `list`/`run`/
+  `history`.
+- **`docs/EVAL_METHODOLOGY.md`** — §16.4's published, falsifiable
+  methodology, including a section 7 that states plainly what is *not* built.
+
+**`agent eval` (§18.2) was deliberately NOT added to `apps/cli`.** §20's
+dependency rule ("`apps/*` depend only on `agent-api`") is normative and
+§20's own layout puts the scoreboard in `evals/`, so a CLI subcommand would
+make `apps/cli` depend on `evals` — a package-boundary decision, not an
+implementation detail. Queued as its own row instead of quietly widening the
+boundary.
+
+**A real cheat-detection bug found by building this, reproduced before being
+believed.** The end-to-end "model deletes the failing assertion" scenario
+scored a green gate and **zero cheat flags**. Rather than adjust the fixture,
+the claim was reproduced directly against the compiled `detectCheats`:
+`ASSERTION_OR_TEST_DECL_RE` required a `(` immediately after `assert`, so it
+recognized `assert(`, `expect(`, `it(`/`test(`/`describe(` and
+`self.assertX(` — but was blind to:
+
+1. the **entire `node:assert` method family** (`assert.strictEqual(`,
+   `assert.deepStrictEqual(`, `assert.ok(`, chai's `assert.equal(`), the
+   default assertion style for dependency-free JS tests — including this
+   repo's own eval fixtures; and
+2. Python's bare **`assert <expr>` statement**, the dominant pytest style
+   (`self.assertEqual(` was covered, plain `assert add(2, 2) == 4` was not).
+
+So the most obvious cheat in the most common assertion syntax — delete the
+failing `assert.strictEqual` line — drew no flag at all. Fixed the class, not
+the instance: both syntaxes added to the assertion regex (the statement form
+anchored to line start so a `const assert = require('node:assert')` import
+line can't be miscounted as an assertion), and the **sibling** detector
+checked too — `TRIVIAL_ASSERTION_RE` had the same blind spot, so
+`assert.ok(true)` and `assert.strictEqual(1, 1)` are now recognized as
+tautologies. Those alternatives are **appended** to that regex deliberately:
+`\1` in it refers to the existing `expect(X).toBe(X)` literal group, and
+inserting a capturing group ahead of it would silently renumber that
+backreference.
+
+**Verified, and how.**
+
+- **Stash-revert on the cheat fix.** `git stash push -- cheat-detection.ts`
+  (the fix only, not the tests) → the 3 new test cases fail
+  (`node:assert` removal, bare Python `assert` removal, node:assert
+  tautology) while all 16 pre-existing cases still pass; `git stash pop` →
+  19/19 green. The fix is proven to discriminate *and* proven not to change
+  existing behavior.
+- **Independently, end to end**: the scripted "delete the failing assertion"
+  eval run now lands ESCALATED with `removed-test-assertions` in its
+  escalation reason, where before it reached a green gate unflagged.
+- **Three end-to-end runner scenarios**, all through real HTTP → the real
+  OpenAI-compatible adapter → real `Agent.run` → real git → real `npm test`
+  → the real held-out oracle, with only the model's replies scripted:
+  *solved* (VTCR 1.0), *cheated* (green gate, flagged, escalated, not
+  verified), and *no-op on an already-green repo* (reaches `DONE` legitimately
+  under §14.7, oracle disagrees → false completion 1.0, retrieval
+  insufficiency 1.0).
+- **Suite validity, per task, no model in the loop**: oracle fails pristine,
+  oracle passes on the reference solution, repo gate green after it, declared
+  `startingGate` matches reality. **This caught a real bug in its first run** —
+  an arithmetic error in the duration oracle's own expectation (`1h30m` was
+  written as `5400000 + 3600000`). Exactly what it is for.
+- **18 pure unit tests** over the metric definitions, so each formula is
+  asserted directly rather than inferred from a live run.
+- **The real compiled `clutchcode-eval` binary** spawned as a child process
+  (same convention as `apps/cli/src/cli.test.ts`): `list --json`, a full
+  `run --provider fake --out <dir> --json`, the JSONL history round-trip, and
+  a loud failure on an unknown `--task`.
+- **A full-suite smoke run by hand** against `--provider fake`: 5/5 tasks,
+  VTCR 0.0%, **claimed-done 80%, false completions 80%** — the do-nothing
+  model correctly scoring zero while its gate went green four times out of
+  five. That run also surfaced (and the board reports honestly, rather than
+  hiding) that `--provider fake` scripts exactly one turn, so any task needing
+  a repair iteration ends in a run-level error; the note wording was corrected
+  to say that instead of blaming "the harness".
+
+770 tests (up from 725), 83 files. Full gate clean: `tsc -b`, `vitest run`,
+`eslint .`.
+
+**Deliberately deferred, and why** — all recorded as rows rather than left
+implicit: the naked-vs-harness A/B arm (§16.4's actual North Star claim; the
+harness arm is built, the naked arm is not, so no delta is or should be
+quoted); the SWE-bench-Verified subset and Terminal-Bench adapters (§16.3a
+bullets 1–2 — dataset fetching plus per-instance container images, i.e.
+network and infrastructure this offline harness does not currently take on);
+K-seed repetition with confidence intervals; and `agent eval` in the CLI,
+which is the §20 boundary decision above.
+
+### CI was red on `main` — and the cause was a production bug, not a test bug
+
+The new `DO FIRST` row, opened by a finding relayed mid-session: `HANDOFF.md`
+claimed CI had "not yet been observed running" and that Actions was probably
+disabled for the repo. **Verified independently against the API before acting
+on it, and the file was wrong on every count**: workflow `CI` (id `346002960`)
+is registered and `active`, has run **9 times**, and has never once succeeded —
+6 failures, 3 cancelled — *including two `push` runs on `main` itself* (run #3
+at `80d374c`, run #7 at `4633f7d`). The snapshot header is corrected rather
+than carried forward; a continuation document that lies about the gate is worse
+than the gate being red.
+
+**The relayed diagnosis was right about the class and incomplete about the
+scope, so the logs were read rather than trusted.** It named 4 failing
+assertions in 2 files; the actual job log shows **16 tests failing across 4
+files** (`tier1-linux.test.ts`, `seccomp-linux.test.ts`, `shell.test.ts`,
+`search.test.ts`), from **two independent causes**:
+
+1. `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`. bwrap *is*
+   installed on the runner (ci.yml installs it and asserts `command -v bwrap`)
+   and does start — it dies setting up the loopback interface under
+   `--unshare-net`. The guards deciding whether to run those suites checked
+   **PATH presence, not capability**, so they ran instead of skipping.
+2. ci.yml installs bubblewrap/libsecret/gnome-keyring/dbus but **not ripgrep**,
+   and the `search` tool *is* ripgrep (§9 Tier 0, no fallback by design), so
+   all 3 of its tests failed on `search-backend-unavailable`.
+
+**Reproduced first — and the reproduction found something much worse than a CI
+annoyance.** A stub `bwrap` that is present, executable, and fails exactly the
+way a runner's does was put first on `PATH`, then the *production* path was run
+against it. `detectSandboxBackend()` returned:
+
+```
+backend: bwrap — "bubblewrap found on PATH"
+```
+
+…and the real `shellTool`, running one ordinary `echo`, returned **exit 1,
+empty stdout**, with `bwrap: loopback: Failed RTM_NEWADDR` on stderr. That is
+not a test-guard problem: **on any host where bwrap is installed but cannot
+create namespaces — a CI runner, an unprivileged container, a kernel with
+unprivileged user namespaces disabled — ClutchCode reports itself sandboxed via
+`agent doctor` and then cannot execute a single command.** The red CI was the
+symptom; the agent being inoperable on a whole class of hosts was the disease.
+
+This is the same class as the `detectKeychainBackend` gotcha already in
+`HANDOFF.md` ("reports a backend based on PATH alone, not actual
+reachability") — so it is fixed the same way, and the class was swept rather
+than the instance patched.
+
+**The fix.** `detectBwrapUsable()` in `tier1-linux.ts` actually runs bwrap
+(`/bin/true` under the real namespace flags) and checks its exit status,
+memoized per PATH value since it forks. Crucially the probe's namespace flags
+are a **shared constant** with `buildBwrapSpawn`, not a copy — a probe that
+unshares less than the real spawn would pass where the real spawn fails, which
+is the exact failure being fixed — and a test asserts the overlap so the two
+cannot drift. `detectSandboxBackend` now decides on the probe, and falls back
+to Tier 0 with a `reason` that names the real cause. `detectBwrapOnPath` is
+kept and still exported: "is it installed at all?" is still the right question
+for an install-it-first diagnostic, it just must not be a *capability*
+decision.
+
+Class sweep, all four call sites moved to the probe:
+`tier1.ts` (production), `tier1-linux.test.ts`, `seccomp-linux.test.ts`,
+`shell.test.ts`, plus `agent-api/src/agent.test.ts`'s Tier 1 guard, which the
+relayed diagnosis had not identified. The duplicated `detectPython3OnPath`
+presence guard (two copies, two packages) became a real `python3 -c "print(1)"`
+run in both, and `search.test.ts` gained a real `rg --version` guard. Two
+siblings were found and deliberately **not** changed, with reasons:
+`detectSecretToolOnPath` degrades gracefully (a failed `keychainGet` returns
+undefined and `loadCredentials` falls through to env vars — checked, not
+assumed) and is already documented; `detectSandboxExecOnPath` (macOS) and
+`detectPowerShellOnPath` (Windows) have the same shape but **cannot be verified
+in this environment**, so adding an unexercised probe there would be exactly the
+"silence implying completeness" this project treats as a defect. Recorded as a
+row instead.
+
+ci.yml now installs `ripgrep`, asserts `command -v rg` (so a skip can never
+quietly cost coverage there), and replaces "verify present" with a step that
+runs the real bwrap probe and *reports* whether this runner can confine —
+informational, not fatal, since a hosted runner legitimately cannot.
+
+**Verified, and how.**
+
+- **Live before/after on the same reproduction script.** Before: backend
+  `bwrap`, `echo` exits 1 with no output — the agent is inoperable. After:
+  backend `none` with the reason `bubblewrap is installed but cannot confine on
+  this host (bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted) …
+  falling back to Tier 0`, and the same `echo` exits **0** with
+  `hello-from-the-agent`. And on this dev container, where bwrap genuinely
+  works, it still selects `bwrap` — the confinement is not weakened to buy a
+  green CI.
+- **Discrimination, done behaviorally rather than by stashing.** Stashing a
+  *new* function only produces an import error, which proves little, so the
+  probe body was instead reverted to pre-fix semantics (presence ⇒ capability)
+  in place: **2 of the new tests fail**, 13 pass; restored, 15/15 pass. The
+  failing one is the test that builds a real incapable `bwrap` and asserts the
+  presence check is fooled while the probe is not.
+- **No silent coverage loss** — the thing most likely to go wrong with a
+  "make CI green" change. `packages/sandbox` + the shell/search suites report
+  **86 passed, 0 skipped** on this host: every real confinement, seccomp and
+  ripgrep test still actually runs here. A regression that made them all skip
+  would also fail the "reports usable on this host" assertion.
+- Full gate: 774 tests (up from 770), 83 files, `tsc -b`, `vitest run`,
+  `eslint .` all clean.
+
+**What this does NOT prove.** CI itself has not been observed green — that
+needs an actual run against this branch, which happens after the push. The
+prediction is that the bwrap suites skip on the runner and the ripgrep ones
+pass; if a run still comes back red, this entry is the starting point, not the
+conclusion. Nothing here should be recorded as "CI works" until a green run
+exists.
+
+### Host-honest eval requirements, and tests that stopped asserting facts about the dev container
+
+**Context.** The previous entry fixed `detectBwrapUsable` so *production* decides
+Tier 1 by probing rather than by finding `bwrap` on PATH. That left the same
+mistake in two other places, which is exactly the "fix the class, not the
+instance" case `CLAUDE.md` calls out: the §16 eval suite decided a task was
+runnable by assuming its toolchain existed, and several tests asserted **facts
+about this dev container** (`backend === "bwrap"`, `probe.usable === true`)
+rather than facts about the code. Both are the same error — treating "this host
+happens to have X" as an invariant.
+
+**What was built.**
+
+- **`requires: string[]` on `EvalTask`** (`eval-task.ts`), parsed and validated
+  in `parseTaskJson` (bare binary names only, `/^[A-Za-z0-9._-]+$/`). The one
+  Python task declares `["pytest", "ruff", "python3"]`.
+- **`checkTaskRequirements()`** — runs `<bin> --version` and checks the exit
+  status; it does not stat PATH. Memoized per binary, since a suite re-asks the
+  same question once per task.
+- **`runEvalTask` refuses** a task whose requirements are unusable, returning a
+  run-level `error` instead of running it and scoring it unsolved. This matters
+  for the metric, not just tidiness: a missing interpreter says nothing about
+  the agent, and scoring it as a failure would silently depress VTCR for an
+  environment reason.
+- **The validity test skips** such a task, naming the missing binaries in the
+  test title rather than failing opaquely.
+- **`ci.yml`** installs `pytest`/`ruff` and asserts both actually run, so a skip
+  on CI is caught rather than quietly costing coverage.
+- **Three test files stopped asserting host facts** (`tier1.test.ts`,
+  `tier1-linux.test.ts`, `apps/cli/src/commands.test.ts`). The replacement
+  invariant is that the probe's verdict **matches directly executing `bwrap`**
+  on whichever host runs the suite — which catches a probe stuck always-true
+  (the original bug) *and* one stuck always-false (which would silently disable
+  Tier 1 for everyone). `doctor`'s tests likewise now assert it reports what
+  detection found, not a hard-coded `"bwrap"`.
+
+**Verified, and how.**
+
+- **The probe discriminates, re-proven independently of the suite** rather than
+  taken on the previous round's word. Three real scenarios through the compiled
+  module: a real host (`usable: true`, "successfully created a confined
+  namespace"); a **real fake `bwrap`** on PATH that exits 1 with `No permissions
+  to creating new namespace` (`usable: false`, "installed but cannot confine on
+  this host … common on CI runners"); and no `bwrap` at all (`usable: false`,
+  "not found on PATH"). The middle case is the CI failure mode reproduced
+  directly.
+- Full gate: `tsc -b` clean, **774/774 passing across 83 files**, `eslint .`
+  clean.
+
+**What this does NOT prove.** Still no observed-green CI run — the same caveat
+as the previous entry, and it remains the open item. The pytest/ruff install
+step in `ci.yml` has never executed on a runner; if it is wrong, the Python
+task will skip on CI rather than fail, which the "assert they are present" step
+is there to catch. Treat the first real run as the test of this, not this entry.
+
+### CI observed green for the first time — and what that green does not prove
+
+**What happened.** Run [#12](https://github.com/Derric01/ClutchCode/actions/runs/33593109279)
+at `b7970cc` passed on both matrix legs. It is the **first successful run in
+this repository's history**: runs #1–#11 produced 0 successes, and for most of
+that period `HANDOFF.md` asserted CI had "not yet been observed running" and
+that Actions was probably disabled — a claim that was false the whole time. The
+workflow was registered and `active`; it was simply red on every run, including
+two `push` runs on `main`.
+
+**The predicted outcome, checked rather than assumed.** The previous two entries
+ended with an explicit prediction: the bwrap confinement/seccomp suites would
+**skip** on a hosted runner while everything else passed, and a *different*
+failure would mean a different cause. What run #12 actually reports is
+`758 passed | 16 skipped (774)` across 83 files, plus `tsc -b` and `eslint .`
+clean. The 16 skips are exactly the 16 tests that were previously *failing* —
+the prediction held on the number, not just the shape. Locally, on a
+bwrap-capable host, all 774 still run with **0 skipped**.
+
+Also newly proven on a real runner: the `pytest`/`ruff` install step added in
+the previous entry, which had never executed anywhere. It succeeded on both
+Node 20 and Node 22, and the "assert they are present" step passed — so the
+Python eval task ran rather than skipping.
+
+**What this green does NOT prove, and it matters.** CI passing no longer says
+anything about whether the OS sandbox confines. That coverage now exists only
+where bwrap genuinely works — this dev container and developer machines — and
+**nothing in CI would catch a regression that broke confinement**. That is the
+direct, deliberate cost of making the guard honest, and it is now a tracked row
+in `HANDOFF.md` ("Prove §12.6 confinement somewhere CI *can* run it") rather
+than a silence. The row explicitly forbids closing it by loosening the skip
+guard: the guard is correct, the runner is the gap.
+
+The README's new CI badge points at `main`, which is **still red** — the fixes
+are on PR #17 and have not merged. The badge will stay red until they do, which
+is the accurate thing for it to show.
+
+**Docs updated.** `HANDOFF.md`'s CI block rewritten from "cause fixed, green not
+yet observed" to the observed result plus the caveat; the completed "Confirm CI
+actually goes green" row removed and replaced by the §12.6-coverage row; the
+`DO FIRST` tag moved to the naked-vs-harness A/B (§16.4), the top row not gated
+on a host, an ADR, or an infra decision. `README.md` gained the CI badge and a
+claims-table row stating the skip caveat rather than implying CI proves the
+sandbox.

@@ -1,0 +1,18 @@
+{
+  "id": "node-dependency-bump-textutil",
+  "category": "dependency-bump",
+  "language": "node",
+  "description": "Move a pinned vendored dependency from v1 to v2 and migrate the call site to the new API. Offline by construction \u2014 no registry, no network (ADR-019, \u00a717).",
+  "prompt": "This project pins a vendored dependency in deps.json. Bump text-util from 1.0.0 to 2.0.0: set the pinned version in deps.json to \"2.0.0\", make src/app.js require ./vendor/text-util/v2.js instead of v1, and migrate to v2's API \u2014 v1 exported `leftPad(text, width)`, v2 exports `pad(text, width, fill)` where `fill` defaults to a space. Give `formatRow` an optional third parameter `fill` that it forwards to `pad`. Two-argument calls to `formatRow` must behave exactly as they do today, and the existing tests must keep passing.",
+  "solutionPaths": [
+    "src/app.js",
+    "deps.json"
+  ],
+  "startingGate": "green",
+  "oracle": {
+    "command": [
+      "node",
+      "oracle.check.js"
+    ]
+  }
+}

@@ -1,11 +1,25 @@
 import { describe, expect, it } from "vitest";
 import { buildConfinedSpawn, detectSandboxBackend } from "./tier1.js";
+import { detectBwrapUsable } from "./tier1-linux.js";
 
 describe("detectSandboxBackend", () => {
-  it("picks bwrap on linux when it's on PATH (true in this dev container), and reports seccomp support alongside it", () => {
+  it("picks bwrap on linux exactly when bwrap can actually confine — never a backend the host can't provide", () => {
+    // This used to assert `backend === "bwrap"` outright, which only held
+    // because detection was presence-based and therefore wrong: on a host
+    // with bwrap installed but namespaces denied it claimed "bwrap" and
+    // every sandboxed command then failed. Now that detection is honest,
+    // the invariant worth asserting is that the dispatcher agrees with the
+    // capability probe on whichever host is running the suite.
+    const probe = detectBwrapUsable();
     const cap = detectSandboxBackend("linux");
-    expect(cap.backend).toBe("bwrap");
-    expect(cap.seccomp?.supported).toBe(true); // this container is x86_64
+    if (probe.usable) {
+      expect(cap.backend).toBe("bwrap");
+      if (process.arch === "x64") expect(cap.seccomp?.supported).toBe(true);
+    } else {
+      expect(cap.backend).toBe("none");
+      expect(cap.reason).toMatch(/bubblewrap/);
+      expect(cap.reason).toMatch(/Tier 0/);
+    }
   });
 
   it("does not report seccomp for non-bwrap backends", () => {

@@ -1,9 +1,28 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeTempWorkspace, makeTestContext } from "../test-helpers.js";
 import { searchTool } from "./search.js";
 import type { ToolContext } from "../types.js";
+
+/**
+ * The `search` tool *is* ripgrep (§9 Tier 0) — there is no fallback
+ * implementation, by design. Without `rg` the tool correctly returns
+ * `search-backend-unavailable`, and these tests, which assert real search
+ * behavior, can prove nothing.
+ *
+ * Capability, not presence, for the same reason as `detectBwrapUsable`:
+ * actually run it. CI installs ripgrep *and* asserts `command -v rg` in a
+ * separate step, so a skip here can never quietly cost coverage there —
+ * a missing rg fails the job loudly instead.
+ */
+function detectRipgrepUsable(): boolean {
+  const proc = spawnSync("rg", ["--version"], { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] });
+  return !proc.error && proc.status === 0;
+}
+
+const maybeIt = detectRipgrepUsable() ? it : it.skip;
 
 describe("search tool", () => {
   let workspace: string;
@@ -23,7 +42,7 @@ describe("search tool", () => {
     fs.rmSync(ctx.evidenceDir, { recursive: true, force: true });
   });
 
-  it("finds matches by regex pattern across the workspace", async () => {
+  maybeIt("finds matches by regex pattern across the workspace", async () => {
     const r = await searchTool.run({ pattern: "needleFn" }, ctx);
     expect(r.ok).toBe(true);
     expect(r.data!.totalCount).toBeGreaterThanOrEqual(2);
@@ -31,13 +50,13 @@ describe("search tool", () => {
     expect(files.some((f) => f.endsWith("a.ts"))).toBe(true);
   });
 
-  it("returns an empty (not failed) result for a pattern with no matches", async () => {
+  maybeIt("returns an empty (not failed) result for a pattern with no matches", async () => {
     const r = await searchTool.run({ pattern: "definitely-not-present-xyz" }, ctx);
     expect(r.ok).toBe(true);
     expect(r.data!.totalCount).toBe(0);
   });
 
-  it("caps results to topK and reports truncation", async () => {
+  maybeIt("caps results to topK and reports truncation", async () => {
     const r = await searchTool.run({ pattern: "needleFn", topK: 1 }, ctx);
     expect(r.ok).toBe(true);
     expect(r.data!.matches.length).toBe(1);

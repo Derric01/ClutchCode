@@ -82,6 +82,9 @@ importers:
       '@clutchcode/verification':
         specifier: workspace:*
         version: link:../packages/verification
+      commander:
+        specifier: ^15.0.0
+        version: 15.0.0
     devDependencies:
       typescript:
         specifier: ^5.7.2

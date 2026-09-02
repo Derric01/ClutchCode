@@ -1,4 +1,4 @@
-import { buildBwrapSpawn, detectBwrapOnPath } from "./tier1-linux.js";
+import { buildBwrapSpawn, detectBwrapUsable } from "./tier1-linux.js";
 import { buildSeatbeltSpawn, detectSandboxExecOnPath } from "./tier1-macos.js";
 import { detectSeccompSupport, type SeccompDetection } from "./seccomp-linux.js";
 
@@ -23,9 +23,19 @@ export interface SandboxCapability {
 
 export function detectSandboxBackend(platform: NodeJS.Platform = process.platform): SandboxCapability {
   if (platform === "linux") {
-    return detectBwrapOnPath()
-      ? { backend: "bwrap", reason: "bubblewrap found on PATH", seccomp: detectSeccompSupport(platform) }
-      : { backend: "none", reason: "bubblewrap (bwrap) not found on PATH — install it for OS-level confinement (§12.5); falling back to Tier 0 (policy engine only)" };
+    // Deliberately `detectBwrapUsable`, NOT `detectBwrapOnPath`: presence
+    // on PATH does not imply the ability to confine. A host with bwrap
+    // installed but namespace creation denied (CI runners, unprivileged
+    // containers) used to be reported as `"bwrap"` here, after which
+    // *every* command the agent ran was wrapped in a bwrap that exits 1
+    // with no output — the agent silently unable to do anything, while
+    // claiming to be sandboxed. Falling back to Tier 0 on such a host is
+    // both honest and functional; `reason` says exactly what happened, and
+    // `agent doctor` surfaces it.
+    const probe = detectBwrapUsable();
+    return probe.usable
+      ? { backend: "bwrap", reason: probe.reason, seccomp: detectSeccompSupport(platform) }
+      : { backend: "none", reason: `${probe.reason}; falling back to Tier 0 (policy engine only)` };
   }
   if (platform === "darwin") {
     return detectSandboxExecOnPath()

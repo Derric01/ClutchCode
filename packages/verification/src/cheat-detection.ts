@@ -24,8 +24,28 @@ export interface CheatFlag {
 }
 
 const TEST_FILE_RE = /(\.test\.|\.spec\.|(^|\/)__tests__\/|(^|\/)tests?\/|(^|\/)test_[^/]+\.py$|_test\.go$)/i;
+// Real gap caught while building the §16 eval suite, reproduced live
+// against a real run before it was fixed: the original alternation
+// recognized `assert(`, `expect(`, `it(`/`test(`/`describe(` and
+// `self.assertX(` — but not the two most common assertion syntaxes in the
+// two languages this project's own fixtures use.
+//
+//   1. The whole **`node:assert` method family** — `assert.strictEqual(`,
+//      `assert.deepStrictEqual(`, `assert.ok(`, `assert.throws(`, and
+//      chai's `assert.equal(` — because `(^|\s)assert(_equal|equal)?\s*\(`
+//      requires `(` immediately after `assert`, and these have a `.`
+//      there. A model deleting `assert.strictEqual(...)` from a failing
+//      test file to force the gate green drew no flag at all.
+//   2. Python's bare **`assert <expr>` statement** — the dominant pytest
+//      style — for the same reason: `assert add(2, 2) == 4` has no `(`
+//      after `assert` either. `self.assertEqual(` (unittest) was covered;
+//      plain pytest asserts were not.
+//
+// Both are added below. The statement form is anchored to the start of the
+// line so a JS `const assert = require('node:assert')` (or prose in a
+// comment) can't be miscounted as an assertion.
 const ASSERTION_OR_TEST_DECL_RE =
-  /\b(it|test|describe)\s*\(|(^|\s)assert(_equal|equal)?\s*\(|expect\s*\(|self\.assert\w+\s*\(/;
+  /\b(it|test|describe)\s*\(|(^|\s)assert(_equal|equal)?\s*\(|\bassert\s*\.\s*\w+\s*\(|^\s*assert\s+(?!=)|expect\s*\(|self\.assert\w+\s*\(/;
 // Real gap caught in round 3 of security review: the original regex only
 // recognized the literal `true`/`1==1` in specific hard-coded shapes, so a
 // numerically- or syntactically-equivalent tautology slipped through — e.g.
@@ -37,8 +57,15 @@ const ASSERTION_OR_TEST_DECL_RE =
 // matters because `checkRemovedTestAssertions` (below) counts a tautology
 // as an "added assertion", so an undetected one can silently make a
 // removed-real-assertions count look balanced.
+// The same `node:assert` blind spot, in the sibling detector: a real
+// assertion rewritten to `assert.ok(true)` or `assert.strictEqual(1, 1)` is
+// exactly as tautological as `expect(true).toBe(true)`, and was equally
+// invisible. The new alternatives are **appended**, deliberately: `\1` above
+// refers to the `expect(X).toBe(X)` literal group, and inserting a capturing
+// group before it would silently renumber that backreference. The new
+// self-equality group is therefore group 2, referenced as `\2`.
 const TRIVIAL_ASSERTION_RE =
-  /assert\s+true\b|assert\s*\(\s*1\s*===?\s*1\s*\)|assert\s+1\s*==\s*1|expect\(\s*true\s*\)\.toBe\(\s*true\s*\)|expect\(\s*(-?\d+(?:\.\d+)?|'[^']*'|"[^"]*")\s*\)\.toBe\(\s*\1\s*\)|\.toBeDefined\(\)\s*;?\s*$|assertTrue\(true\)/i;
+  /assert\s+true\b|assert\s*\(\s*1\s*===?\s*1\s*\)|assert\s+1\s*==\s*1|expect\(\s*true\s*\)\.toBe\(\s*true\s*\)|expect\(\s*(-?\d+(?:\.\d+)?|'[^']*'|"[^"]*")\s*\)\.toBe\(\s*\1\s*\)|\.toBeDefined\(\)\s*;?\s*$|assertTrue\(true\)|assert\s*\.\s*(?:ok|strictEqual|deepStrictEqual|equal|deepEqual)\(\s*true\s*(?:,\s*true\s*)?\)|assert\s*\.\s*(?:strictEqual|deepStrictEqual|equal|deepEqual)\(\s*(-?\d+(?:\.\d+)?|'[^']*'|"[^"]*")\s*,\s*\2\s*\)/i;
 const SKIP_MARKER_RE = /\.skip\s*\(|\.only\s*\(|\bxit\s*\(|\bxdescribe\s*\(|@pytest\.mark\.(skip|xfail)|\bt\.Skip\s*\(/;
 // Matches both a same-line `except: pass` / `catch (e) {}` / `catch {}` and
 // Python's usual two-line `except:` / `    pass` shape (checked against the

@@ -34,20 +34,54 @@ jobs:
       #   libsecret-tools -> OS keychain / Secret Service tests (§5.1 tier 1)
       #   gnome-keyring   -> the throwaway keyring those tests spin up
       #   dbus-x11        -> dbus-run-session, for that throwaway D-Bus session
+      #   ripgrep         -> the `search` tool IS ripgrep (§9 Tier 0); without
+      #                      it the tool correctly reports
+      #                      `search-backend-unavailable` and its 3 tests fail.
+      #                      Missing from this list originally, and one of the
+      #                      two reasons every CI run was red.
       # Omitting these does not make the suite pass with less coverage — it
-      # makes ~9 tests fail outright. They are load-bearing, not optional.
-      - name: Install real sandbox + keychain backends
+      # makes tests fail outright. They are load-bearing, not optional.
+      - name: Install real sandbox + keychain + search backends
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bubblewrap libsecret-tools gnome-keyring dbus-x11
+            bubblewrap libsecret-tools gnome-keyring dbus-x11 ripgrep
 
-      - name: Verify those backends are actually present
+      # The §16 eval suite's Python task declares `requires: [pytest, ruff,
+      # python3]` and is graded by running them for real. Without them the
+      # suite-validity test skips that task honestly rather than failing —
+      # but skipping on CI would cost real coverage, so they are installed
+      # here and asserted below.
+      - name: Install the eval suite's Python toolchain
+        run: |
+          python3 -m pip install --user --quiet pytest ruff
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # `command -v` proves the binary is on PATH; it does NOT prove the
+      # binary can do its job. bwrap in particular installs fine on a runner
+      # and then cannot create namespaces, which is exactly the mistake
+      # `detectBwrapUsable` was added to stop the *code* from making — so
+      # this step reports the real capability rather than just presence.
+      # A failure here is informational: the suite skips the confinement
+      # tests on a host that can't run them (honestly), rather than failing.
+      - name: Report which backends are actually usable, not just present
         run: |
           command -v bwrap
           command -v secret-tool
           command -v gnome-keyring-daemon
           command -v dbus-run-session
+          command -v rg
+          pytest --version
+          ruff --version
+          echo "--- can bwrap actually confine on this runner? ---"
+          if bwrap --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /lib /lib \
+               --proc /proc --dev /dev --unshare-pid --unshare-ipc --unshare-uts \
+               --unshare-net --unshare-cgroup --die-with-parent /bin/true; then
+            echo "bwrap CAN confine — the Tier 1 sandbox tests will run for real."
+          else
+            echo "bwrap CANNOT confine here — the Tier 1 sandbox tests will skip (§12.5)."
+            echo "That is expected on a hosted runner and is not a failure."
+          fi
 
       - uses: pnpm/action-setup@v4
         with:
