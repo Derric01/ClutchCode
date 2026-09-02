@@ -27,6 +27,20 @@ export interface ScriptedModelServer {
   close(): Promise<void>;
 }
 
+export interface ScriptedModelServerOptions {
+  /**
+   * Pick the turn from the request itself instead of from a global call
+   * counter. The §16.4 A/B drives **two arms through one endpoint** — the
+   * ClutchCode arm sends a `tools` array and takes as many turns as its
+   * loop needs, the naked arm sends none and takes exactly one — so a test
+   * that scripts both cannot key on `callIndex` alone without silently
+   * depending on how many turns the harness happens to take.
+   *
+   * Returning `undefined` falls back to `turns[callIndex]`.
+   */
+  route?: (request: { body: string; callIndex: number }) => ScriptedModelTurn | undefined;
+}
+
 const USAGE = { prompt_tokens: 120, completion_tokens: 40 };
 
 function sse(obj: unknown): string {
@@ -52,13 +66,17 @@ function chunksFor(turn: ScriptedModelTurn): string[] {
  * more question than the script anticipated ends the run cleanly instead
  * of hanging — a benchmark must never deadlock on its own fixture.
  */
-export function startScriptedModelServer(turns: ScriptedModelTurn[]): Promise<ScriptedModelServer> {
+export function startScriptedModelServer(turns: ScriptedModelTurn[], opts: ScriptedModelServerOptions = {}): Promise<ScriptedModelServer> {
   let calls = 0;
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
-      req.on("data", () => {});
+      let body = "";
+      req.on("data", (chunk: Buffer | string) => {
+        body += chunk.toString();
+      });
       req.on("end", () => {
-        const turn = turns[calls] ?? { kind: "text" as const, text: "(script exhausted — stopping)" };
+        const routed = opts.route?.({ body, callIndex: calls });
+        const turn = routed ?? turns[calls] ?? { kind: "text" as const, text: "(script exhausted — stopping)" };
         calls += 1;
         res.writeHead(200, { "content-type": "text/event-stream" });
         for (const chunk of chunksFor(turn)) res.write(chunk);

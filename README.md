@@ -276,18 +276,19 @@ Replays a scripted transcript through the whole loop. It's how the test suite wo
 
 ## 📊 What we're actually sure of
 
-No invented benchmarks here. The eval scoreboard now exists — **but no VTCR number for any real model is published, because none has been measured** (this project's CI has neither an API key nor a local GPU). What the scoreboard gives you is the machinery to measure your own, and a methodology you can argue with: [`docs/EVAL_METHODOLOGY.md`](./docs/EVAL_METHODOLOGY.md).
+No invented benchmarks here. The eval scoreboard and the §16.4 A/B now exist — **but no VTCR number or delta for any real model is published, because none has been measured** (this project's CI has neither an API key nor a local GPU). What the scoreboard gives you is the machinery to measure your own, and a methodology you can argue with: [`docs/EVAL_METHODOLOGY.md`](./docs/EVAL_METHODOLOGY.md).
 
 | Claim | How it's proven |
 |---|---|
-| **774 tests, 83 files** | `pnpm test`. Real git repos, real shells, real filesystems — `FakeProvider` stubs *only* the model. |
-| **The suite runs on CI, not just locally** | GitHub Actions, Node 20 + 22 on every PR: `758 passed | 16 skipped (774)`, plus `tsc -b` and `eslint .`. The 16 skips are the bwrap confinement/seccomp suites — a hosted runner cannot create those namespaces, so they skip there and run in full locally (774, 0 skipped). **CI green therefore does not prove the sandbox confines**; only a bwrap-capable host does. |
+| **819 tests, 85 files** | `pnpm test`. Real git repos, real shells, real filesystems — `FakeProvider` stubs *only* the model. |
+| **The suite runs on CI, not just locally** | GitHub Actions, Node 20 + 22 on every PR: the same suite plus `tsc -b` and `eslint .`, with 16 tests skipped there. Those 16 skips are the bwrap confinement/seccomp suites — a hosted runner cannot create those namespaces, so they skip there and run in full locally (774, 0 skipped). **CI green therefore does not prove the sandbox confines**; only a bwrap-capable host does. |
 | **Sandbox actually confines** | A test writes outside the workspace, then asserts a sandboxed `cat` of it fails. Network fetch inside the sandbox asserted unreachable. These run for real wherever bwrap can genuinely create namespaces (this project's dev container can); where it can't — a hosted CI runner, an unprivileged container — they skip and ClutchCode falls back to Tier 0 **and says so**, rather than claiming a confinement it isn't getting. |
 | **Seccomp actually blocks** | Each denied syscall invoked by number inside real bwrap → `EPERM`, with an unfiltered control run proving the syscall otherwise succeeds. |
 | **Secrets don't leak** | A canary secret injected into a full recorded run, asserted absent from every transcript, event log and artifact. |
 | **Cheat detection works** | A recorded run where the model deletes an assertion — verification goes green, completion is blocked anyway. |
 | **The scoreboard can't be fooled by a green gate** | Every eval task carries a **held-out** check, copied in only after the run finishes. A scripted run that changes nothing on an already-passing repo reaches `DONE` with a green gate — and is scored a *false completion*, not a success. |
 | **The eval tasks are real tasks** | Every task is validated on each test run against real repos: its held-out check must fail on the pristine repo and pass on the reference solution. It caught a bad expectation in one of its own oracles the first time it ran. |
+| **The naked-vs-harness A/B is a real experiment, not a slogan** | Both arms of §16.4 now run: the same model under ClutchCode, and the same model naked (one call, no tools, no gate, no repair), graded by the same held-out oracle. Every end-to-end naked test asserts the scripted server's own **request counter is 1** — "single-shot" is checked, not asserted in a comment. The delta ships with a Wilson interval per arm and a task-clustered bootstrap interval on the delta, and a report whose interval includes 0 says so in its own notes. |
 | **Local-first is real** | A task completed offline with egress blocked at the OS level, against a local model. |
 
 <details>
@@ -297,7 +298,8 @@ No invented benchmarks here. The eval scoreboard now exists — **but no VTCR nu
 
 - **Linux is the verified platform.** The macOS Seatbelt profile is written against the documented SBPL grammar but **has never run on real macOS**. Windows Tier 1 is deliberately doc-only; WSL2 is the recommended path.
 - **Landlock is not implemented.** Seccomp is. The blocker is documented in `HANDOFF.md`.
-- **No benchmark numbers are published for any model.** The eval suite, the VTCR/§16.2 metrics and the held-out grading all work and are tested — but the only scored runs so far are deterministic scripted ones. The naked-vs-harness A/B that would substantiate "makes small local models usable", and the SWE-bench-Verified subset, are both explicitly not built; see [`docs/EVAL_METHODOLOGY.md`](./docs/EVAL_METHODOLOGY.md) §7.
+- **No benchmark numbers are published for any model.** The eval suite, the VTCR/§16.2 metrics, the held-out grading and now the §16.4 naked-vs-harness A/B all work and are tested — but every scored run so far is a deterministic scripted one, because this project's environment has no API key and no local GPU. So the machinery to measure "makes small local models usable" exists and **no VTCR delta for a real model is published or may be quoted from it**. Running `clutchcode-eval ab` against a 14B-class model on a machine that has one is the remaining step, and it needs no code. The SWE-bench-Verified subset is still not built. See [`docs/EVAL_METHODOLOGY.md`](./docs/EVAL_METHODOLOGY.md) §5 and §8.
+- **Five tasks is a small suite.** Enough to detect a large VTCR delta, not enough to resolve a small one — the A/B's confidence intervals reflect that honestly rather than hiding it, and growing the suite (§16.3a) is what narrows them.
 - **Pre-1.0**, not yet published to npm.
 - **Security reviews have been thorough but single-reviewer.** See [`SECURITY.md`](./SECURITY.md) for the threat model and how to report an issue.
 
@@ -319,9 +321,9 @@ gantt
         Sandbox Tier 1 · seccomp · credentials  :done, a2, after a1, 60d
         Workflow engine · VS Code extension      :done, a3, after a2, 45d
         Eval suite · VTCR scoreboard             :done, a4, after a3, 30d
+        Naked-vs-harness A/B (the North Star)    :done, a5, after a4, 20d
     section Next
         npm release (npx clutchcode)            :active, b1, 2026-08-01, 30d
-        Naked-vs-harness A/B (the North Star)   :b2, after b1, 30d
         Landlock rung                           :b3, after b1, 30d
         ACP editor protocol · MCP client         :b4, after b1, 45d
     section Later

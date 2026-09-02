@@ -191,19 +191,48 @@ export async function runEvalTask(task: EvalTask, opts: RunEvalOptions): Promise
 export interface RunSuiteOptions extends RunEvalOptions {
   /** Label recorded on the board — the suite directory by default. */
   suiteLabel?: string;
+  /**
+   * How many times to run the whole suite, pooling every run into one
+   * board (§16.4: "local models are nondeterministic; average over K
+   * seeds"). Default 1.
+   *
+   * Named `repetitions` rather than `seeds` because that is precisely what
+   * it does: `NormalizedRequest` has no seed field, so nothing here sets a
+   * provider-side seed. K independent repetitions are what actually
+   * average over a local model's run-to-run variance.
+   */
+  repetitions?: number;
 }
 
 /** Run every task in order and aggregate the §16.1/§16.2 board. Tasks run sequentially: they compete for the same CPU, and a wall-clock metric measured under contention is not a measurement. */
 export async function runSuite(tasks: EvalTask[], opts: RunSuiteOptions): Promise<Scoreboard> {
   if (tasks.length === 0) throw new Error("cannot run an empty eval suite");
+  const repetitions = opts.repetitions ?? 1;
+  if (!Number.isInteger(repetitions) || repetitions < 1) throw new Error(`repetitions must be a positive integer, got ${repetitions}`);
+
   const results: EvalTaskResult[] = [];
-  for (const task of tasks) {
-    opts.onTaskStart?.(task);
-    const { result } = await runEvalTask(task, opts);
-    results.push(result);
+  for (let repetition = 1; repetition <= repetitions; repetition += 1) {
+    for (const task of tasks) {
+      opts.onTaskStart?.(task);
+      const { result } = await runEvalTask(task, {
+        ...opts,
+        // `runEvalTask` names a task's scratch directory after the task id
+        // alone, so repetitions sharing one explicit `workDir` would
+        // collide with each other's trees.
+        workDir: opts.workDir === undefined ? undefined : path.join(opts.workDir, `r${repetition}`)
+      });
+      results.push(result);
+    }
   }
-  return computeScoreboard(
+
+  const board = computeScoreboard(
     { suite: opts.suiteLabel ?? path.dirname(tasks[0]!.dir), provider: opts.providerKind, model: opts.model },
     results
   );
+  if (repetitions > 1) {
+    board.notes.push(
+      `this board pools ${repetitions} repetitions of the suite, so "taskCount" is task-runs (${tasks.length} tasks × ${repetitions}), not distinct tasks.`
+    );
+  }
+  return board;
 }

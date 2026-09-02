@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { loadSuite } from "./eval-task.js";
 import { selectTasks } from "./eval-cli.js";
-import { readScoreboardHistory } from "./scoreboard-store.js";
+import { readAbHistory, readScoreboardHistory } from "./scoreboard-store.js";
 import { makeTempDir } from "./fixture-repo.js";
 
 /**
@@ -101,4 +101,66 @@ describe.skipIf(!fs.existsSync(evalEntry))("clutchcode-eval CLI (spawns the real
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/no such eval task/);
   }, 30_000);
+
+  it("pools --repetitions into one board rather than reporting the last run", () => {
+    const result = runEvalCli(["run", "--provider", "fake", "--task", "node-feature-slugify", "--repetitions", "2", "--json"], process.cwd());
+    expect(result.status).toBe(0);
+
+    const board = JSON.parse(result.stdout) as { taskCount: number; vtcr: number; notes: string[] };
+    expect(board.taskCount).toBe(2);
+    expect(board.vtcr).toBe(0);
+    // The pooled denominator is task-runs, not distinct tasks — said on
+    // the board itself so a reader of the JSON cannot misread it.
+    expect(board.notes.join(" ")).toMatch(/pools 2 repetitions/);
+  }, 180_000);
+
+  it("rejects a non-positive --repetitions instead of silently running once", () => {
+    const result = runEvalCli(["run", "--provider", "fake", "--repetitions", "0"], process.cwd());
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/positive integer/);
+  }, 30_000);
+
+  it("runs the §16.4 A/B end to end and writes both the report and the ClutchCode arm's board", () => {
+    // `--provider fake` gives each arm one canned text turn, so both arms
+    // score 0 and the delta is 0 — the honest outcome for a provider that
+    // does no work, and a fully deterministic, network-free exercise of
+    // the whole `ab` path including its persistence.
+    const out = makeTempDir("clutchcode-eval-ab-out-");
+    try {
+      const result = runEvalCli(["ab", "--provider", "fake", "--task", "node-feature-slugify", "--out", out, "--json"], process.cwd());
+      expect(result.status).toBe(0);
+
+      const report = JSON.parse(result.stdout) as {
+        taskCount: number;
+        repetitions: number;
+        vtcrDelta: number;
+        clutchcode: { vtcr: number; observations: number };
+        naked: { vtcr: number; observations: number };
+        deltaCi95: { lo: number; hi: number };
+        notes: string[];
+      };
+      expect(report.taskCount).toBe(1);
+      expect(report.repetitions).toBe(1);
+      expect(report.clutchcode.observations).toBe(1);
+      expect(report.naked.observations).toBe(1);
+      expect(report.clutchcode.vtcr).toBe(0);
+      expect(report.naked.vtcr).toBe(0);
+      expect(report.vtcrDelta).toBe(0);
+      expect(report.deltaCi95).toEqual({ lo: 0, hi: 0 });
+      expect(report.notes.join(" ")).toMatch(/includes 0/);
+
+      const history = readAbHistory(out);
+      expect(history).toHaveLength(1);
+      expect(history[0]!.vtcrDelta).toBe(0);
+      expect(fs.existsSync(path.join(out, history[0]!.file))).toBe(true);
+      // The supporting §16.2 metrics are written alongside the delta.
+      expect(readScoreboardHistory(out)).toHaveLength(1);
+
+      const printed = runEvalCli(["ab-history", out], process.cwd());
+      expect(printed.status).toBe(0);
+      expect(printed.stdout).toMatch(/delta \+0\.0%/);
+    } finally {
+      fs.rmSync(out, { recursive: true, force: true });
+    }
+  }, 180_000);
 });

@@ -5,26 +5,28 @@ session; update it before you stop. See `CLAUDE.md` for timeless working
 conventions (build/test/lint, testing philosophy, quality bar) — this
 file is the time-stamped snapshot of where the project actually stands.
 
-**Snapshot as of:** 2026-09-01
-**Branch:** `claude/start-work-handoff-referral-52eyj1`
-**Latest commit:** `5ce4eba` — "fix(evals,sandbox): decide capability by running it, not by finding it — the same class, three more places"
+**Snapshot as of:** 2026-09-02
+**Branch:** `claude/start-work-handoff-referral-52eyj1` (restarted from `main`'s merged tip `da64e93` after PR #17 merged)
+**Latest commit:** see the tip of this branch — the §16.4 naked-vs-harness A/B round
 **Phase:** Phase 1 shipped (§21) — one agent, one default workflow, three provider
 adapters, SEARCH/REPLACE edits with fallback, worktree isolation, deterministic
 verification with cheat detection, terminal CLI. **Phase 2 in progress:** the
 adaptation layer (capability probe §4.9, context budgeter §4.5, edit-format
 selector §4.4) is wired into the live loop; workflow engine §8.1/§8.2, VS Code
-§18.5, credentials §5.1, sandbox Tier 1 §12.5/§12.6 and the §16 eval scoreboard
-landed early.
-**Test suite (locally):** 774/774 passing, 83 test files, clean `tsc -b`, clean
+§18.5, credentials §5.1, sandbox Tier 1 §12.5/§12.6, the §16 eval scoreboard and
+the §16.4 naked-vs-harness A/B landed early.
+**Test suite (locally):** 819/819 passing, 85 test files, clean `tsc -b`, clean
 `eslint .` — and **0 skipped**: bwrap genuinely confines in this dev container,
 so every real Tier 1/seccomp test still runs here.
 **CI — GREEN, observed.** Run [#12](https://github.com/Derric01/ClutchCode/actions/runs/33593109279)
 at `b7970cc` is the **first successful run in this repo's history** (runs #1–#11:
-0 successes). Both matrix legs pass: `758 passed | 16 skipped (774)` across 83
-files, plus `tsc -b` and `eslint .`. The 16 skips are exactly the 16 that used
-to *fail* — the bwrap confinement/seccomp suites, which a hosted runner cannot
-create namespaces for; they skip honestly there and **all 774 still run locally**
-(0 skipped) where bwrap genuinely works. Earlier snapshots claimed CI had "not
+0 successes). Both matrix legs passed: `758 passed | 16 skipped (774)` across 83
+files at that commit, plus `tsc -b` and `eslint .`. (The suite has grown since —
+819 across 85 files now; the 758/16/774 split is run #12's, not today's.) The 16
+skips are exactly the 16 that used to *fail* — the bwrap confinement/seccomp
+suites, which a hosted runner cannot create namespaces for; they skip honestly
+there and **everything still runs locally** (0 skipped) where bwrap genuinely
+works. Earlier snapshots claimed CI had "not
 yet been observed running" and that Actions was probably disabled; that was
 false — the workflow was registered and had run 9 times, all red. Root causes,
 both now fixed: `detectSandboxBackend` decided Tier 1 from **PATH presence**, so
@@ -38,21 +40,19 @@ that coverage now lives only in environments where bwrap works. See the
 **Note:** the "what's done" history moved to `docs/PROJECT_LOG.md`; this file is
 kept short on purpose. Append your entry there, not here.
 
-**PR:** [#17](https://github.com/Derric01/ClutchCode/pull/17) — **open**, carrying the
-README banner/demo-GIF work and the stderr-leak fix. #4–#16 merged cleanly
-before it — #14, #15, and #16 were all merged *mid-session* (three times in
-one session), so **check a PR's actual state before assuming pushes are
-landing on it** (`pull_request_read`, or `git merge-base --is-ancestor
-<head> origin/main`) before every push in this convention, not just once.
-Push work to #17's branch; open a new PR only once #17 is merged.
+**PR:** #4–#17 all merged. #14–#17 were merged *mid-session*, so **check a PR's
+actual state before assuming pushes are landing on it** (`pull_request_read`, or
+`git merge-base --is-ancestor <head> origin/main`) before every push in this
+convention, not just once. A merged PR is never reused: when one merges, the
+branch restarts from `main`'s merged tip and the next round opens a new PR.
 
 ---
 
 ## What's done
 
 The full history now lives in [`docs/PROJECT_LOG.md`](./docs/PROJECT_LOG.md) —
-22 entries covering Phase 1 through the current round, each with what was
-built, what was verified and how, and what was deferred.
+each entry records what was built, what was verified and how, and what was
+deferred.
 
 It was split out of this file deliberately. `HANDOFF.md` is read at the start
 of **every** session; an ever-growing changelog inside it made the part that
@@ -70,9 +70,12 @@ continuation" step 9.
 Ordered by what a next session should reach for first — **this ordering is
 the priority signal**, so a row added later belongs at its right position,
 not appended to the bottom. Exactly **one** row carries a `DO FIRST` tag at
-any time (currently the top row); when that row is completed, move the tag
-to whatever becomes the next genuinely-unblocked, highest-value row rather
-than letting it disappear. Do not introduce competing "do first"/"do next"
+any time; when that row is completed, move the tag to whatever becomes the
+next genuinely-unblocked, highest-value row rather than letting it
+disappear. The tagged row is often **not** the literal top row — the rows
+above it are the ones gated on a host, an ADR, or an infra decision, and
+they stay at the top because that is where their priority would be if the
+gate lifted. Do not introduce competing "do first"/"do next"
 variants — one tag, one row.
 Effort is rough — a single focused session's worth of work, at this
 project's standard (real tests, honest verification flags), not a
@@ -82,10 +85,9 @@ loose "MVP" estimate.
 |---|---|---|---|
 | Prove §12.6 confinement somewhere CI *can* run it | §12.6 | medium | **New, and it is the direct cost of getting CI green.** The bwrap/seccomp suites now skip on hosted runners (16 tests), so CI no longer proves OS-level confinement works — only local runs on a bwrap-capable host do, and nothing in CI would catch a regression that broke confinement. Options, in rough order of cost: a privileged/`--cap-add` container job, a self-hosted runner, or a nested-VM job. Until one exists, treat "sandbox verified" as a claim about developer machines and this dev container, not about CI. Do not close this by loosening the skip guard — the guard is correct; the gap is the runner. |
 | macOS/Windows siblings of the PATH-presence bug | §12.5, A11 | small, **needs a macOS/Windows host** | `detectSandboxExecOnPath` (macOS) and `detectPowerShellOnPath` (Windows) decide capability from PATH presence, exactly like the bwrap bug just fixed. They are *not* fixed, deliberately: neither can be exercised here, and shipping an unverified probe for them would be the "silence implying completeness" this project treats as a defect. `detectSecretToolOnPath` shares the shape but degrades gracefully (a failed `keychainGet` falls through to env vars — checked) and is already documented in the gotchas. |
-
 | `agent eval` in the CLI — **needs a §20 boundary decision, do not just wire it** | §18.2/§16.3b | small, **gated** | The scoreboard ships as its own `clutchcode-eval` bin because §20's dependency rule ("`apps/*` depend only on `agent-api`") is normative and §20's layout puts the scoreboard in `evals/`. Adding `agent eval` to `apps/cli` means either (a) `apps/cli` depends on `evals` — a boundary violation "regardless of whether it compiles" — or (b) the runner moves behind `agent-api`, which bloats the boundary package with benchmark machinery. Pick one deliberately, in an ADR or a spec amendment, before implementing. |
-| The naked-vs-harness A/B — the actual North Star claim | §16.4 | medium, **DO FIRST** (the top genuinely-ungated row — 83 needs an infra/security-posture call on a privileged runner, 84 needs a macOS/Windows host, 86 needs a §20 boundary decision) | The scoreboard measures the **ClutchCode arm** only. §16.4's claim ("a 14B model under ClutchCode materially beats the same model naked") needs the **naked arm**: one model call, the task plus file contents, whole-file output applied directly, no repair loop, no verification feedback — then the same held-out oracle, and a published VTCR *delta* with confidence intervals over K seeds. Until this exists **no VTCR delta may be quoted**, and `docs/EVAL_METHODOLOGY.md` §7 says so. Also queued with it: K-seed repetition (the runner executes a suite once today). |
-| SWE-bench Verified subset + Terminal-Bench adapters | §16.3a | medium–large | §16.3a bullets 1 and 2. The `evals/suite/<id>/{repo,oracle,solution}` task format is the intended adapter target and is not Node/Python-specific. Blocked on infrastructure rather than design: SWE-bench Verified needs dataset fetching and per-instance container images, which an offline local-first harness does not currently take on. Do not fake it with a hand-copied slice — the value is in the real, citable instances. |
+| Terminal-Bench-style shell/tooling tasks — and a suite big enough to resolve a small delta | §16.3a bullet 2, §16.4 | medium, **DO FIRST** (the top genuinely-ungated row — the three rows above need, in order: an infra/security-posture call on a privileged runner, a macOS/Windows host, and a §20 boundary decision) | **Split out of the old SWE-bench row because only half of it was blocked.** §16.3a bullet 2 asks for "Terminal-Bench-style tasks (shell/tooling tasks)", and those need **no dataset fetching and no container images** — they are hand-buildable in the existing `evals/suite/<id>/{repo,oracle,solution}` format, offline, exactly like the five that ship. This is also the concrete fix for the A/B's honest weakness: with 5 tasks the §16.4 delta interval is wide and coarse by construction (`docs/EVAL_METHODOLOGY.md` §5.4), and growing the suite is what narrows it — a different formula is not. The suite currently has **zero** shell/tooling tasks and no task where the deliverable is a script or a build/CI invocation rather than a source edit. Every new task must pass `eval-suite.test.ts`'s four validity checks (oracle fails pristine, passes on the reference solution, gate green after it, declared `startingGate` matches reality) and declare its `requires` honestly. |
+| SWE-bench Verified subset adapter | §16.3a bullet 1 | large, **blocked on infrastructure** | Needs dataset fetching and per-instance container images, which an offline local-first harness does not currently take on. The `evals/suite/<id>/{repo,oracle,solution}` format is the intended adapter target and is not Node/Python-specific. Do not fake it with a hand-copied slice — the value is in the real, citable instances. |
 | Landlock — **BLOCKED on the host kernel, not on us** | §12.6 | medium, blocked | **Attempted and stopped this round; read the reason before re-queueing it.** The *old* blocker ("needs either a native helper binary or a vetted raw-syscall binding — neither exists yet") is genuinely retired: **`@deepseek-ai/node-addon-landlock-run`** (BSD-3-Clause, `0.1.1`) installs clean, its `linux-x64` prebuilt is a real statically-linked ELF that runs, and its fail-closed contract is observable (a usage error exits `125` with a launcher-owned fatal line). **A different blocker replaced it: this environment's kernel has no Landlock at all**, so not one confined process can be observed here and the security property itself would ship unverified. Three independent confirmations, all reproduced live (see the `docs/PROJECT_LOG.md` entry for the exact commands and output): `/sys/kernel/security/lsm` = `capability,selinux`; `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)` (syscall 444) returns `ENOSYS`; and the kernel's own config says `# CONFIG_SECURITY_LANDLOCK is not set` — **not compiled in**, on a Firecracker microVM kernel that cannot be reconfigured from inside the guest. No `apt-get` fixes this. **Revisit trigger (concrete, checkable):** a host where `zcat /proc/config.gz | grep -i landlock` shows `CONFIG_SECURITY_LANDLOCK=y` **and** `landlock-run --probe` exits `0`. **The implementation plan below is already audited and stands as written — do not redesign it:** (1) add the dep, pinned; (2) add an optional `landlock?: LandlockDetection` field to `SandboxCapability` alongside the existing `seccomp?: SeccompDetection`, and emit the launcher into the argv `buildBwrapSpawn` already produces — Landlock is a *hardening layer under bwrap*, exactly as seccomp is; (3) **do NOT add `"landlock"` to the `SandboxBackend` union** — it is a closed union re-exported as public API from `@clutchcode/agent-api` and guarded by an exhaustive `const exhaustive: never = backend` switch in `buildConfinedSpawn`, and a `"landlock"` backend would falsely imply an unconfined-namespace path that does not exist; (4) write our own **status-gated** runner-failure classification (exit `125` **and** a launcher-owned fatal line, with the exact informational partial-enforcement line excluded) — never a substring bag, per their postmortem 0004 and the two times our own `classifyFailure` was bitten by the same shape; (5) real tests on a Landlock-capable host — a file outside the allow-list genuinely unreadable, **plus** the `§2a` condition-3 fail-closed test. **Consume as a dependency, never vendor** (`LICENSE_AND_REUSE_ANALYSIS.md §2a`, five binding conditions); do not copy their provider, argv construction, or classification code — sandbox policy is CLEAN-ROOM-REQUIRED per §3. Study note: `research/repos/deepseek-harness.md`. |
 | Coordinated npm release (`npx clutchcode`) | §18/§21 | medium | **The last adoption blocker.** Publish metadata now exists on all 11 manifests (`files`, `publishConfig.access: public`, `engines`, `repository.directory`, `bugs`, `homepage`) — what's missing is the release itself. `@clutchcode/cli` depends on `@clutchcode/agent-api` and `@clutchcode/agent-rpc` via `workspace:*`, which transitively requires publishing **all ten** workspace packages as one coordinated release, so this is a release *process*, not a publish command: decide the npm org/scope ownership, pick a versioning strategy (lockstep vs. independent — lockstep is simpler for a pre-1.0 monorepo where the packages only ever ship together), verify `pnpm publish -r` rewrites `workspace:*` to real ranges, add a release workflow gated on the CI gate, and confirm `npx clutchcode --help` works from a clean machine. Deliberately not half-started: partial publishes of an interdependent scope are worse than none. Until this lands the README quickstart correctly says "build from source". |
 | Provider stop/finish-reason conformance — incl. Anthropic `pause_turn` | §4.7/§6.8 | small–medium, **gated** — see the note (its central deliverable needs a decision) | **Confirmed real, currently unreachable** (same posture as the old `snapshot-backup.ts` row). `mapStopReason` in `packages/providers/src/anthropic.ts` has no `pause_turn` case, so it falls through `default:` → `"stop"`. Per Anthropic's published API docs, `pause_turn` means the model **paused a long-running turn and the client is expected to resume it** — so the loop would treat a paused turn as a completed one, the exact defect signature round 3 found six instances of. Not reachable today: `pause_turn` only arises when the request declares Anthropic **server** tools (web search / web fetch / code execution) and we declare none (verified by grep — all our tools are client-side). Doing this right is a small **design decision, not a one-liner**: `FinishReason` is `"stop" \| "tool_use" \| "length" \| "error"` with no paused variant, so it needs a new variant plus a decision about what `AgentLoop` does with it (resubmit? treat as a budgeted continuation?). Left queued rather than decided unilaterally. Scope the work as a **table-driven conformance test per adapter** covering the full documented stop/finish vocabulary — `pause_turn`, `aborted`, `content_filter`, `refusal`, `max_tokens`/`length`, `stop_sequence`, `tool_use`/`tool_calls` — with each case's meaning taken from the **provider's own documentation**, using `@earendil-works/pi-ai`'s vocabulary only as a checklist of what to go look up (`research/repos/pi-agent-harness.md`). Adapters stay ours; do not vendor or port pi-ai. **Blast radius, audited so it is neither over- nor under-estimated:** `finishReason` is confined to `packages/providers` (`types.ts`, the three adapters, `fake-provider.ts`) and one consumer, `packages/runtime/src/agent-loop.ts`. It is **not** part of the `agent-rpc` wire contract and **not** re-exported through `agent-api`, so widening the union does **not** break the JSON-RPC protocol, the VS Code extension, or any `apps/*` consumer. Two packages, one loop — contained. |
@@ -302,6 +304,18 @@ loose "MVP" estimate.
   `cli-structure.test.ts` walks `buildProgram()` and fails if any
   subcommand ever re-declares an ancestor's option, so adding the next
   subcommand the old way is caught at test time rather than in the field.
+
+- **`collect()` folds a provider error into `finishReason: "error"` and
+  throws the message away.** A failed `fetch` in `OpenAICompatibleProvider`
+  does not reject — it *yields* `{ type: "error", message }` and the stream
+  ends normally, so `await collect(...)` resolves with empty text and no
+  exception. Any caller that wants the actual reason (an unreachable
+  endpoint, a 500, a filtered completion) has to watch the deltas on the
+  way past — `runNakedTask` wraps the stream in a small pass-through
+  generator to keep the first error message. A `try/catch` around
+  `collect()` alone will silently score a dead endpoint as "the model
+  produced nothing", which in an A/B does not cancel out: it manufactures
+  a delta.
 
 - **`FakeProvider.requestLog` used to keep a live reference to the
   caller's `messages` array**, so every logged entry mutated into the
