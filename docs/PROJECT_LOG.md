@@ -2645,3 +2645,61 @@ the tags itself. Revisit if a real deployment shows otherwise. Feeding a
 malformed region back to the model as a `<tool_response>` error (upstream's
 instinct, convergent with §14's repair loop) is not wired in: `malformedRegions`
 is exposed for it, but the §4.8 emulation repair path is a separate unit.
+
+
+### Two source files were binary to `grep`, and the fix needed a test that could tell
+
+**How it surfaced.** Following up the previous unit, `grep -n -A30 'export
+async function runAbComparison' evals/src/ab.ts` answered **`binary file
+matches`** and printed nothing. A 441-line TypeScript file is not binary. That
+one refusal is the whole finding: tooling was quietly declining to show source.
+
+**Root cause.** Two files embedded a **literal NUL byte (0x00)** inside a
+template literal, used as a composite-key separator:
+
+- `evals/src/ab.ts` - `` `${o.taskId}<NUL>${o.repetition}` `` (A/B pairing key)
+- `packages/runtime/src/tool-result-pruning.ts` - `` `${call.name}<NUL>${call.argsJson}` `` (dedup key)
+
+The second is **production runtime code**, not eval tooling.
+
+**Severity, scoped honestly rather than inflated.** This is **not a correctness
+bug**. NUL is a sound separator in both places, and that was checked rather
+than assumed: `JSON.stringify` escapes NUL as a six-character sequence, so a
+raw NUL can never appear inside `argsJson`, and a task id or tool name cannot
+contain one either. Keys are unambiguous; behavior was correct before and is
+byte-identical after. The defect is in the **source encoding**: a literal 0x00
+makes git, grep and diff viewers classify the file as binary, so `grep` hides
+matching lines and review of that file silently degrades. It degraded this
+session's own review, which is how it was caught. The tool layer agreed - three
+attempts to write the fix script were rejected for "command contains control
+characters", which is the same complaint from the other direction.
+
+**Fix.** Replace the literal byte with the equivalent unicode escape in source.
+Same runtime character, file stays text. Applied to both instances.
+
+**Fixing the class, not the instance.** The first file was found by accident;
+the second was found by then scanning **every tracked text file** for a raw NUL
+rather than assuming the one instance was the only one. It was not - which is
+exactly the failure mode `CLAUDE.md` warns about, and the reason the sweep is
+now automated instead of remembered.
+
+**Verified, and how.**
+
+- **The test discriminates, proven by stash-revert.** `git stash push --` the
+  two fixed files, re-run `tests/source-hygiene.test.ts`: it **fails**, naming
+  both offenders (`expected [ 'evals/src/ab.ts', ... ] to deeply equal []`).
+  `git stash pop`, re-run: passes. A *behavioral* test could not have
+  discriminated here, because the runtime behavior is deliberately unchanged -
+  so the honest test is the encoding invariant itself.
+- **Behavior preserved:** 854/854 before the fix, 854/854 after it, then
+  856/856 with the two new hygiene tests. `tsc -b` and `eslint .` clean
+  throughout.
+- **Tooling recovered:** both files now report as `Unicode text, UTF-8 text`
+  to `file(1)`, and the `grep` that originally refused now prints the line.
+- The new test also asserts it is scanning a non-trivial number of files, so a
+  glob that silently matched nothing cannot make it vacuously green.
+
+**Deferred.** The `runAbComparison` behavior review that this interrupted was
+not completed - the investigation was into whether the A/B pairing key had a
+*logic* problem, and only the encoding issue was resolved. That review is still
+open.
