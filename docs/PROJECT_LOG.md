@@ -2244,3 +2244,48 @@ as the previous entry, and it remains the open item. The pytest/ruff install
 step in `ci.yml` has never executed on a runner; if it is wrong, the Python
 task will skip on CI rather than fail, which the "assert they are present" step
 is there to catch. Treat the first real run as the test of this, not this entry.
+
+### CI observed green for the first time — and what that green does not prove
+
+**What happened.** Run [#12](https://github.com/Derric01/ClutchCode/actions/runs/33593109279)
+at `b7970cc` passed on both matrix legs. It is the **first successful run in
+this repository's history**: runs #1–#11 produced 0 successes, and for most of
+that period `HANDOFF.md` asserted CI had "not yet been observed running" and
+that Actions was probably disabled — a claim that was false the whole time. The
+workflow was registered and `active`; it was simply red on every run, including
+two `push` runs on `main`.
+
+**The predicted outcome, checked rather than assumed.** The previous two entries
+ended with an explicit prediction: the bwrap confinement/seccomp suites would
+**skip** on a hosted runner while everything else passed, and a *different*
+failure would mean a different cause. What run #12 actually reports is
+`758 passed | 16 skipped (774)` across 83 files, plus `tsc -b` and `eslint .`
+clean. The 16 skips are exactly the 16 tests that were previously *failing* —
+the prediction held on the number, not just the shape. Locally, on a
+bwrap-capable host, all 774 still run with **0 skipped**.
+
+Also newly proven on a real runner: the `pytest`/`ruff` install step added in
+the previous entry, which had never executed anywhere. It succeeded on both
+Node 20 and Node 22, and the "assert they are present" step passed — so the
+Python eval task ran rather than skipping.
+
+**What this green does NOT prove, and it matters.** CI passing no longer says
+anything about whether the OS sandbox confines. That coverage now exists only
+where bwrap genuinely works — this dev container and developer machines — and
+**nothing in CI would catch a regression that broke confinement**. That is the
+direct, deliberate cost of making the guard honest, and it is now a tracked row
+in `HANDOFF.md` ("Prove §12.6 confinement somewhere CI *can* run it") rather
+than a silence. The row explicitly forbids closing it by loosening the skip
+guard: the guard is correct, the runner is the gap.
+
+The README's new CI badge points at `main`, which is **still red** — the fixes
+are on PR #17 and have not merged. The badge will stay red until they do, which
+is the accurate thing for it to show.
+
+**Docs updated.** `HANDOFF.md`'s CI block rewritten from "cause fixed, green not
+yet observed" to the observed result plus the caveat; the completed "Confirm CI
+actually goes green" row removed and replaced by the §12.6-coverage row; the
+`DO FIRST` tag moved to the naked-vs-harness A/B (§16.4), the top row not gated
+on a host, an ADR, or an infra decision. `README.md` gained the CI badge and a
+claims-table row stating the skip caveat rather than implying CI proves the
+sandbox.
