@@ -28,7 +28,19 @@ node evals/dist/eval-bin.js history ~/.local/state/clutchcode/eval
 
 `--task <id>` (repeatable) narrows the run; `--json` prints the whole board
 for a script; `--keep-workdir` leaves each task's scratch repository behind
-so a failure can be inspected by hand.
+so a failure can be inspected by hand; `--repetitions <K>` runs the whole
+suite K times and pools every run into one board (§5).
+
+The §16.4 A/B — the same model under ClutchCode against the same model
+naked — is its own command, and it is the one that produces a *delta*:
+
+```sh
+node evals/dist/eval-bin.js ab \
+    --provider ollama --model qwen2.5-coder:14b \
+    --repetitions 5 \
+    --out ~/.local/state/clutchcode/eval
+node evals/dist/eval-bin.js ab-history ~/.local/state/clutchcode/eval
+```
 
 `agent eval` (`§18.2`) does not exist yet, on purpose. §20's dependency
 rule — "`apps/*` depend only on `agent-api`" — is normative, and the
@@ -160,7 +172,116 @@ tell the difference.
 
 ---
 
-## 5. Conditions every scored run holds fixed
+## 5. The A/B that substantiates the claim (§16.4)
+
+`PROJECT_SPEC.md §16.1` states the reason this project exists: *"VTCR of a
+14B-class local model **with the ClutchCode harness** materially exceeds
+the same model's single-shot/naked VTCR … If that delta is not real and
+measurable, the project has no reason to exist."* §16.4 turns it into an
+experiment. Everything above measures one arm of it. This section is the
+other arm and the comparison.
+
+### 5.1 What the naked arm is
+
+One model call. The task text plus the repository's files in the prompt.
+Whole-file replies parsed out of the reply and written straight to disk.
+Then the **same held-out oracle**. Nothing from the harness participates:
+
+| ClutchCode arm | naked arm |
+|---|---|
+| tools (`read_file`, `search`, `shell`, `edit_file`) | none — the prompt is all the model gets |
+| the §6 state machine and its repair iterations | one call, whatever comes back |
+| §14 deterministic gate, with its failure fed back (§14.5) | no gate, no feedback |
+| §14.6 cheat detection, §14.7 approval contract | neither |
+| §4.4 edit-format selection + the SEARCH/REPLACE cascade | one fixed whole-file format |
+| §4.5 context budgeting, §4.9 capability probe | a flat, generous output cap |
+| §13 worktree isolation | writes directly into the delivered repository |
+
+"Single-shot" is not a claim about the code, it is an assertion in the
+tests: every end-to-end naked case checks the scripted server's own
+request counter, because a naked arm that quietly grew a retry would look
+fine on every other metric while inflating the delta.
+
+### 5.2 The baseline is engineered to be *hard to beat*
+
+A rigged baseline makes the delta worthless, and the failure mode is
+asymmetric — it is very easy to build a naked arm that loses for reasons
+that have nothing to do with the harness. Three choices push the other
+way, and all three cost the ClutchCode arm:
+
+1. **The naked arm gets the whole repository in its prompt** (to a stated
+   byte budget), not a retrieved subset. Retrieval is a harness feature
+   (§9); withholding files would score it twice. Anything dropped for
+   size or being binary is *reported on the result*, so a weak naked
+   score can never be a silent truncation artifact.
+2. **The reply parser is deliberately tolerant.** A bare path line, a path
+   in the fence info string, a backticked path, `File:`, a markdown
+   heading, a `./` or `/` prefix — all accepted. A picky parser would
+   score a formatting habit as a failure and the delta would be measuring
+   our parser. Blocks it still cannot attribute are counted and reported,
+   not silently dropped.
+3. **The naked arm is graded on the held-out oracle alone.** The
+   ClutchCode arm must *additionally* reach `DONE` with a green gate and
+   zero cheat flags (§3.1's clauses 1–3) before its oracle result counts.
+   That asymmetry favours the naked arm, which makes the published delta a
+   conservative floor rather than a flattering number.
+
+Model-produced paths are also untrusted text about to become filesystem
+paths, so they go through the same shared validator the rest of the
+codebase uses (`@clutchcode/git`'s `isSafeRelPath`) plus a containment
+re-check and a `.git` refusal. Reproduced before it was written: without
+the guard, a reply naming `../canary.txt` genuinely overwrites a file
+outside the repository.
+
+### 5.3 "K seeds" means K repetitions
+
+§16.4 asks for repeated runs "because local models are nondeterministic".
+Nothing here sets a provider-side seed — `NormalizedRequest` has no seed
+field, and most local servers would ignore one anyway — so the knob is
+`--repetitions K`: K independent runs of the whole comparison, pooled.
+That is what actually averages over a model's run-to-run variance, and
+calling it what it is avoids implying a reproducibility we do not have.
+
+### 5.4 The intervals, and why these ones
+
+**Per-arm VTCR gets a Wilson score interval.** These boards sit at 0% and
+100% constantly, and the textbook Wald interval collapses to zero width
+exactly there — reporting infinite confidence from ten observations.
+Wilson does not: 0/10 is `[0, 0.278]`, not `[0, 0]`. The implementation is
+tested against published reference values.
+
+**The delta gets a cluster bootstrap over tasks.** The observations are
+paired — same task, same repetition, both arms — and correlated within a
+task: an easy task is easy in both arms, K times over. Treating
+`tasks × repetitions` Bernoulli trials as independent would understate the
+interval by exactly the amount that matters. Each resample therefore draws
+whole **tasks** with replacement, keeping each task's repetitions
+together. No distributional assumption is needed, and the PRNG is seeded
+and the seed recorded on the report, so a published interval is one anyone
+can recompute.
+
+The honest consequence, and it is attached to every report rather than
+buried here: **with a five-task suite the interval is wide and coarse**,
+and a zero-width one means every resample agreed, not that the estimate is
+precise. That is what five tasks can support. Growing the suite (§16.3a)
+narrows it; a different formula does not. A report whose 95% interval
+includes 0 says so in its own notes — on its own, such a run does not
+substantiate §16.1's claim.
+
+### 5.5 What a report contains
+
+Both arms' VTCR with Wilson intervals, the delta with its bootstrap
+interval, the bootstrap's resample count and seed, per-task solved counts
+in each arm (so the headline can be re-derived by hand from the report
+alone), and the notes above. `ab --out <dir>` writes the full report as
+JSON, appends the headline numbers to `ab.jsonl`, **and** writes the
+ClutchCode arm's own §16.2 board next to it — the supporting metrics are
+what explain a delta, and a delta without them is a number without a
+mechanism.
+
+---
+
+## 6. Conditions every scored run holds fixed
 
 * **Trusted repo (§12.4).** Fixture repos are marked trusted and the flag
   is committed *before* the run, because `handleDirtyTree` stashes an
@@ -181,7 +302,7 @@ tell the difference.
 
 ---
 
-## 6. Is the suite itself any good?
+## 7. Is the suite itself any good?
 
 A benchmark can rot silently — every *scored* run still produces a
 plausible number. So the suite is validated on every test run
@@ -202,16 +323,19 @@ oracle's own expectations on its first run.
 
 ---
 
-## 7. What is deliberately not here yet
+## 8. What is deliberately not here yet
 
 Stated plainly, because silence would imply completeness.
 
-* **The A/B that substantiates the product claim (§16.4).** The North Star
-  claim is that a 14B-class local model *under ClutchCode* materially beats
-  the same model naked. This harness measures the ClutchCode arm. The
-  **naked arm** — one model call, no repair loop, no verification feedback
-  — is not built, so no VTCR *delta* is published, and none should be
-  quoted from this harness.
+* **A measured delta for a real model.** The A/B itself now exists (§5):
+  both arms, the same held-out oracle, K repetitions, and a delta with
+  confidence intervals. What does not exist is a *number*. Every scored run
+  in this repository is against scripted replies or `--provider fake`,
+  because this project's environment has no local model server and no API
+  key. So: the machinery is verified end to end, and **no VTCR delta for
+  any real model is published here or may be quoted from this harness**.
+  Running it against a 14B-class model on a machine that has one is the
+  remaining step, and it needs no code.
 * **No numbers for a real model are published in this repository.** The
   only scored runs that exist so far are the deterministic, scripted ones
   in the test suite and a `--provider fake` smoke run. Running the suite
@@ -224,8 +348,8 @@ Stated plainly, because silence would imply completeness.
   local-first harness does not currently take on. The task format above is
   the intended adapter target; nothing about it is Node- or
   Python-specific.
-* **Repeated runs and confidence intervals.** §16.4 asks for K seeds
-  because local models are nondeterministic. The runner executes a suite
-  once. Averaging over seeds is an additive change to the same board.
+* **A suite large enough for a tight interval.** Five tasks is enough to
+  detect a large delta and not enough to resolve a small one — see §5.4.
+  §16.3a's other two bullets are what grow it.
 * **Cost.** See §3.2 — it turns on by itself the day a provider adapter
   reports one.

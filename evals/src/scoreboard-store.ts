@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import type { AbReport } from "./ab.js";
 import type { Scoreboard } from "./scoreboard.js";
 
 /**
@@ -89,6 +90,87 @@ export function readScoreboardHistory(dir: string): ScoreboardHistoryRow[] {
     .map((line, i) => {
       try {
         return JSON.parse(line) as ScoreboardHistoryRow;
+      } catch (err) {
+        throw new Error(`${file}: line ${i + 1} is not valid JSON (${(err as Error).message})`);
+      }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// The §16.4 A/B report
+// ---------------------------------------------------------------------------
+
+/** One row of the append-only A/B history — the headline delta, without the per-task detail. */
+export interface AbHistoryRow {
+  generatedAt: string;
+  suite: string;
+  provider: string;
+  model: string;
+  taskCount: number;
+  repetitions: number;
+  clutchcodeVtcr: number;
+  nakedVtcr: number;
+  vtcrDelta: number;
+  deltaCi95Lo: number;
+  deltaCi95Hi: number;
+  file: string;
+}
+
+export function abHistoryPath(dir: string): string {
+  return path.join(dir, "ab.jsonl");
+}
+
+export interface SavedAbReport {
+  jsonPath: string;
+  historyPath: string;
+}
+
+/**
+ * Persist a §16.4 A/B report the same way a scoreboard is persisted: one
+ * full JSON document, plus an append-only history of the headline numbers.
+ * A delta is only meaningful as a series — §16.4 asks for it to be
+ * published so the claim is falsifiable, and a single reading cannot show
+ * whether it is holding up.
+ */
+export function saveAbReport(dir: string, report: AbReport): SavedAbReport {
+  fs.mkdirSync(dir, { recursive: true });
+
+  const stamp = report.generatedAt.replace(/[:.]/g, "-");
+  const name = `ab-${stamp}-${slugForFilename(report.provider)}-${slugForFilename(report.model || "no-model")}.json`;
+  const jsonPath = path.join(dir, name);
+  fs.writeFileSync(jsonPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+
+  const row: AbHistoryRow = {
+    generatedAt: report.generatedAt,
+    suite: report.suite,
+    provider: report.provider,
+    model: report.model,
+    taskCount: report.taskCount,
+    repetitions: report.repetitions,
+    clutchcodeVtcr: report.clutchcode.vtcr,
+    nakedVtcr: report.naked.vtcr,
+    vtcrDelta: report.vtcrDelta,
+    deltaCi95Lo: report.deltaCi95.lo,
+    deltaCi95Hi: report.deltaCi95.hi,
+    file: name
+  };
+  const historyPath = abHistoryPath(dir);
+  fs.appendFileSync(historyPath, `${JSON.stringify(row)}\n`, "utf8");
+
+  return { jsonPath, historyPath };
+}
+
+/** Read the append-only A/B history back, oldest first. A malformed line fails loudly, for the same reason `readScoreboardHistory` does. */
+export function readAbHistory(dir: string): AbHistoryRow[] {
+  const file = abHistoryPath(dir);
+  if (!fs.existsSync(file)) return [];
+  return fs
+    .readFileSync(file, "utf8")
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line, i) => {
+      try {
+        return JSON.parse(line) as AbHistoryRow;
       } catch (err) {
         throw new Error(`${file}: line ${i + 1} is not valid JSON (${(err as Error).message})`);
       }

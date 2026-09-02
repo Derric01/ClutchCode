@@ -2289,3 +2289,129 @@ actually goes green" row removed and replaced by the §12.6-coverage row; the
 on a host, an ADR, or an infra decision. `README.md` gained the CI badge and a
 claims-table row stating the skip caveat rather than implying CI proves the
 sandbox.
+
+### The naked-vs-harness A/B — the North Star claim becomes an experiment (§16.4)
+
+**Why this row.** `PROJECT_SPEC.md §16.1` is unusually blunt about what this
+project is for: *"VTCR of a 14B-class local model with the ClutchCode harness
+materially exceeds the same model's single-shot/naked VTCR … If that delta is
+not real and measurable, the project has no reason to exist."* Everything
+built so far measures **one arm** of that. `docs/EVAL_METHODOLOGY.md` §7 said
+so plainly and forbade quoting any delta. This unit builds the other arm and
+the comparison. Coherence-checked first: nothing in §16, §20 or the ADR list
+constrains it — §16.4 asks for exactly this, and no Accepted ADR touches it.
+
+**What was built.**
+
+- **`evals/src/naked-arm.ts` — the naked arm.** One model call, no tools, the
+  task plus the repository's files in the prompt, whole-file replies parsed out
+  of the reply text and written straight to disk, then the **same held-out
+  oracle**. No gate, no repair loop, no verification feedback, no cheat
+  detector, no worktree, no context budgeter, no capability probe. The module
+  header carries the arm-by-arm table of what does and does not participate.
+- **Fairness engineered deliberately, because a rigged baseline makes the
+  delta worthless.** Three choices, all of which cost the ClutchCode arm: the
+  naked arm gets the *whole repository* in its prompt (retrieval is a §9
+  harness feature; withholding files would score it twice), the reply parser
+  accepts every common way a model labels a whole-file block (a picky parser
+  would make the delta a measurement of our parser), and the naked arm is
+  graded on the **oracle alone** while the ClutchCode arm must additionally
+  reach `DONE` with a green gate and zero cheat flags. Anything dropped from
+  the prompt for size or being binary, and any fenced block the parser cannot
+  attribute, is *counted on the result* — a weak naked score can never be a
+  silent truncation artifact.
+- **Model-produced paths treated as the untrusted path-sink they are.**
+  `applyWholeFileBlocks` reuses `@clutchcode/git`'s shared `isSafeRelPath`
+  rather than growing a fourth private copy (the "fix the class" rule), plus a
+  containment re-check on the resolved path and a `.git` refusal.
+- **`evals/src/ab.ts` — the comparator and its statistics.** Wilson score
+  interval per arm; a **task-clustered percentile bootstrap** for the delta;
+  `computeAbReport` (pure) which *checks* the pairing rather than assuming it
+  — mismatched or unbalanced arms throw instead of producing a
+  confident-looking delta from mismatched data; `formatAbReport`;
+  `runAbComparison` driving both arms in a fixed order.
+- **K-seed repetition.** `runSuite` gained `repetitions`, `runAbComparison`
+  the same. Named `repetitions`, not `seeds`, because `NormalizedRequest` has
+  no seed field and nothing sets a provider-side one — §16.4's "average over
+  K seeds" is operationally K independent runs, and saying so avoids implying
+  a reproducibility we do not have.
+- **CLI.** `clutchcode-eval ab` (with `--repetitions`, `--bootstrap-resamples`,
+  `--bootstrap-seed`, `--out`) and `ab-history`; `run --repetitions`. `ab --out`
+  writes the A/B report *and* the ClutchCode arm's own §16.2 board, because
+  the supporting metrics are what explain a delta.
+- **`startScriptedModelServer` gained an optional `route`.** The A/B drives two
+  arms through one endpoint; the ClutchCode arm sends a `tools` array and the
+  naked arm sends none, so a test scripting both cannot key on a global call
+  counter without silently depending on how many turns the harness takes.
+
+**Why these statistics and not the obvious ones.** Both choices are defensive
+against a specific way of being wrong:
+
+- **Wilson, not Wald.** These boards sit at 0% and 100% constantly, and the
+  textbook Wald interval collapses to *zero width* exactly there — reporting
+  infinite confidence from ten observations. Verified by breaking it: swapping
+  Wilson for Wald makes `wilsonInterval(0, 10)` return `[0, 0]` and the
+  published-reference-value test fail.
+- **A cluster bootstrap, not a two-proportion z-test.** The observations are
+  paired and correlated within a task (an easy task is easy in both arms, K
+  times over). Treating `tasks × repetitions` trials as independent would
+  understate the interval by exactly the amount that matters. Resampling whole
+  *tasks* preserves the correlation that actually exists and assumes no
+  distribution. The PRNG (mulberry32) is seeded and the seed is recorded on the
+  report, so a published interval is one anyone can recompute — asserted by a
+  test that re-derives `deltaCi95` from the report's own `perTask` rows.
+- **The report argues against itself where it should.** With five tasks the
+  interval is wide and coarse; a zero-width one means every resample agreed,
+  not that the estimate is precise. A report whose 95% interval **includes 0**
+  says so in its own `notes`, in the report JSON, not only in prose here.
+
+**What was verified, and how.** `tsc -b` clean, **819/819 passing across 85
+files** (from 774/83 — +45 tests, +2 files), `eslint .` clean. Everything below
+the model is real: real materialized git repos from the shipped suite, real
+HTTP through the real `OpenAICompatibleProvider`, real files written to real
+disk, the real held-out oracle spawned as a real child process.
+
+Three deliberate breaks, each applied to the source, run, and reverted — the
+stash-revert discipline, adapted for files git does not track yet:
+
+1. **The path guard removed.** `applyWholeFileBlocks` with `isSafeRelPath`, the
+   `.git` refusal and the containment re-check deleted: three tests fail, and a
+   throwaway script against the broken build printed
+   `canary now: "OVERWRITTEN BY THE MODEL\n"` — a model-supplied
+   `../canary.txt` genuinely writes **outside the repository**. The same run
+   also created `/etc/clutchcode-should-not-exist` for real (removed
+   afterwards), which is the absolute-path half of the guard proving itself.
+   The bad thing was made to happen before the guard was trusted.
+2. **The single-shot property broken.** A second `provider.chat` call added to
+   `runNakedTask`: **6 tests fail** across both new suites, every one of them
+   on the scripted server's own request counter. This is the assertion the
+   whole experiment rests on — a naked arm that quietly grew a retry would look
+   fine on every other metric while inflating the delta — and it is now proven
+   to discriminate rather than merely present.
+3. **Wilson swapped for Wald**, as above.
+
+The pairing/balance validators in `computeAbReport` were **not** stash-reverted:
+they are pure input validation whose correctness is unambiguous from the tests'
+own assertions (`/unpaired/`, `/no observation for task "b"/`, `/unbalanced/`),
+which `CLAUDE.md` explicitly permits skipping.
+
+**What this does NOT prove — the part that matters most.** Nothing here has run
+against a real 14B local model. This environment has no model server and no API
+key, so **every scored run is against scripted replies or `--provider fake`**.
+The machinery is verified end to end; the *number* §16.4 asks for is not
+measured. `docs/EVAL_METHODOLOGY.md` §8 and `README.md`'s limitations both now
+say this in those words: no VTCR delta for any real model is published, and
+none may be quoted from this harness. Running `clutchcode-eval ab` on a machine
+that has a 14B model is the remaining step, and it needs no code.
+
+Also deliberately not done: growing the suite. Five tasks can detect a large
+delta and cannot resolve a small one, and the intervals say so rather than
+hiding it — §16.3a's other two bullets are the fix, not a different formula.
+
+**Docs updated.** `docs/EVAL_METHODOLOGY.md` gained §5 (the A/B: what the naked
+arm is, why the baseline is engineered to be hard to beat, what "K seeds"
+means, the intervals and why these ones, what a report contains) with §5–§7
+renumbered to §6–§8, and §8's first bullet rewritten from "the A/B is not built"
+to "the A/B is built, the number is not measured". `README.md`: test counts,
+a new claims-table row for the A/B, the roadmap's A/B entry moved to Shipped,
+and two sharpened limitations.
