@@ -1,4 +1,5 @@
 import { parseSSE } from "./sse.js";
+import { HermesStreamParser, toHermesRequestMessages, type ToolProtocol } from "./hermes.js";
 import type { CapabilityDefaults, Delta, NormalizedMessage, NormalizedRequest, Provider, ToolSchema } from "./types.js";
 
 /**
@@ -13,6 +14,12 @@ export interface OpenAICompatibleOptions {
   id?: string;
   extraHeaders?: Record<string, string>;
   capabilityDefaults?: Partial<CapabilityDefaults>;
+  /**
+   * How to speak tools to the model (§4.7). Defaults to `"native"` —
+   * OpenAI-shaped `tools` out, `delta.tool_calls` back. `"hermes"` and
+   * `"auto"` add the open-weight `<tool_call>` format; see `hermes.ts`.
+   */
+  toolProtocol?: ToolProtocol;
   /** Injectable for tests; defaults to the global fetch. */
   fetchImpl?: typeof fetch;
 }
@@ -83,6 +90,8 @@ export class OpenAICompatibleProvider implements Provider {
   readonly supportsParallelTools: boolean;
   readonly supportsConstrainedDecode: boolean;
 
+  readonly toolProtocol: ToolProtocol;
+
   private readonly baseUrl: string;
   private readonly apiKey?: string;
   private readonly extraHeaders: Record<string, string>;
@@ -93,6 +102,7 @@ export class OpenAICompatibleProvider implements Provider {
     this.apiKey = opts.apiKey;
     this.id = opts.id ?? "openai-compatible";
     this.extraHeaders = opts.extraHeaders ?? {};
+    this.toolProtocol = opts.toolProtocol ?? "native";
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.capabilityDefaults = { ...DEFAULT_CAPS, ...opts.capabilityDefaults };
     this.supportsNativeTools = this.capabilityDefaults.supportsNativeTools;
@@ -101,13 +111,20 @@ export class OpenAICompatibleProvider implements Provider {
   }
 
   async *chat(request: NormalizedRequest): AsyncGenerator<Delta, void, void> {
+    // In "hermes" mode we own the whole protocol as plain text: the tool
+    // schemas move into the system prompt and no `tools` field is sent.
+    // "auto" leaves the request exactly as "native" builds it and only
+    // widens what we accept back (§4.7, hermes.ts).
+    const hermesRequest = this.toolProtocol === "hermes";
+    const messages = hermesRequest ? toHermesRequestMessages(request) : request.messages;
+
     const body: Record<string, unknown> = {
       model: request.model,
       stream: true,
       stream_options: { include_usage: true },
-      messages: request.messages.map(toOpenAIMessage)
+      messages: messages.map(toOpenAIMessage)
     };
-    if (request.tools && request.tools.length > 0) body.tools = request.tools.map(toOpenAITool);
+    if (!hermesRequest && request.tools && request.tools.length > 0) body.tools = request.tools.map(toOpenAITool);
     if (request.maxOutputTokens) body.max_tokens = request.maxOutputTokens;
     if (request.temperature !== undefined) body.temperature = request.temperature;
     if (request.stopSequences) body.stop = request.stopSequences;
@@ -140,6 +157,10 @@ export class OpenAICompatibleProvider implements Provider {
     }
 
     const toolCallBuffers = new Map<number, { id: string; name: string }>();
+    // Non-null in "hermes"/"auto" mode: assistant text is routed through it
+    // so `<tool_call>` regions become real tool-call deltas and a
+    // `<scratch_pad>` reasoning block is stripped instead of leaking.
+    const hermes = this.toolProtocol === "native" ? null : new HermesStreamParser();
     // Real bug caught in round 3 of security review: if the stream ends
     // (connection closes, or the gateway emits an error object with no
     // `choices` key) without ever producing a chunk this loop recognizes
@@ -153,6 +174,7 @@ export class OpenAICompatibleProvider implements Provider {
 
     for await (const evt of parseSSE(res.body)) {
       if (evt.data === "[DONE]") {
+        if (hermes) for (const d of hermes.end()) yield d;
         if (!sawTerminal) {
           yield { type: "error", message: "stream sent [DONE] without ever sending a finish_reason", retryable: true };
         }
@@ -181,7 +203,8 @@ export class OpenAICompatibleProvider implements Provider {
 
       const delta = choice.delta ?? {};
       if (typeof delta.content === "string" && delta.content.length > 0) {
-        yield { type: "text", text: delta.content };
+        if (hermes) for (const d of hermes.push(delta.content)) yield d;
+        else yield { type: "text", text: delta.content };
       }
 
       if (Array.isArray(delta.tool_calls)) {
@@ -200,15 +223,23 @@ export class OpenAICompatibleProvider implements Provider {
       }
 
       if (choice.finish_reason) {
+        if (hermes) for (const d of hermes.end()) yield d;
         for (const buf of toolCallBuffers.values()) yield { type: "tool_call_end", id: buf.id };
         if (json.usage) {
           yield { type: "usage", inputTokens: json.usage.prompt_tokens ?? 0, outputTokens: json.usage.completion_tokens ?? 0 };
         }
         sawTerminal = true;
-        yield { type: "done", finishReason: mapFinishReason(choice.finish_reason) };
+        // A Hermes-speaking model has no way to set `finish_reason:
+        // "tool_calls"` — it emits `<tool_call>` inside an ordinary "stop"
+        // turn. Report what actually happened rather than the server's
+        // transport-level guess, so a paused-for-tools turn is not recorded
+        // as a completed answer.
+        const reason = mapFinishReason(choice.finish_reason);
+        yield { type: "done", finishReason: reason === "stop" && hermes && hermes.toolCallCount > 0 ? "tool_use" : reason };
       }
     }
 
+    if (hermes) for (const d of hermes.end()) yield d;
     if (!sawTerminal) {
       yield { type: "error", message: "stream ended without a finish signal (no [DONE], no finish_reason, no in-band error)", retryable: true };
     }

@@ -2511,3 +2511,137 @@ none may be quoted. Eight tasks is still a small suite: enough to detect a large
 delta, not enough to resolve a small one. §16.3a bullet 1 (SWE-bench Verified)
 remains blocked on dataset fetching and per-instance container images, and is
 now its own row rather than being hidden inside a half-blocked one.
+
+---
+
+### Hermes tool-call format for open-weight models (§4.7/§4.9)
+
+**Why.** `packages/providers` could parse exactly one tool-call shape:
+OpenAI's `delta.tool_calls`. The open-weight world overwhelmingly does not
+speak it — vLLM ships `--tool-call-parser hermes`, and llama.cpp, SGLang and
+the long tail of Ollama modelfiles emit the same `<tool_call>` format. A local
+model calling a tool was therefore read as **plain prose**.
+
+**Reproduced first, before any code was written.** A throwaway test streamed a
+Hermes-shaped turn through the real `sse.ts` path into `OllamaProvider` and
+then into the §4.9 probe. Observed, exactly as the queued row predicted:
+
+- `toolCalls: []` — the call was invisible;
+- the Hermes-3 `<scratch_pad>` GOAP reasoning block leaked **verbatim** into
+  user-visible text;
+- `toolTransport: "none"`, with the note "no parseable `edit_file` tool call
+  … text-protocol emulation (§4.8) is required".
+
+That last one is the expensive part: `toolTransport` cascades into a weaker
+edit format (§4.4) and a smaller context budget (§4.5), so a genuinely capable
+local model was being systematically under-rated for speaking the standard
+dialect of its own ecosystem.
+
+**What was built.** `packages/providers/src/hermes.ts`:
+
+- `HermesStreamParser` — an incremental, **lexical** scanner. It finds
+  `<tool_call>` regions by position, JSON-parses only a region's contents, and
+  never parses the surrounding prose at all.
+- `extractHermesToolCalls` — whole-message extraction, built on the same
+  parser so the two cannot drift.
+- `buildHermesToolSystemPrompt` / `renderHermesToolResponse` /
+  `renderHermesToolCalls` / `toHermesRequestMessages` — the request side:
+  tools declared in the system prompt inside `<tools>`, results returned in
+  `<tool_response>`. All prompt text **written from scratch** per ADR-016.
+- A `toolProtocol` option on `OpenAICompatibleProvider`: `"native"` (default,
+  byte-identical to previous behavior), `"hermes"` (we own the whole protocol
+  as text; no `tools` field is sent), `"auto"` (request untouched, response
+  parsing widened). `OllamaProvider` defaults to `"auto"` — that is where
+  open-weight models live, and `"auto"` is purely receptive, so a model that
+  answers natively is unaffected.
+
+**The upstream extractor was deliberately not ported, and that is the design
+content of this unit.** NousResearch's `utils.py` wraps the whole assistant
+message in a synthetic `<root>` and strict-XML-parses it. For a *coding* agent
+that fails constantly: a bare `<`, a bare `&`, an unclosed generic
+(`Array<string`), a shell redirect (`2>&1`), JSX — each makes the XML parse
+throw and discards a perfectly valid tool call whose only sin was sharing a
+message with a code block. There is a test named for exactly this, asserting
+all five hostile fragments survive verbatim alongside a successfully extracted
+call. Reuse posture: the **format** is REUSE-eligible as an open protocol
+(same as MCP/ACP); their parser is do-not-copy on merit; their prompts are
+study-only.
+
+**Streaming had no upstream reference** — their parser is whole-message only —
+so the chunk-boundary design is ours, and it is where the bugs would live:
+
+- A call is emitted **atomically at its closing tag**. Emitting
+  `tool_call_start` early (as soon as a `"name"` became readable) reads better
+  in a UI but lets a region that later fails to parse leave a half-open call
+  behind — `collect()` would hand `AgentLoop` a call with empty arguments,
+  which it would then execute. Never emitting a call we cannot complete beats
+  the progress indicator.
+- **Nothing the model wrote is ever silently dropped.** An unparseable or
+  truncated region is re-emitted verbatim, tags included, and recorded in
+  `malformedRegions` — one failed call, not a failed message.
+- A `<scratch_pad>` is **implicitly closed by a `<tool_call>`**, and a
+  `<tool_call>` by the next `<tool_call>`. Without this, one unclosed block
+  would swallow every call after it.
+- Strict `JSON.parse` only. Upstream falls back to Python `ast.literal_eval`
+  to salvage single-quoted dicts; vLLM — the dominant server-side
+  implementation, and so what the ecosystem converges on — is strict, and
+  shipping an expression evaluator on the path that turns model output into
+  tool invocations is not a trade this project makes.
+- A Hermes model cannot set `finish_reason: "tool_calls"`; it emits
+  `<tool_call>` inside an ordinary `"stop"` turn. The adapter now reports
+  `tool_use` when it actually parsed calls, so a paused-for-tools turn is not
+  recorded as a completed answer — the same defect signature round 3 found
+  six instances of.
+
+**Coherence check (before writing code).** ADR-015 (Accepted) rejects *static
+per-model tables*; this adds none. Transport stays **probed** — the probe now
+simply has eyes for a dialect it was blind to. ADR-016 governs the prompt text,
+written from scratch accordingly. Blast radius checked: the `ToolTransport`
+union in `@clutchcode/capability` is **unchanged** — because the decoding
+happens at the provider layer, the probe sees real `tool_call_*` deltas and
+scores `"native"` through the existing path, so no publicly re-exported union
+was widened. `toolProtocol` is a new optional field, not a new variant. The
+only consumer of `OllamaProvider` outside the package is
+`agent-api/src/provider-factory.ts`, which gets the new default.
+
+**What was verified, and how.** `tsc -b` clean, **854/854 across 86 files**
+(from 823/85 — 31 new tests), `eslint .` clean, after a full clean rebuild.
+The 29 new provider tests cover: scratch-pad stripping, multiple calls per
+turn, prose ordering, the code-that-breaks-XML case, malformed regions,
+missing `name`, `arguments` as an encoded string and absent entirely,
+truncation, both implicit-close recoveries, per-character chunking, partial-tag
+hold-back (`Array<` / `string>` split across chunks), atomic emission, `end()`
+idempotence, and — over a **real HTTP server and the real SSE path** — the
+Ollama integration, the unchanged `"native"` default, `"auto"` leaving the
+request untouched, `"hermes"` moving schemas into the system prompt, and a
+native tool call still reassembling in `"auto"` mode.
+
+**The fix was proven to discriminate** (`git stash push` on the two wiring
+files, keeping `hermes.ts` and the tests). Both provider-integration tests
+failed as expected. `probe.test.ts` initially still **passed** — a real trap
+worth recording: `packages/capability` resolves `@clutchcode/providers` to its
+built `dist/`, so the stale compiled wiring was still in play. After
+`npx tsc -b` the probe test failed with `expected 'none' to be 'native'` —
+precisely the reproduction above. `git stash pop` + rebuild returned all 37 to
+green. **Lesson: when stash-reverting a fix that lives in a different workspace
+package from the test, rebuild before re-running, or the test silently
+validates the old dist.**
+
+**NOT VERIFIED — and deliberately flagged rather than asserted.** This has
+never run against a live open-weight model: no Ollama, no GPU, no weights in
+this environment. Every fixture is modeled on the upstream `chat_templates`
+token layout. The parser is verified; the end-to-end claim "a real Hermes-3 /
+Qwen / vLLM `--tool-call-parser hermes` deployment drives our tools correctly"
+is **not**, and is flagged in the header of `hermes.ts`, in the test file, and
+in `README.md`.
+
+**Deliberately deferred.** `"hermes"` mode returns tool results as a
+**user**-role message wrapped in `<tool_response>` rather than a `tool`-role
+one, because in that mode we have already assumed the server applies no
+tool-aware chat template (otherwise it would need a `tools` request field to
+render `<tools>` at all); a `tool`-role message would be either rejected for
+having no matching native call id or double-wrapped by a template that adds
+the tags itself. Revisit if a real deployment shows otherwise. Feeding a
+malformed region back to the model as a `<tool_response>` error (upstream's
+instinct, convergent with §14's repair loop) is not wired in: `malformedRegions`
+is exposed for it, but the §4.8 emulation repair path is a separate unit.
