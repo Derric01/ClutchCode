@@ -1,0 +1,21 @@
+{
+  "id": "shell-pipeline-exit-code",
+  "category": "shell-tooling",
+  "language": "shell",
+  "description": "A CI wrapper script pipes a checker through `tee`, so the pipeline's exit status is tee's and every failure is reported as success. The repository's own suite is red on arrival.",
+  "prompt": "scripts/run-checks.sh is supposed to fail when `node tools/check.js` fails, but it always exits 0: the checker's output is piped through `tee`, and a pipeline's exit status is its LAST command's, so `set -e` never sees the failure. Fix scripts/run-checks.sh so the script exits non-zero whenever the checker does, while still writing the checker's full output to the log file given as its first argument and still printing \"checks finished\" on a successful run. Do not change tools/check.js or anything under test/. `npm test` must pass.",
+  "solutionPaths": [
+    "scripts/run-checks.sh"
+  ],
+  "requires": [
+    "bash",
+    "tee"
+  ],
+  "startingGate": "red",
+  "oracle": {
+    "command": [
+      "node",
+      "oracle.check.js"
+    ]
+  }
+}

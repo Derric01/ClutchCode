@@ -1,0 +1,20 @@
+{
+  "id": "shell-quoted-filenames",
+  "category": "shell-tooling",
+  "language": "shell",
+  "description": "A listing script word-splits on `$(ls)`, so any filename containing a space is reported as two files. The repository's own tests only use space-free names, so its gate is GREEN on arrival and only the held-out oracle can tell.",
+  "prompt": "scripts/list-reports.sh prints the name of every file in the directory given as its first argument (defaulting to \"reports\"), one per line. It is wrong for any filename that contains whitespace: it iterates over the unquoted output of `ls`, so \"Q3 summary.txt\" is printed as two separate lines. Fix scripts/list-reports.sh so each file produces exactly one line containing its exact name, whitespace and all, for any directory passed as the first argument. A directory containing no files must produce no output at all and still exit 0. Keep printing bare filenames, not paths, and keep the existing tests passing.",
+  "solutionPaths": [
+    "scripts/list-reports.sh"
+  ],
+  "requires": [
+    "bash"
+  ],
+  "startingGate": "green",
+  "oracle": {
+    "command": [
+      "node",
+      "oracle.check.js"
+    ]
+  }
+}

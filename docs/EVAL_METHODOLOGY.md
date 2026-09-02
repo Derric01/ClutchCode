@@ -62,11 +62,13 @@ evals/suite/<task-id>/
   solution/     the reference ("golden") solution, used only to validate the task itself
 ```
 
-The suite that ships is §16.3a's **third** bullet: "a hand-built suite of
-realistic individual-developer repo tasks (bug fix, small feature,
-refactor, test-add, dependency bump) across languages — THE most
-representative for our user." Five tasks, five categories, two languages
-(Node and Python):
+The suite that ships covers **two** of §16.3a's bullets. Bullet 3 is "a
+hand-built suite of realistic individual-developer repo tasks (bug fix,
+small feature, refactor, test-add, dependency bump) across languages — THE
+most representative for our user"; bullet 2 is "Terminal-Bench-style tasks
+(shell/tooling tasks)", which get their own `shell-tooling` category rather
+than being filed under whichever of the five they happen to resemble. Eight
+tasks, six categories, three languages (Node, Python, shell):
 
 | Task | Category | Starting gate | What it is really testing |
 |---|---|---|---|
@@ -75,6 +77,17 @@ representative for our user." Five tasks, five categories, two languages
 | `node-refactor-format` | refactor | green | Behavior preservation *and* the structural goal. |
 | `python-test-add-median` | test-add | green | Graded by mutation — see §4. |
 | `node-dependency-bump-textutil` | dependency-bump | green | A pin *and* a call-site migration, offline. |
+| `shell-pipeline-exit-code` | shell-tooling | **red** | Pipeline exit status: `set -e` cannot see a failure on the left of a `\|`. Graded in **both** directions, so an unconditional `exit 1` fails. |
+| `shell-quoted-filenames` | shell-tooling | green | `$(ls)` word-splitting. The repo's own fixtures are all single words, so its gate cannot see the bug at all. |
+| `shell-log-summary` | shell-tooling | green | Writing a *new* tool to a stated contract. The oracle uses logs it writes itself, and one of them separates "the level is field 2" from `grep -c ERROR`. |
+
+Note what the three shell tasks are **not**: they need no network, no
+dataset download and no container images. That is the whole reason bullet 2
+could ship while bullet 1 (SWE-bench Verified) cannot — see §8.
+
+The task's `language` is a display label. A shell task's repository still
+carries a `package.json`, because that is how real repositories wire shell
+tooling into a gate, and §14.2 detection reads the manifest, not the label.
 
 ### Why the oracle is held out
 
@@ -318,8 +331,20 @@ repositories and real command execution. For each task:
    §14.7 at all), and
 4. the declared `startingGate` matches what the gate actually does.
 
-This has already earned its keep: it caught an arithmetic error in one
-oracle's own expectations on its first run.
+This has already earned its keep twice: it caught an arithmetic error in
+one oracle's own expectations on its first run, and a syntax error
+introduced into a shell task's oracle while the shell tasks were being
+written.
+
+Passing these four checks is necessary, not sufficient. A new task is also
+run against the **plausible wrong solution** a model would actually write,
+to confirm the oracle rejects it — for the three shell tasks that meant a
+`grep -c ERROR` summarizer (rejected: the level is field 2), a
+`for f in "$(ls "$DIR")"` listing (rejected: it emits one blank line for an
+empty directory), and the classic cheat of deleting the failing assertion
+from the repository's own test (gate goes green, oracle still fails). An
+oracle that only ever sees the reference solution has not been shown to
+discriminate.
 
 ---
 
@@ -342,14 +367,14 @@ Stated plainly, because silence would imply completeness.
   against a real model needs an API key or a local server, neither of which
   exists in this project's CI environment. Any published VTCR figure must
   say which model, which suite revision, and how many seeds.
-* **SWE-bench Verified subset and Terminal-Bench-style tasks** (§16.3a
-  bullets 1 and 2). Both need dataset fetching and, for SWE-bench, per-
-  instance container images — network and infrastructure this offline,
-  local-first harness does not currently take on. The task format above is
-  the intended adapter target; nothing about it is Node- or
-  Python-specific.
-* **A suite large enough for a tight interval.** Five tasks is enough to
-  detect a large delta and not enough to resolve a small one — see §5.4.
-  §16.3a's other two bullets are what grow it.
+* **A SWE-bench Verified subset** (§16.3a bullet 1). It needs dataset
+  fetching and per-instance container images — network and infrastructure
+  this offline, local-first harness does not currently take on. The task
+  format above is the intended adapter target; nothing about it is Node-,
+  Python- or shell-specific. (Bullet 2, Terminal-Bench-style shell/tooling
+  tasks, **is** shipped — see §2 — precisely because it needs neither.)
+* **A suite large enough for a tight interval.** Eight tasks is enough to
+  detect a large delta and still not enough to resolve a small one — see
+  §5.4. §16.3a bullet 1 is what grows it further.
 * **Cost.** See §3.2 — it turns on by itself the day a provider adapter
   reports one.

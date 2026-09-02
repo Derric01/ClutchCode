@@ -34,6 +34,7 @@ import { startScriptedModelServer, type ScriptedModelServer } from "./scripted-m
  */
 
 const BUGFIX = loadEvalTask(path.join(defaultSuiteDir(), "node-bugfix-duration"));
+const SHELL_LOG_SUMMARY = loadEvalTask(path.join(defaultSuiteDir(), "shell-log-summary"));
 
 const FIXED_DURATION_JS = `'use strict';
 
@@ -345,6 +346,57 @@ describe("runNakedTask (§16.4) — real repo, real HTTP, real oracle, scripted 
 
       expect(result.filesWritten).toBe(1);
       expect(result.solved).toBe(false);
+      expect(server.requestCount()).toBe(1);
+    },
+    120_000
+  );
+
+  it(
+    "creates a file that did not exist before — the shell/tooling task's deliverable is a new script",
+    async () => {
+      // Every other case here rewrites a file the prompt already contained.
+      // `shell-log-summary` asks for a script that does not exist yet, which
+      // is a different path through apply: a new file, in an existing
+      // directory, that the held-out oracle then executes.
+      const script = [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "",
+        'FILE="${1:-}"',
+        'if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then',
+        '  echo "usage: summarize-log.sh <logfile>" >&2',
+        "  exit 2",
+        "fi",
+        "",
+        "errors=0",
+        "warns=0",
+        "infos=0",
+        "",
+        'while read -r timestamp level rest || [ -n "${timestamp:-}" ]; do',
+        '  case "${level:-}" in',
+        "    ERROR) errors=$((errors + 1)) ;;",
+        "    WARN) warns=$((warns + 1)) ;;",
+        "    INFO) infos=$((infos + 1)) ;;",
+        "  esac",
+        'done < "$FILE"',
+        "",
+        'echo "ERROR $errors"',
+        'echo "WARN $warns"',
+        'echo "INFO $infos"',
+        'echo "TOTAL $((errors + warns + infos))"'
+      ].join("\n");
+
+      const server = await scriptedText(["scripts/summarize-log.sh", "```bash", script, "```"].join("\n"));
+
+      const { result } = await runNakedTask(SHELL_LOG_SUMMARY, {
+        providerKind: "openai-compatible",
+        model: "scripted-naked-shell",
+        baseUrl: server.baseUrl
+      });
+
+      expect(result.filesWritten).toBe(1);
+      expect(result.solved).toBe(true);
+      expect(result.oracleExitCode).toBe(0);
       expect(server.requestCount()).toBe(1);
     },
     120_000

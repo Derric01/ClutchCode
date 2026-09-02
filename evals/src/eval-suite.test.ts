@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectToolchain, runPipeline } from "@clutchcode/verification";
 
-import { applyReferenceSolution, checkTaskRequirements, defaultSuiteDir, loadSuite, materializeTaskRepo, parseTaskJson, runOracle } from "./eval-task.js";
+import { EVAL_CATEGORIES, applyReferenceSolution, checkTaskRequirements, defaultSuiteDir, loadSuite, materializeTaskRepo, parseTaskJson, runOracle } from "./eval-task.js";
 import { makeTempDir } from "./fixture-repo.js";
 
 /**
@@ -49,9 +49,19 @@ describe("eval suite validity (§16.3a)", () => {
 
   it("ships a suite that spans the realistic-task categories and more than one language", () => {
     expect(tasks.length).toBeGreaterThanOrEqual(5);
+    const categories = new Set(tasks.map((t) => t.category));
     // §16.3a's third bullet names the mix explicitly: "bug fix, small
     // feature, refactor, test-add, dependency bump ... across languages".
-    expect(new Set(tasks.map((t) => t.category))).toEqual(new Set(["bug-fix", "feature", "refactor", "test-add", "dependency-bump"]));
+    // A superset check, not an equality one: bullet 2 is a *different*
+    // bullet, and a suite that grew a category should not fail for growing.
+    for (const required of ["bug-fix", "feature", "refactor", "test-add", "dependency-bump"]) {
+      expect(categories, `§16.3a bullet 3 requires a "${required}" task`).toContain(required);
+    }
+    // §16.3a bullet 2: "Terminal-Bench-style tasks (shell/tooling tasks)".
+    expect(categories, "§16.3a bullet 2 requires shell/tooling tasks").toContain("shell-tooling");
+    // Every category the union declares must actually be represented —
+    // otherwise a category could be added to the type and never shipped.
+    expect(categories).toEqual(new Set(EVAL_CATEGORIES));
     expect(new Set(tasks.map((t) => t.language)).size).toBeGreaterThanOrEqual(2);
     // At least one task must arrive with a GREEN gate, or the suite could
     // not distinguish a real solution from a no-op at all.

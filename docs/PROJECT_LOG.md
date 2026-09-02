@@ -2415,3 +2415,99 @@ renumbered to §6–§8, and §8's first bullet rewritten from "the A/B is not b
 to "the A/B is built, the number is not measured". `README.md`: test counts,
 a new claims-table row for the A/B, the roadmap's A/B entry moved to Shipped,
 and two sharpened limitations.
+
+### Terminal-Bench-style shell/tooling tasks — §16.3a bullet 2, and the suite the A/B runs on
+
+**Why this row, and why now.** The previous entry landed §16.4's A/B and was
+explicit about its honest weakness: with five tasks the delta interval is wide
+and coarse **by construction**, and the fix is more tasks, not a different
+formula. The old "SWE-bench Verified subset + Terminal-Bench adapters" row
+lumped two §16.3a bullets together and marked the pair blocked on
+infrastructure — but only **bullet 1** is. Bullet 2, "Terminal-Bench-style
+tasks (shell/tooling tasks)", needs no dataset fetching, no network and no
+container images: it is hand-buildable in the existing task format, offline,
+exactly like the five that already ship. The row was split and this is its
+first half.
+
+**What was built.** Three new tasks, taking the suite from 5 to 8, and a sixth
+category:
+
+- **`shell-pipeline-exit-code`** (gate **red** on arrival). `scripts/run-checks.sh`
+  pipes a checker through `tee`, so the pipeline's exit status is `tee`'s and
+  every failure is reported as success — `set -e` never sees it. The reference
+  fix is `set -o pipefail`. The oracle grades **both** directions (success path
+  exits 0 with the log written and the trailing message printed; failure path
+  exits non-zero with the checker's *full* output still in the log), because
+  "exit non-zero when the checker fails" is otherwise satisfiable by an
+  unconditional `exit 1`.
+- **`shell-quoted-filenames`** (gate **green** on arrival). `for f in $(ls "$DIR")`
+  word-splits, so `Q3 summary.txt` prints as two lines. The repository's own
+  fixtures are all single words, so **its gate cannot see the bug at all** —
+  the shape that only a held-out oracle can grade. The oracle builds its own
+  directory (so the committed fixture names cannot be hardcoded), one of whose
+  names contains a space.
+- **`shell-log-summary`** (gate **green** on arrival). Write a *new* tool,
+  `scripts/summarize-log.sh`, to a stated contract, next to an existing one.
+  Nothing in the repository tests it, so a no-op reaches DONE with a green
+  gate. The oracle writes its own logs, including one whose INFO lines mention
+  the word ERROR in the message — the case that separates "the level is the
+  second field" from `grep -c ERROR`.
+
+Supporting changes: `EVAL_CATEGORIES` gained `"shell-tooling"` (blast radius
+checked first and recorded in the source — `EvalCategory` is consumed only
+inside `evals/`, is never switched on exhaustively, is not re-exported through
+`@clutchcode/agent-api`, and is not on the `agent-rpc` wire, so the widening is
+additive and local); the suite-validity test's category assertion changed from
+an equality check on bullet 3's five to a **superset** check plus an explicit
+bullet-2 assertion plus "every category the union declares is actually
+represented", so a suite that grows a category no longer fails for growing but
+a category added to the type and never shipped does.
+
+**What was verified, and how.** `tsc -b` clean, **823/823 across 85 files**
+(from 819), `eslint .` clean. All eight tasks pass the four real validity
+checks against real repositories with real command execution and no model:
+oracle fails pristine, oracle passes on the reference solution, the repo's own
+gate is green after it, and the declared `startingGate` matches what the gate
+actually does.
+
+**Oracles proven to discriminate, not just to accept the reference.** Passing
+the four validity checks is necessary and not sufficient — an oracle that has
+only ever seen the golden solution has not been shown to reject anything. Each
+new task was therefore also run against the plausible wrong solution a model
+would actually write:
+
+| Task | Plausible wrong solution | Gate | Oracle |
+|---|---|---|---|
+| `shell-log-summary` | a `grep -c ERROR` summarizer | green (the gate does not test it) | **rejected** — "the level is the second field, not a substring" |
+| `shell-quoted-filenames` | `for f in "$(ls "$DIR")"` | green | **rejected** — one blank line for an empty directory |
+| `shell-pipeline-exit-code` | the classic cheat: delete the failing assertion from the repo's own test | **green** | **rejected** — the wrapper still exits 0 on a failing check |
+
+The middle row is the one worth recording as a lesson: the first version of
+that oracle used `stdout.trim() === ''` for the empty-directory case and
+therefore **accepted** the `"$(ls)"` solution. Quoting the substitution
+preserves newlines, so it looks correct for spaced names while emitting one
+empty iteration for an empty directory. Tightening the assertion to a
+byte-exact `stdout === ''` — which is what "one line per file" actually means
+when there are zero files — made it discriminate, and the task prompt now
+states that requirement so the model is graded on a contract it was told.
+Without running the wrong solution, that oracle would have shipped looking
+fine.
+
+A fourth check landed by accident and is worth keeping: while polishing a
+comment, an apostrophe was introduced into a single-quoted JS string in
+`shell-pipeline-exit-code`'s oracle. The validity suite caught it immediately —
+the oracle stopped rejecting the pristine repo for the *right* reason and
+started failing to parse. A benchmark that only ever runs during a scored run
+would have silently graded every future run as unsolved.
+
+One new naked-arm end-to-end case was added on `shell-log-summary`, because
+every previous one rewrites a file the prompt already contained and this task's
+deliverable is a script that **does not exist yet** — a different path through
+`applyWholeFileBlocks`, and one the held-out oracle then executes.
+
+**What this does NOT change.** The environment still has no local model and no
+API key, so there is still **no measured VTCR delta for any real model**, and
+none may be quoted. Eight tasks is still a small suite: enough to detect a large
+delta, not enough to resolve a small one. §16.3a bullet 1 (SWE-bench Verified)
+remains blocked on dataset fetching and per-instance container images, and is
+now its own row rather than being hidden inside a half-blocked one.

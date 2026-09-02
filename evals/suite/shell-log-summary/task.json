@@ -1,0 +1,20 @@
+{
+  "id": "shell-log-summary",
+  "category": "shell-tooling",
+  "language": "shell",
+  "description": "Write a new shell tool to a stated contract, next to an existing one. Nothing in the repository tests it, so the gate is GREEN on arrival and a no-op scores green — only the held-out oracle knows whether the tool exists and is correct.",
+  "prompt": "This repository has one small log tool, scripts/tail-errors.sh. Add a second one, scripts/summarize-log.sh, that takes a log file path as its first argument and prints exactly four lines to stdout, in this order:\n\nERROR <count>\nWARN <count>\nINFO <count>\nTOTAL <count>\n\nA line's level is its SECOND whitespace-separated field; a line whose second field is none of ERROR, WARN or INFO is not counted at all, no matter what the rest of the line says. TOTAL is the sum of the three counts. Each output line is the level name, one space, then the count. If the first argument is missing, or is not an existing file, the script must print nothing on stdout, print a usage message on stderr, and exit non-zero. Do not change scripts/tail-errors.sh or anything under test/, and keep `npm test` passing.",
+  "solutionPaths": [
+    "scripts/summarize-log.sh"
+  ],
+  "requires": [
+    "bash"
+  ],
+  "startingGate": "green",
+  "oracle": {
+    "command": [
+      "node",
+      "oracle.check.js"
+    ]
+  }
+}

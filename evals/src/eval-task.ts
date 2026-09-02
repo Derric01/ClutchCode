@@ -28,7 +28,21 @@ import { execFileSync, spawnSync } from "node:child_process";
  * for an agent that changed nothing at all.
  */
 
-export const EVAL_CATEGORIES = ["bug-fix", "feature", "refactor", "test-add", "dependency-bump"] as const;
+/**
+ * §16.3a's task categories. Bullet 3 names the first five verbatim ("bug
+ * fix, small feature, refactor, test-add, dependency bump"); `shell-tooling`
+ * is bullet **2**, "Terminal-Bench-style tasks (shell/tooling tasks)" — a
+ * separate bullet, and a separate kind of task, so it gets its own label on
+ * the board rather than being filed under whichever of the five it happens
+ * to resemble.
+ *
+ * Blast radius, checked before widening: `EvalCategory` is consumed only
+ * inside `evals/` (`eval-task.ts`, `scoreboard.ts`, `naked-arm.ts`), is
+ * never switched on exhaustively, is not re-exported through
+ * `@clutchcode/agent-api`, and is not part of the `agent-rpc` wire
+ * contract. Adding a member is additive and local.
+ */
+export const EVAL_CATEGORIES = ["bug-fix", "feature", "refactor", "test-add", "dependency-bump", "shell-tooling"] as const;
 export type EvalCategory = (typeof EVAL_CATEGORIES)[number];
 
 export interface EvalTask {
