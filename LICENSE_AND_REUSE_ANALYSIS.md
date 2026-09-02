@@ -68,6 +68,7 @@ SPDX identifiers verified by reading each repo's `LICENSE`/`LICENSE.md` at the p
 | Kilo Code | MIT | No | No | Copyright + license text | Yes | **STUDY-ONLY** |
 | gptme | MIT | No | No | Copyright + license text | Yes | **STUDY-ONLY** |
 | smolagents | Apache-2.0 | No | Yes | NOTICE + license text | Yes | **STUDY-ONLY** |
+| Hermes-Function-Calling (Nous Research) | MIT | No | No | Copyright + license text | Yes | **FORMAT REUSE-eligible** (open tool-call protocol, same posture as MCP/ACP); their parser impl **do-not-copy on merit** (XML-roots the whole message — breaks on code); **prompts STUDY-ONLY** per ADR-016 |
 | grok-cli (superagent-ai) | MIT | No | No | Copyright + license text | Yes | **STUDY-ONLY** (community tool; not official xAI) |
 | gemini-cli | Apache-2.0 | No | Yes | NOTICE + license text | Yes | **STUDY-ONLY** |
 | MCP spec | Apache-2.0 (spec text often CC-BY-4.0) | No | Yes | attribution | Yes | **REUSE — protocol impl** (we implement the open protocol) |
