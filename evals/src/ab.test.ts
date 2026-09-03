@@ -364,3 +364,53 @@ describe("runAbComparison (§16.4) — both arms, one endpoint, everything below
     await expect(runAbComparison([BUGFIX], { providerKind: "fake", model: "", repetitions: 0 })).rejects.toThrow(/positive integer/);
   });
 });
+
+describe("computeAbReport — tasks the host cannot run (§16.4)", () => {
+  const meta = { suite: "s", provider: "fake", model: "m" };
+  const solvable = (solved: boolean): ArmObservation => ({ taskId: "solvable", repetition: 1, solved });
+  const refused = (taskId: string): ArmObservation => ({ taskId, repetition: 1, solved: false, refused: true });
+
+  it("excludes a refused task from the denominator instead of scoring it as a mutual failure", () => {
+    const baseline = computeAbReport(meta, [solvable(true)], [solvable(false)]);
+    expect(baseline.vtcrDelta).toBe(1);
+    expect(baseline.deltaCi95).toEqual({ lo: 1, hi: 1 });
+
+    // Same comparison, plus one task this host genuinely cannot run. Both arms
+    // refuse it symmetrically, so every pairing check passes and nothing
+    // throws — which is exactly why counting it would be a *silent* distortion.
+    const withRefused = computeAbReport(
+      meta,
+      [solvable(true), refused("needs-pytest")],
+      [solvable(false), refused("needs-pytest")]
+    );
+
+    // The headline must be unmoved by a missing binary.
+    expect(withRefused.vtcrDelta).toBe(1);
+    expect(withRefused.deltaCi95).toEqual({ lo: 1, hi: 1 });
+    expect(withRefused.clutchcode.observations).toBe(1);
+    expect(withRefused.naked.observations).toBe(1);
+
+    // ...and the exclusion must be visible, not swallowed.
+    expect(withRefused.refusedObservations).toBe(1);
+    expect(withRefused.refusedTaskIds).toEqual(["needs-pytest"]);
+    expect(withRefused.perTask.map((t) => t.taskId)).toEqual(["solvable"]);
+    expect(withRefused.notes.some((n) => n.includes("needs-pytest") && n.includes("excluded"))).toBe(true);
+  });
+
+  it("throws when one arm refused a task the other ran — the arms disagree about what was attempted", () => {
+    expect(() =>
+      computeAbReport(meta, [solvable(true), refused("x")], [solvable(false), { taskId: "x", repetition: 1, solved: true }])
+    ).toThrow(/asymmetric A\/B refusal/);
+  });
+
+  it("refuses to report at all when every observation was refused, rather than inventing a delta", () => {
+    expect(() => computeAbReport(meta, [refused("a")], [refused("a")])).toThrow(/all 1 observation\(s\) were refused/);
+  });
+
+  it("is unchanged for a suite with no refusals (the refused flag is optional)", () => {
+    const r = computeAbReport(meta, [solvable(true)], [solvable(false)]);
+    expect(r.refusedObservations).toBe(0);
+    expect(r.refusedTaskIds).toEqual([]);
+    expect(r.notes.some((n) => n.includes("excluded"))).toBe(false);
+  });
+});

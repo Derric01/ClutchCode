@@ -1,5 +1,7 @@
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
-import { FakeProvider, textTurn, toolCallTurn } from "@clutchcode/providers";
+import { FakeProvider, OllamaProvider, textTurn, toolCallTurn } from "@clutchcode/providers";
 import { defaultContextRungs, runCapabilityProbe } from "./probe.js";
 
 describe("defaultContextRungs", () => {
@@ -106,5 +108,83 @@ describe("runCapabilityProbe", () => {
     // when the FakeProvider script doesn't emit a usage delta.
     expect(profile.effectiveContext).toBe(Math.round(800 / 4));
     expect(profile.notes.some((n) => n.includes("context recall failed"))).toBe(true);
+  });
+});
+
+/**
+ * §4.9 check 3 against the open-weight `<tool_call>` format (§4.7).
+ *
+ * This is the cascade the Hermes support exists to fix, asserted end to end
+ * over the real SSE path: before it, a model answering in the Hermes format
+ * was read as plain prose, scored `toolTransport: "none"`, and was told it
+ * needed text-protocol emulation (§4.8) — which then costs it a weaker edit
+ * format (§4.4) and a smaller context budget (§4.5).
+ *
+ * NOT a live-model test: no Ollama, no GPU, no weights in this environment.
+ * The mock speaks the format; whether a real Hermes-3 deployment does is
+ * flagged unverified in `packages/providers/src/hermes.ts`.
+ */
+describe("runCapabilityProbe against a Hermes-format model (§4.7/§4.9)", () => {
+  const HERMES_EDIT =
+    '<scratch_pad>\nGoal: change the greeting\nActions:\n- r1 = functions.edit_file(...)\nObservation: None\nReflection: relevant\n</scratch_pad>\n' +
+    '<tool_call>\n{"name": "edit_file", "arguments": {"path": "greeter.txt", "edits": [{"search": "Hello", "replace": "Hi"}]}}\n</tool_call>';
+
+  /** Answers each probe check in the Hermes idiom, chunked so tags straddle SSE boundaries. */
+  function startHermesModel(): Promise<{ baseUrl: string; close: () => Promise<void> }> {
+    return new Promise((resolve) => {
+      const server = http.createServer((req, res) => {
+        let body = "";
+        req.on("data", (d) => (body += d));
+        req.on("end", () => {
+          let reply: string;
+          if (body.includes("edit_file")) reply = HERMES_EDIT;
+          else if (body.includes("stop immediately")) reply = "DONE";
+          else if (body.includes("well-formed JSON")) reply = '{"status":"ok","count":1}';
+          else if (body.includes("secret code")) reply = "CC-300-PROBE";
+          else reply = "That task is already complete — nothing further to do.";
+
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          for (const piece of reply.match(/[\s\S]{1,9}/g) ?? []) {
+            res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: piece } }] })}\n\n`);
+          }
+          res.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
+          res.end("data: [DONE]\n\n");
+        });
+      });
+      server.listen(0, "127.0.0.1", () => {
+        const addr = server.address() as AddressInfo;
+        resolve({ baseUrl: `http://127.0.0.1:${addr.port}`, close: () => new Promise<void>((r) => server.close(() => r())) });
+      });
+    });
+  }
+
+  it("scores it as a native tool-transport model instead of demanding text-protocol emulation", async () => {
+    const server = await startHermesModel();
+    try {
+      const provider = new OllamaProvider({ baseUrl: server.baseUrl });
+      const profile = await runCapabilityProbe(provider, "hermes-3", { trials: 2, contextRungs: [300] });
+
+      expect(profile.toolTransport).toBe("native");
+      expect(profile.diffApplicationAccuracy).toBe(1);
+      expect(profile.notes.some((n) => n.includes("text-protocol emulation"))).toBe(false);
+      // The GOAP reasoning block must not have leaked into a scored answer.
+      expect(profile.instructionFidelity).toBe(1);
+      expect(profile.loopCheckPassed).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("still scores none when the same model is pinned to the pre-Hermes native-only protocol", async () => {
+    const server = await startHermesModel();
+    try {
+      const provider = new OllamaProvider({ baseUrl: server.baseUrl, toolProtocol: "native" });
+      const profile = await runCapabilityProbe(provider, "hermes-3", { trials: 2, contextRungs: [300] });
+
+      expect(profile.toolTransport).toBe("none");
+      expect(profile.notes.some((n) => n.includes("text-protocol emulation"))).toBe(true);
+    } finally {
+      await server.close();
+    }
   });
 });

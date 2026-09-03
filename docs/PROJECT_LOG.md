@@ -2415,3 +2415,487 @@ renumbered to §6–§8, and §8's first bullet rewritten from "the A/B is not b
 to "the A/B is built, the number is not measured". `README.md`: test counts,
 a new claims-table row for the A/B, the roadmap's A/B entry moved to Shipped,
 and two sharpened limitations.
+
+### Terminal-Bench-style shell/tooling tasks — §16.3a bullet 2, and the suite the A/B runs on
+
+**Why this row, and why now.** The previous entry landed §16.4's A/B and was
+explicit about its honest weakness: with five tasks the delta interval is wide
+and coarse **by construction**, and the fix is more tasks, not a different
+formula. The old "SWE-bench Verified subset + Terminal-Bench adapters" row
+lumped two §16.3a bullets together and marked the pair blocked on
+infrastructure — but only **bullet 1** is. Bullet 2, "Terminal-Bench-style
+tasks (shell/tooling tasks)", needs no dataset fetching, no network and no
+container images: it is hand-buildable in the existing task format, offline,
+exactly like the five that already ship. The row was split and this is its
+first half.
+
+**What was built.** Three new tasks, taking the suite from 5 to 8, and a sixth
+category:
+
+- **`shell-pipeline-exit-code`** (gate **red** on arrival). `scripts/run-checks.sh`
+  pipes a checker through `tee`, so the pipeline's exit status is `tee`'s and
+  every failure is reported as success — `set -e` never sees it. The reference
+  fix is `set -o pipefail`. The oracle grades **both** directions (success path
+  exits 0 with the log written and the trailing message printed; failure path
+  exits non-zero with the checker's *full* output still in the log), because
+  "exit non-zero when the checker fails" is otherwise satisfiable by an
+  unconditional `exit 1`.
+- **`shell-quoted-filenames`** (gate **green** on arrival). `for f in $(ls "$DIR")`
+  word-splits, so `Q3 summary.txt` prints as two lines. The repository's own
+  fixtures are all single words, so **its gate cannot see the bug at all** —
+  the shape that only a held-out oracle can grade. The oracle builds its own
+  directory (so the committed fixture names cannot be hardcoded), one of whose
+  names contains a space.
+- **`shell-log-summary`** (gate **green** on arrival). Write a *new* tool,
+  `scripts/summarize-log.sh`, to a stated contract, next to an existing one.
+  Nothing in the repository tests it, so a no-op reaches DONE with a green
+  gate. The oracle writes its own logs, including one whose INFO lines mention
+  the word ERROR in the message — the case that separates "the level is the
+  second field" from `grep -c ERROR`.
+
+Supporting changes: `EVAL_CATEGORIES` gained `"shell-tooling"` (blast radius
+checked first and recorded in the source — `EvalCategory` is consumed only
+inside `evals/`, is never switched on exhaustively, is not re-exported through
+`@clutchcode/agent-api`, and is not on the `agent-rpc` wire, so the widening is
+additive and local); the suite-validity test's category assertion changed from
+an equality check on bullet 3's five to a **superset** check plus an explicit
+bullet-2 assertion plus "every category the union declares is actually
+represented", so a suite that grows a category no longer fails for growing but
+a category added to the type and never shipped does.
+
+**What was verified, and how.** `tsc -b` clean, **823/823 across 85 files**
+(from 819), `eslint .` clean. All eight tasks pass the four real validity
+checks against real repositories with real command execution and no model:
+oracle fails pristine, oracle passes on the reference solution, the repo's own
+gate is green after it, and the declared `startingGate` matches what the gate
+actually does.
+
+**Oracles proven to discriminate, not just to accept the reference.** Passing
+the four validity checks is necessary and not sufficient — an oracle that has
+only ever seen the golden solution has not been shown to reject anything. Each
+new task was therefore also run against the plausible wrong solution a model
+would actually write:
+
+| Task | Plausible wrong solution | Gate | Oracle |
+|---|---|---|---|
+| `shell-log-summary` | a `grep -c ERROR` summarizer | green (the gate does not test it) | **rejected** — "the level is the second field, not a substring" |
+| `shell-quoted-filenames` | `for f in "$(ls "$DIR")"` | green | **rejected** — one blank line for an empty directory |
+| `shell-pipeline-exit-code` | the classic cheat: delete the failing assertion from the repo's own test | **green** | **rejected** — the wrapper still exits 0 on a failing check |
+
+The middle row is the one worth recording as a lesson: the first version of
+that oracle used `stdout.trim() === ''` for the empty-directory case and
+therefore **accepted** the `"$(ls)"` solution. Quoting the substitution
+preserves newlines, so it looks correct for spaced names while emitting one
+empty iteration for an empty directory. Tightening the assertion to a
+byte-exact `stdout === ''` — which is what "one line per file" actually means
+when there are zero files — made it discriminate, and the task prompt now
+states that requirement so the model is graded on a contract it was told.
+Without running the wrong solution, that oracle would have shipped looking
+fine.
+
+A fourth check landed by accident and is worth keeping: while polishing a
+comment, an apostrophe was introduced into a single-quoted JS string in
+`shell-pipeline-exit-code`'s oracle. The validity suite caught it immediately —
+the oracle stopped rejecting the pristine repo for the *right* reason and
+started failing to parse. A benchmark that only ever runs during a scored run
+would have silently graded every future run as unsolved.
+
+One new naked-arm end-to-end case was added on `shell-log-summary`, because
+every previous one rewrites a file the prompt already contained and this task's
+deliverable is a script that **does not exist yet** — a different path through
+`applyWholeFileBlocks`, and one the held-out oracle then executes.
+
+**What this does NOT change.** The environment still has no local model and no
+API key, so there is still **no measured VTCR delta for any real model**, and
+none may be quoted. Eight tasks is still a small suite: enough to detect a large
+delta, not enough to resolve a small one. §16.3a bullet 1 (SWE-bench Verified)
+remains blocked on dataset fetching and per-instance container images, and is
+now its own row rather than being hidden inside a half-blocked one.
+
+---
+
+### Hermes tool-call format for open-weight models (§4.7/§4.9)
+
+**Why.** `packages/providers` could parse exactly one tool-call shape:
+OpenAI's `delta.tool_calls`. The open-weight world overwhelmingly does not
+speak it — vLLM ships `--tool-call-parser hermes`, and llama.cpp, SGLang and
+the long tail of Ollama modelfiles emit the same `<tool_call>` format. A local
+model calling a tool was therefore read as **plain prose**.
+
+**Reproduced first, before any code was written.** A throwaway test streamed a
+Hermes-shaped turn through the real `sse.ts` path into `OllamaProvider` and
+then into the §4.9 probe. Observed, exactly as the queued row predicted:
+
+- `toolCalls: []` — the call was invisible;
+- the Hermes-3 `<scratch_pad>` GOAP reasoning block leaked **verbatim** into
+  user-visible text;
+- `toolTransport: "none"`, with the note "no parseable `edit_file` tool call
+  … text-protocol emulation (§4.8) is required".
+
+That last one is the expensive part: `toolTransport` cascades into a weaker
+edit format (§4.4) and a smaller context budget (§4.5), so a genuinely capable
+local model was being systematically under-rated for speaking the standard
+dialect of its own ecosystem.
+
+**What was built.** `packages/providers/src/hermes.ts`:
+
+- `HermesStreamParser` — an incremental, **lexical** scanner. It finds
+  `<tool_call>` regions by position, JSON-parses only a region's contents, and
+  never parses the surrounding prose at all.
+- `extractHermesToolCalls` — whole-message extraction, built on the same
+  parser so the two cannot drift.
+- `buildHermesToolSystemPrompt` / `renderHermesToolResponse` /
+  `renderHermesToolCalls` / `toHermesRequestMessages` — the request side:
+  tools declared in the system prompt inside `<tools>`, results returned in
+  `<tool_response>`. All prompt text **written from scratch** per ADR-016.
+- A `toolProtocol` option on `OpenAICompatibleProvider`: `"native"` (default,
+  byte-identical to previous behavior), `"hermes"` (we own the whole protocol
+  as text; no `tools` field is sent), `"auto"` (request untouched, response
+  parsing widened). `OllamaProvider` defaults to `"auto"` — that is where
+  open-weight models live, and `"auto"` is purely receptive, so a model that
+  answers natively is unaffected.
+
+**The upstream extractor was deliberately not ported, and that is the design
+content of this unit.** NousResearch's `utils.py` wraps the whole assistant
+message in a synthetic `<root>` and strict-XML-parses it. For a *coding* agent
+that fails constantly: a bare `<`, a bare `&`, an unclosed generic
+(`Array<string`), a shell redirect (`2>&1`), JSX — each makes the XML parse
+throw and discards a perfectly valid tool call whose only sin was sharing a
+message with a code block. There is a test named for exactly this, asserting
+all five hostile fragments survive verbatim alongside a successfully extracted
+call. Reuse posture: the **format** is REUSE-eligible as an open protocol
+(same as MCP/ACP); their parser is do-not-copy on merit; their prompts are
+study-only.
+
+**Streaming had no upstream reference** — their parser is whole-message only —
+so the chunk-boundary design is ours, and it is where the bugs would live:
+
+- A call is emitted **atomically at its closing tag**. Emitting
+  `tool_call_start` early (as soon as a `"name"` became readable) reads better
+  in a UI but lets a region that later fails to parse leave a half-open call
+  behind — `collect()` would hand `AgentLoop` a call with empty arguments,
+  which it would then execute. Never emitting a call we cannot complete beats
+  the progress indicator.
+- **Nothing the model wrote is ever silently dropped.** An unparseable or
+  truncated region is re-emitted verbatim, tags included, and recorded in
+  `malformedRegions` — one failed call, not a failed message.
+- A `<scratch_pad>` is **implicitly closed by a `<tool_call>`**, and a
+  `<tool_call>` by the next `<tool_call>`. Without this, one unclosed block
+  would swallow every call after it.
+- Strict `JSON.parse` only. Upstream falls back to Python `ast.literal_eval`
+  to salvage single-quoted dicts; vLLM — the dominant server-side
+  implementation, and so what the ecosystem converges on — is strict, and
+  shipping an expression evaluator on the path that turns model output into
+  tool invocations is not a trade this project makes.
+- A Hermes model cannot set `finish_reason: "tool_calls"`; it emits
+  `<tool_call>` inside an ordinary `"stop"` turn. The adapter now reports
+  `tool_use` when it actually parsed calls, so a paused-for-tools turn is not
+  recorded as a completed answer — the same defect signature round 3 found
+  six instances of.
+
+**Coherence check (before writing code).** ADR-015 (Accepted) rejects *static
+per-model tables*; this adds none. Transport stays **probed** — the probe now
+simply has eyes for a dialect it was blind to. ADR-016 governs the prompt text,
+written from scratch accordingly. Blast radius checked: the `ToolTransport`
+union in `@clutchcode/capability` is **unchanged** — because the decoding
+happens at the provider layer, the probe sees real `tool_call_*` deltas and
+scores `"native"` through the existing path, so no publicly re-exported union
+was widened. `toolProtocol` is a new optional field, not a new variant. The
+only consumer of `OllamaProvider` outside the package is
+`agent-api/src/provider-factory.ts`, which gets the new default.
+
+**What was verified, and how.** `tsc -b` clean, **854/854 across 86 files**
+(from 823/85 — 31 new tests), `eslint .` clean, after a full clean rebuild.
+The 29 new provider tests cover: scratch-pad stripping, multiple calls per
+turn, prose ordering, the code-that-breaks-XML case, malformed regions,
+missing `name`, `arguments` as an encoded string and absent entirely,
+truncation, both implicit-close recoveries, per-character chunking, partial-tag
+hold-back (`Array<` / `string>` split across chunks), atomic emission, `end()`
+idempotence, and — over a **real HTTP server and the real SSE path** — the
+Ollama integration, the unchanged `"native"` default, `"auto"` leaving the
+request untouched, `"hermes"` moving schemas into the system prompt, and a
+native tool call still reassembling in `"auto"` mode.
+
+**The fix was proven to discriminate** (`git stash push` on the two wiring
+files, keeping `hermes.ts` and the tests). Both provider-integration tests
+failed as expected. `probe.test.ts` initially still **passed** — a real trap
+worth recording: `packages/capability` resolves `@clutchcode/providers` to its
+built `dist/`, so the stale compiled wiring was still in play. After
+`npx tsc -b` the probe test failed with `expected 'none' to be 'native'` —
+precisely the reproduction above. `git stash pop` + rebuild returned all 37 to
+green. **Lesson: when stash-reverting a fix that lives in a different workspace
+package from the test, rebuild before re-running, or the test silently
+validates the old dist.**
+
+**NOT VERIFIED — and deliberately flagged rather than asserted.** This has
+never run against a live open-weight model: no Ollama, no GPU, no weights in
+this environment. Every fixture is modeled on the upstream `chat_templates`
+token layout. The parser is verified; the end-to-end claim "a real Hermes-3 /
+Qwen / vLLM `--tool-call-parser hermes` deployment drives our tools correctly"
+is **not**, and is flagged in the header of `hermes.ts`, in the test file, and
+in `README.md`.
+
+**Deliberately deferred.** `"hermes"` mode returns tool results as a
+**user**-role message wrapped in `<tool_response>` rather than a `tool`-role
+one, because in that mode we have already assumed the server applies no
+tool-aware chat template (otherwise it would need a `tools` request field to
+render `<tools>` at all); a `tool`-role message would be either rejected for
+having no matching native call id or double-wrapped by a template that adds
+the tags itself. Revisit if a real deployment shows otherwise. Feeding a
+malformed region back to the model as a `<tool_response>` error (upstream's
+instinct, convergent with §14's repair loop) is not wired in: `malformedRegions`
+is exposed for it, but the §4.8 emulation repair path is a separate unit.
+
+
+### Two source files were binary to `grep`, and the fix needed a test that could tell
+
+**How it surfaced.** Following up the previous unit, `grep -n -A30 'export
+async function runAbComparison' evals/src/ab.ts` answered **`binary file
+matches`** and printed nothing. A 441-line TypeScript file is not binary. That
+one refusal is the whole finding: tooling was quietly declining to show source.
+
+**Root cause.** Two files embedded a **literal NUL byte (0x00)** inside a
+template literal, used as a composite-key separator:
+
+- `evals/src/ab.ts` - `` `${o.taskId}<NUL>${o.repetition}` `` (A/B pairing key)
+- `packages/runtime/src/tool-result-pruning.ts` - `` `${call.name}<NUL>${call.argsJson}` `` (dedup key)
+
+The second is **production runtime code**, not eval tooling.
+
+**Severity, scoped honestly rather than inflated.** This is **not a correctness
+bug**. NUL is a sound separator in both places, and that was checked rather
+than assumed: `JSON.stringify` escapes NUL as a six-character sequence, so a
+raw NUL can never appear inside `argsJson`, and a task id or tool name cannot
+contain one either. Keys are unambiguous; behavior was correct before and is
+byte-identical after. The defect is in the **source encoding**: a literal 0x00
+makes git, grep and diff viewers classify the file as binary, so `grep` hides
+matching lines and review of that file silently degrades. It degraded this
+session's own review, which is how it was caught. The tool layer agreed - three
+attempts to write the fix script were rejected for "command contains control
+characters", which is the same complaint from the other direction.
+
+**Fix.** Replace the literal byte with the equivalent unicode escape in source.
+Same runtime character, file stays text. Applied to both instances.
+
+**Fixing the class, not the instance.** The first file was found by accident;
+the second was found by then scanning **every tracked text file** for a raw NUL
+rather than assuming the one instance was the only one. It was not - which is
+exactly the failure mode `CLAUDE.md` warns about, and the reason the sweep is
+now automated instead of remembered.
+
+**Verified, and how.**
+
+- **The test discriminates, proven by stash-revert.** `git stash push --` the
+  two fixed files, re-run `tests/source-hygiene.test.ts`: it **fails**, naming
+  both offenders (`expected [ 'evals/src/ab.ts', ... ] to deeply equal []`).
+  `git stash pop`, re-run: passes. A *behavioral* test could not have
+  discriminated here, because the runtime behavior is deliberately unchanged -
+  so the honest test is the encoding invariant itself.
+- **Behavior preserved:** 854/854 before the fix, 854/854 after it, then
+  856/856 with the two new hygiene tests. `tsc -b` and `eslint .` clean
+  throughout.
+- **Tooling recovered:** both files now report as `Unicode text, UTF-8 text`
+  to `file(1)`, and the `grep` that originally refused now prints the line.
+- The new test also asserts it is scanning a non-trivial number of files, so a
+  glob that silently matched nothing cannot make it vacuously green.
+
+**Deferred.** The `runAbComparison` behavior review that this interrupted was
+not completed - the investigation was into whether the A/B pairing key had a
+*logic* problem, and only the encoding issue was resolved. That review is still
+open.
+
+
+### The A/B delta was being diluted by tasks the host could not run
+
+**The question this closes.** A previous run hit a rate limit mid-sentence
+while scoping `runAbComparison`; the row it left behind asked whether a task
+refused in one arm but not the other could skew the §16.4 delta. Answered, and
+the answer was worse than the question: the arms never disagree, and *that* was
+the problem.
+
+**What was actually wrong.** `runEvalTask` and `runNakedTask` both call
+`checkTaskRequirements` and both refuse a task whose declared `requires` are
+unusable on the host. `runAbComparison` then pushed an observation for every
+task x repetition **unconditionally**, so a refused task arrived at
+`computeAbReport` as a perfectly well-formed pair of `solved: false`
+observations. Every pairing validator passed — equal lengths, no duplicates,
+every key matched, balanced repetitions — because the refusal is *symmetric*.
+The task was then counted in the denominator of
+`vtcrDelta = (clutchSolved - nakedSolved) / observations`.
+
+**Reproduced before fixing, and the size of it measured.** One solvable task
+(ClutchCode solves it, naked does not) plus one unrunnable task, through the
+real compiled `computeAbReport`:
+
+| | delta | 95% interval |
+|---|---|---|
+| tasks that actually ran | `1.0` | `[1, 1]` |
+| + one task missing a binary | **`0.5`** | **`[0, 1]`** |
+
+The headline halved and the interval widened to include zero — purely because
+the host lacked `pytest`. Nothing threw, nothing warned. §16.4's delta is the
+North Star claim, so a silent environment-driven drift toward zero is exactly
+the kind of quiet wrongness this project exists to refuse.
+
+**Fix.** `ArmObservation` gains an optional `refused` marker.
+`runAbComparison` calls `checkTaskRequirements` **once per task** and stamps
+both arms from that single answer, so symmetry is structural rather than two
+runners happening to agree. `computeAbReport` then:
+
+1. **asserts refusal symmetry** and throws if one arm refused what the other
+   ran — the original question, now guarded rather than assumed;
+2. scores the delta, both VTCRs, `perTask` and the bootstrap over the
+   observations that **actually ran**;
+3. reports `refusedObservations` and `refusedTaskIds` and appends a note, so an
+   exclusion is visible in the artifact rather than inferred from a count that
+   does not add up;
+4. **throws** if every observation was refused, instead of inventing a delta
+   from nothing.
+
+**Verified, and how.**
+
+- **Stash-revert discrimination:** `git stash push -- evals/src/ab.ts`,
+  **rebuild** (the cross-package `dist` lesson from two entries ago applies —
+  without it the test validates the old build), re-run: **all 4 new tests
+  fail**. Restore, rebuild, re-run: 24/24 pass.
+- Behaviour re-checked directly against the compiled module, not only through
+  vitest: delta back to `1.0` with interval `[1, 1]`, `refusedObservations: 1`,
+  `refusedTaskIds: ["needs-pytest"]`; asymmetric refusal throws
+  `asymmetric A/B refusal: ...`; all-refused throws rather than reporting.
+- A suite with no refusals is byte-for-byte unaffected — `refused` is optional,
+  `refusedObservations` is 0, and no note is added.
+- Full gate: **860/860 across 87 files**, `tsc -b` and `eslint .` clean.
+
+**Blast radius, checked before the type changed.** `ArmObservation` is exported
+from `evals/src/index.ts`, but `evals` is internal tooling — no `apps/*` or
+`packages/*` manifest depends on it, so widening it is not a public-surface
+change. The new field is optional, so every existing construction still
+compiles.
+
+**Not verified.** Still no live-model A/B: this fixes how observations are
+*counted*, not what a real 14B model scores. No VTCR delta is published, and
+`EVAL_METHODOLOGY.md` still forbids quoting one.
+
+
+### The npm release, proven as far as it can go without owning the scope
+
+**Scope of this unit.** The row is tagged "DO FIRST up to the gate, then stop
+and ask". Everything mechanical is now verified empirically; the decisions that
+remain are genuinely the user's and are stated at the end rather than guessed
+at.
+
+**Verified, and how — all offline, nothing published.**
+
+1. **Lockstep is already the de-facto state.** All 11 publishable manifests sit
+   at `0.1.0`, and `clutchcode-vscode` is correctly `private: true`, so it is
+   excluded from a `-r` publish rather than needing to be remembered.
+2. **`workspace:*` really is rewritten.** This was the row's central unknown and
+   it was checked rather than trusted: `pnpm pack` on `@clutchcode/cli`, then
+   the *packed* `package.json` read back out of the tarball. Source declares
+   `"@clutchcode/agent-api": "workspace:*"`; the tarball contains
+   `"@clutchcode/agent-api": "0.1.0"`. Zero unrewritten `workspace:` specs, and
+   the rewrite pins an exact version, which is the lockstep semantics the row
+   wanted.
+3. **The packed artifacts install and run on their own.** All 11 packed, then
+   installed into a scratch directory as `file:` dependencies - no repo on the
+   path, no workspace links - and the `node_modules/.bin/clutchcode` shim npm
+   generates (`-> ../@clutchcode/cli/dist/cli.js`) invoked directly.
+   `clutchcode --help` renders the full command list.
+4. **Cross-package wiring works, not just commander.** `--help` alone would
+   only prove the binary loads, so `clutchcode doctor` was run from the same
+   clean install: it exercises `@clutchcode/sandbox`, `agent-api`'s keychain
+   detection, and the toolchain probe across ten packages, and returns exit 0
+   with real findings (`bwrap - bubblewrap is installed and successfully
+   created a confined namespace`, `x86_64 seccomp-bpf filter available`,
+   `secret-service`). That is the strongest available evidence that a real
+   `npx clutchcode` would work.
+5. **The dependency claim in `README.md` is independently confirmed.** Reading
+   every packed manifest's non-`@clutchcode` dependencies yields exactly
+   `ajv`, `commander`, `smol-toml` - the three the README names. `npm install`
+   reported 0 vulnerabilities.
+
+**A false alarm, recorded because the first result looked like a bug.** The
+first clean-room attempt failed with `Cannot find module .../dist/cli.js`, which
+reads like a broken package. It was not: `package/dist/cli.js` is present in the
+tarball. The cause was the test harness - packages had been extracted into a
+directory with no `package.json`, and the subsequent `npm install` pruned every
+unlisted directory. Checked before reporting, per "reproduce it, don't assume
+it"; the re-run with the tarballs declared as real dependencies passed. Worth
+recording because the failure mode is convincing and would have produced a
+confident, wrong bug report.
+
+**STOPPED AT THE GATE - two decisions that are not mine to make.**
+
+- **Who owns the `@clutchcode` npm scope**, and which account/organisation
+  publishes. Nothing here can determine that, and a partial publish of an
+  interdependent scope is worse than none.
+- **How the release workflow authenticates.** A publish-capable workflow is a
+  security-posture change: a long-lived `NPM_TOKEN` repository secret versus
+  npm's OIDC trusted publishing, plus the trigger policy (tag push vs manual
+  dispatch). It also cannot be verified in this environment - the workflow
+  would first genuinely run on a real publish. Deliberately **not written**,
+  rather than written and left inert, so nobody merges a publishing path that
+  no one chose.
+
+**What remains after those two answers** is small and now de-risked: add the
+release workflow gated on the existing CI gate, and run `pnpm publish -r`.
+
+
+### The release path, built for OIDC — and the tool split that forced its shape
+
+**Decision received.** The scope question came back as "publish and continue"
+and the auth question as **npm OIDC trusted publishing**. The second is
+actionable and is now built. The first is not something this environment can
+carry out — see the end of this entry.
+
+**A constraint found by checking, not assuming.** The obvious release command
+is `pnpm publish -r`. It cannot be used here, because the two tools each do
+half the job:
+
+- **`pnpm`** rewrites `workspace:*` into real pinned versions; `npm` does not.
+- **`npm`** speaks OIDC trusted publishing and `--provenance`; `pnpm publish`
+  exposes no `oidc`, `provenance` or `trusted` flag at all (checked against
+  `pnpm publish --help` on pnpm 10.33.0; `npm publish --help` does list
+  `--provenance`).
+
+So the workflow **packs with pnpm and publishes the tarballs with npm**, using
+the tarball as the handoff. That is only safe because the previous unit proved
+empirically that `pnpm pack` performs the rewrite, and the workflow re-checks
+it anyway: a step greps every packed manifest and **fails the release** if any
+`workspace:` spec survived, rather than shipping something npm could not
+install.
+
+**Built.**
+
+- `.github/workflows/release.yml` — `workflow_dispatch` only, **no tag or push
+  trigger**, with `dry_run` defaulting to **true**. `permissions: id-token:
+  write` and **no `NPM_TOKEN` anywhere**: with a trusted publisher configured
+  on npm, the runner mints a short-lived token per run, so there is no
+  long-lived credential in the repo to leak. It installs the same real backends
+  CI does and runs the **same** build/test/lint gate — a release must clear the
+  gate every PR clears, not a weaker one.
+- `RELEASING.md` — what is already proven, why the pack-then-publish split
+  exists, the one-time npm setup only a human can do, and the release steps.
+
+**Verified, and how.** The workflow was parsed as YAML rather than eyeballed,
+which caught a real defect: the step name `Refuse to publish if any workspace:
+spec survived packing` contains a colon, so YAML read it as a nested mapping
+and the file **did not parse**. Quoted and re-validated: parses, single
+`workflow_dispatch` trigger, `dry_run` default `true`, permissions
+`{contents: read, id-token: write}`, 13 steps. A grep confirms no `secrets.*`
+reference exists — the only `NPM_TOKEN` string in the file is the comment
+explaining its absence. `eslint .` clean.
+
+**NOT DONE, and not doable here: the publish itself.** Claude has no npm
+account and no credentials, cannot create the `@clutchcode` organisation on
+someone's behalf, and publishing is effectively irreversible — npm's unpublish
+policy is narrow, so `@clutchcode/*` at `0.1.0` would be permanently claimed.
+The two remaining steps are in `RELEASING.md` and need a human: create the org,
+and register the trusted publisher against `Derric01/ClutchCode` +
+`.github/workflows/release.yml`.
+
+**NOT VERIFIED.** The workflow has never run. OIDC trusted publishing, the
+`npm@^11.5.1` floor it requires, and provenance attestation are written against
+npm's documented behaviour and cannot be exercised without a real organisation
+and a real publish. `RELEASING.md` says so in those words, and says to treat
+the first `dry_run` as the test of the file rather than a formality.

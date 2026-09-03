@@ -9,3 +9,13 @@ export { AnthropicProvider } from "./anthropic.js";
 export type { AnthropicOptions } from "./anthropic.js";
 export { parseSSE } from "./sse.js";
 export type { SSEEvent } from "./sse.js";
+export {
+  HermesStreamParser,
+  extractHermesToolCalls,
+  parseHermesToolCallRegion,
+  buildHermesToolSystemPrompt,
+  renderHermesToolResponse,
+  renderHermesToolCalls,
+  toHermesRequestMessages
+} from "./hermes.js";
+export type { ToolProtocol, HermesToolCall, ExtractedHermesMessage } from "./hermes.js";

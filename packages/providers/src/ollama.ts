@@ -1,4 +1,5 @@
 import type { CapabilityDefaults, Delta, NormalizedRequest, Provider } from "./types.js";
+import type { ToolProtocol } from "./hermes.js";
 import { OpenAICompatibleProvider } from "./openai-compatible.js";
 
 /**
@@ -6,6 +7,14 @@ import { OpenAICompatibleProvider } from "./openai-compatible.js";
  * OpenAI-compatible `/v1` endpoint (reuses OpenAICompatibleProvider), plus a
  * thin native-API surface for model management (`agent models pull`,
  * `agent doctor`, §4.10) that the `/v1` endpoint doesn't cover.
+ *
+ * Tool protocol defaults to `"auto"` here and nowhere else: Ollama is where
+ * open-weight models live, and they overwhelmingly answer in the Hermes
+ * `<tool_call>` format rather than OpenAI-shaped `delta.tool_calls`. `"auto"`
+ * changes nothing about the request — native tool schemas are still sent — it
+ * only widens what we can read back, so a model that answers natively is
+ * unaffected and one that answers in Hermes is no longer misread as prose
+ * (see `hermes.ts`, and the §4.9 consequences recorded there).
  */
 
 const DEFAULT_CAPS: Partial<CapabilityDefaults> = {
@@ -21,6 +30,8 @@ export interface OllamaOptions {
   baseUrl?: string; // e.g. http://localhost:11434
   fetchImpl?: typeof fetch;
   capabilityDefaults?: Partial<CapabilityDefaults>;
+  /** Defaults to `"auto"` (see the class note); `"native"` restores the pre-Hermes behavior. */
+  toolProtocol?: ToolProtocol;
 }
 
 export class OllamaProvider implements Provider {
@@ -41,6 +52,7 @@ export class OllamaProvider implements Provider {
       baseUrl: `${this.nativeBaseUrl}/v1`,
       id: "ollama",
       fetchImpl: this.fetchImpl,
+      toolProtocol: opts.toolProtocol ?? "auto",
       capabilityDefaults: { ...DEFAULT_CAPS, ...opts.capabilityDefaults }
     });
     this.capabilityDefaults = this.inner.capabilityDefaults;
