@@ -2703,3 +2703,75 @@ now automated instead of remembered.
 not completed - the investigation was into whether the A/B pairing key had a
 *logic* problem, and only the encoding issue was resolved. That review is still
 open.
+
+
+### The A/B delta was being diluted by tasks the host could not run
+
+**The question this closes.** A previous run hit a rate limit mid-sentence
+while scoping `runAbComparison`; the row it left behind asked whether a task
+refused in one arm but not the other could skew the §16.4 delta. Answered, and
+the answer was worse than the question: the arms never disagree, and *that* was
+the problem.
+
+**What was actually wrong.** `runEvalTask` and `runNakedTask` both call
+`checkTaskRequirements` and both refuse a task whose declared `requires` are
+unusable on the host. `runAbComparison` then pushed an observation for every
+task x repetition **unconditionally**, so a refused task arrived at
+`computeAbReport` as a perfectly well-formed pair of `solved: false`
+observations. Every pairing validator passed — equal lengths, no duplicates,
+every key matched, balanced repetitions — because the refusal is *symmetric*.
+The task was then counted in the denominator of
+`vtcrDelta = (clutchSolved - nakedSolved) / observations`.
+
+**Reproduced before fixing, and the size of it measured.** One solvable task
+(ClutchCode solves it, naked does not) plus one unrunnable task, through the
+real compiled `computeAbReport`:
+
+| | delta | 95% interval |
+|---|---|---|
+| tasks that actually ran | `1.0` | `[1, 1]` |
+| + one task missing a binary | **`0.5`** | **`[0, 1]`** |
+
+The headline halved and the interval widened to include zero — purely because
+the host lacked `pytest`. Nothing threw, nothing warned. §16.4's delta is the
+North Star claim, so a silent environment-driven drift toward zero is exactly
+the kind of quiet wrongness this project exists to refuse.
+
+**Fix.** `ArmObservation` gains an optional `refused` marker.
+`runAbComparison` calls `checkTaskRequirements` **once per task** and stamps
+both arms from that single answer, so symmetry is structural rather than two
+runners happening to agree. `computeAbReport` then:
+
+1. **asserts refusal symmetry** and throws if one arm refused what the other
+   ran — the original question, now guarded rather than assumed;
+2. scores the delta, both VTCRs, `perTask` and the bootstrap over the
+   observations that **actually ran**;
+3. reports `refusedObservations` and `refusedTaskIds` and appends a note, so an
+   exclusion is visible in the artifact rather than inferred from a count that
+   does not add up;
+4. **throws** if every observation was refused, instead of inventing a delta
+   from nothing.
+
+**Verified, and how.**
+
+- **Stash-revert discrimination:** `git stash push -- evals/src/ab.ts`,
+  **rebuild** (the cross-package `dist` lesson from two entries ago applies —
+  without it the test validates the old build), re-run: **all 4 new tests
+  fail**. Restore, rebuild, re-run: 24/24 pass.
+- Behaviour re-checked directly against the compiled module, not only through
+  vitest: delta back to `1.0` with interval `[1, 1]`, `refusedObservations: 1`,
+  `refusedTaskIds: ["needs-pytest"]`; asymmetric refusal throws
+  `asymmetric A/B refusal: ...`; all-refused throws rather than reporting.
+- A suite with no refusals is byte-for-byte unaffected — `refused` is optional,
+  `refusedObservations` is 0, and no note is added.
+- Full gate: **860/860 across 87 files**, `tsc -b` and `eslint .` clean.
+
+**Blast radius, checked before the type changed.** `ArmObservation` is exported
+from `evals/src/index.ts`, but `evals` is internal tooling — no `apps/*` or
+`packages/*` manifest depends on it, so widening it is not a public-surface
+change. The new field is optional, so every existing construction still
+compiles.
+
+**Not verified.** Still no live-model A/B: this fixes how observations are
+*counted*, not what a real 14B model scores. No VTCR delta is published, and
+`EVAL_METHODOLOGY.md` still forbids quoting one.

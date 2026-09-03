@@ -2,7 +2,7 @@ import path from "node:path";
 
 import type { Budgets, ProviderKind } from "@clutchcode/agent-api";
 
-import type { EvalTask } from "./eval-task.js";
+import { checkTaskRequirements, type EvalTask } from "./eval-task.js";
 import { runEvalTask } from "./eval-runner.js";
 import { runNakedTask, type NakedRunOptions, type NakedTaskResult } from "./naked-arm.js";
 import { computeScoreboard, type EvalTaskResult, type Scoreboard } from "./scoreboard.js";
@@ -183,6 +183,10 @@ export interface AbReport {
   bootstrapSeed: number;
   /** Per-task counts, so the headline delta can be re-derived by hand from the report alone. */
   perTask: PerTaskOutcome[];
+  /** Observations excluded because the host could not run the task (see `ArmObservation.refused`). */
+  refusedObservations: number;
+  /** Task ids excluded for that reason, so a reader can see exactly what was left out. */
+  refusedTaskIds: string[];
   /** Honest caveats attached to this specific comparison. */
   notes: string[];
 }
@@ -200,6 +204,22 @@ export interface ArmObservation {
   taskId: string;
   repetition: number;
   solved: boolean;
+  /**
+   * The host could not run this task at all (its declared `requires` are
+   * unusable here), so **both** arms refused it and neither result says
+   * anything about the agent.
+   *
+   * Such an observation is excluded from the scored denominator rather than
+   * counted as a mutual failure. Counting it silently halved a real delta:
+   * one solvable task (ClutchCode solves, naked does not) plus one unrunnable
+   * task reported `vtcrDelta` 0.5 with a 95% interval of [0, 1], where the
+   * tasks that actually ran gave 1.0 and [1, 1]. Nothing threw, because the
+   * refusal is symmetric and so every pairing check passes — the delta just
+   * quietly drifted toward zero because a binary was missing. §16.4's delta
+   * is the North Star claim, so it is computed over tasks that genuinely ran
+   * and the excluded ones are reported explicitly instead.
+   */
+  refused?: boolean;
 }
 
 function keyOf(o: ArmObservation): string {
@@ -228,9 +248,34 @@ export function computeAbReport(meta: AbReportMeta, clutchcode: ArmObservation[]
     }
   }
 
+  // A refusal must be symmetric: both arms consult the same
+  // `checkTaskRequirements` on the same host, so a task refused in one arm and
+  // not the other means the two arms disagreed about what they even attempted,
+  // and no delta computed from that is meaningful. Fail loudly rather than
+  // average across it.
+  for (const o of clutchcode) {
+    const pair = nakedByKey.get(keyOf(o))!;
+    if ((o.refused ?? false) !== (pair.refused ?? false)) {
+      throw new Error(
+        `asymmetric A/B refusal: task "${o.taskId}" repetition ${o.repetition} was refused by the ` +
+          `${o.refused ? "ClutchCode" : "naked"} arm but run by the other — the arms disagree about what was attempted`
+      );
+    }
+  }
+
+  const refusedTaskIds = [...new Set(clutchcode.filter((o) => o.refused).map((o) => o.taskId))];
+  const refusedObservations = clutchcode.filter((o) => o.refused).length;
+  const scored = clutchcode.filter((o) => !o.refused);
+  if (scored.length === 0) {
+    throw new Error(
+      `cannot compute an A/B report: all ${clutchcode.length} observation(s) were refused because this host ` +
+        `cannot run them (${refusedTaskIds.join(", ")})`
+    );
+  }
+
   const perTaskMap = new Map<string, PerTaskOutcome>();
   const order: string[] = [];
-  for (const o of clutchcode) {
+  for (const o of scored) {
     let row = perTaskMap.get(o.taskId);
     if (!row) {
       row = { taskId: o.taskId, clutchcodeSolved: 0, nakedSolved: 0, repetitions: 0 };
@@ -243,9 +288,9 @@ export function computeAbReport(meta: AbReportMeta, clutchcode: ArmObservation[]
   }
   const perTask = order.map((id) => perTaskMap.get(id)!);
 
-  const observations = clutchcode.length;
-  const clutchSolved = clutchcode.filter((o) => o.solved).length;
-  const nakedSolved = naked.filter((o) => o.solved).length;
+  const observations = scored.length;
+  const clutchSolved = scored.filter((o) => o.solved).length;
+  const nakedSolved = scored.filter((o) => nakedByKey.get(keyOf(o))!.solved).length;
   const repetitionCounts = new Set(perTask.map((t) => t.repetitions));
   if (repetitionCounts.size !== 1) {
     throw new Error(`unbalanced A/B: tasks were run a different number of times (${[...repetitionCounts].sort((a, b) => a - b).join(", ")})`);
@@ -271,6 +316,12 @@ export function computeAbReport(meta: AbReportMeta, clutchcode: ArmObservation[]
       `the delta interval is a cluster bootstrap over ${perTask.length} task(s); below ~10 tasks it is coarse, and a zero-width interval means every resample agreed, not that the estimate is precise.`
     );
   }
+  if (refusedObservations > 0) {
+    notes.push(
+      `${refusedObservations} observation(s) were excluded because this host cannot run the task (${refusedTaskIds.join(", ")}); ` +
+        `the delta is over the ${observations} observation(s) that actually ran. Counting a refusal as a mutual failure would drag the delta toward zero for an environment reason.`
+    );
+  }
   if (deltaCi95.lo <= 0 && deltaCi95.hi >= 0) {
     notes.push("the 95% interval for the delta includes 0 — on its own this comparison does not substantiate §16.1's claim.");
   }
@@ -282,6 +333,8 @@ export function computeAbReport(meta: AbReportMeta, clutchcode: ArmObservation[]
     provider: meta.provider,
     model: meta.model,
     taskCount: perTask.length,
+    refusedObservations,
+    refusedTaskIds,
     repetitions,
     clutchcode: { arm: "clutchcode", observations, solved: clutchSolved, vtcr: clutchSolved / observations, ci95: wilsonInterval(clutchSolved, observations) },
     naked: { arm: "naked", observations, solved: nakedSolved, vtcr: nakedSolved / observations, ci95: wilsonInterval(nakedSolved, observations) },
@@ -381,6 +434,12 @@ export async function runAbComparison(tasks: EvalTask[], opts: RunAbOptions): Pr
 
   for (let repetition = 1; repetition <= repetitions; repetition += 1) {
     for (const task of tasks) {
+      // Asked once, here, and applied to both arms — so a refusal is symmetric
+      // by construction rather than by two runners happening to agree. Both
+      // `runEvalTask` and `runNakedTask` make the same call internally and
+      // refuse too; this is the same memoized check, used to mark the pair.
+      const runnable = checkTaskRequirements(task).ok;
+
       opts.onArmStart?.("clutchcode", task, repetition);
       const { result } = await runEvalTask(task, {
         providerKind: opts.providerKind,
@@ -395,7 +454,7 @@ export async function runAbComparison(tasks: EvalTask[], opts: RunAbOptions): Pr
         budgets: opts.budgets
       });
       clutchcodeResults.push(result);
-      clutchObservations.push({ taskId: task.id, repetition, solved: result.verified });
+      clutchObservations.push({ taskId: task.id, repetition, solved: result.verified, refused: !runnable });
       opts.onClutchcodeResult?.(result, repetition);
 
       opts.onArmStart?.("naked", task, repetition);
@@ -409,7 +468,7 @@ export async function runAbComparison(tasks: EvalTask[], opts: RunAbOptions): Pr
         ...opts.naked
       });
       nakedResults.push(naked.result);
-      nakedObservations.push({ taskId: task.id, repetition, solved: naked.result.solved });
+      nakedObservations.push({ taskId: task.id, repetition, solved: naked.result.solved, refused: !runnable });
       opts.onNakedResult?.(naked.result);
     }
   }
