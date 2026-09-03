@@ -2839,3 +2839,63 @@ confident, wrong bug report.
 
 **What remains after those two answers** is small and now de-risked: add the
 release workflow gated on the existing CI gate, and run `pnpm publish -r`.
+
+
+### The release path, built for OIDC — and the tool split that forced its shape
+
+**Decision received.** The scope question came back as "publish and continue"
+and the auth question as **npm OIDC trusted publishing**. The second is
+actionable and is now built. The first is not something this environment can
+carry out — see the end of this entry.
+
+**A constraint found by checking, not assuming.** The obvious release command
+is `pnpm publish -r`. It cannot be used here, because the two tools each do
+half the job:
+
+- **`pnpm`** rewrites `workspace:*` into real pinned versions; `npm` does not.
+- **`npm`** speaks OIDC trusted publishing and `--provenance`; `pnpm publish`
+  exposes no `oidc`, `provenance` or `trusted` flag at all (checked against
+  `pnpm publish --help` on pnpm 10.33.0; `npm publish --help` does list
+  `--provenance`).
+
+So the workflow **packs with pnpm and publishes the tarballs with npm**, using
+the tarball as the handoff. That is only safe because the previous unit proved
+empirically that `pnpm pack` performs the rewrite, and the workflow re-checks
+it anyway: a step greps every packed manifest and **fails the release** if any
+`workspace:` spec survived, rather than shipping something npm could not
+install.
+
+**Built.**
+
+- `.github/workflows/release.yml` — `workflow_dispatch` only, **no tag or push
+  trigger**, with `dry_run` defaulting to **true**. `permissions: id-token:
+  write` and **no `NPM_TOKEN` anywhere**: with a trusted publisher configured
+  on npm, the runner mints a short-lived token per run, so there is no
+  long-lived credential in the repo to leak. It installs the same real backends
+  CI does and runs the **same** build/test/lint gate — a release must clear the
+  gate every PR clears, not a weaker one.
+- `RELEASING.md` — what is already proven, why the pack-then-publish split
+  exists, the one-time npm setup only a human can do, and the release steps.
+
+**Verified, and how.** The workflow was parsed as YAML rather than eyeballed,
+which caught a real defect: the step name `Refuse to publish if any workspace:
+spec survived packing` contains a colon, so YAML read it as a nested mapping
+and the file **did not parse**. Quoted and re-validated: parses, single
+`workflow_dispatch` trigger, `dry_run` default `true`, permissions
+`{contents: read, id-token: write}`, 13 steps. A grep confirms no `secrets.*`
+reference exists — the only `NPM_TOKEN` string in the file is the comment
+explaining its absence. `eslint .` clean.
+
+**NOT DONE, and not doable here: the publish itself.** Claude has no npm
+account and no credentials, cannot create the `@clutchcode` organisation on
+someone's behalf, and publishing is effectively irreversible — npm's unpublish
+policy is narrow, so `@clutchcode/*` at `0.1.0` would be permanently claimed.
+The two remaining steps are in `RELEASING.md` and need a human: create the org,
+and register the trusted publisher against `Derric01/ClutchCode` +
+`.github/workflows/release.yml`.
+
+**NOT VERIFIED.** The workflow has never run. OIDC trusted publishing, the
+`npm@^11.5.1` floor it requires, and provenance attestation are written against
+npm's documented behaviour and cannot be exercised without a real organisation
+and a real publish. `RELEASING.md` says so in those words, and says to treat
+the first `dry_run` as the test of the file rather than a formality.

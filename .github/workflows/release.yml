@@ -1,0 +1,110 @@
+name: Release
+
+# Publishing is MANUAL and DRY-RUN BY DEFAULT. There is no tag or push trigger:
+# a release should be a deliberate act, and a workflow that can publish by
+# accident is a worse failure than one that needs a button.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Pack and validate without publishing (leave true until a real release)"
+        type: boolean
+        default: true
+
+# `id-token: write` is what npm OIDC trusted publishing needs. There is
+# deliberately NO NPM_TOKEN secret anywhere in this file: with a trusted
+# publisher configured on npmjs.com, the runner mints a short-lived identity
+# token per run, so there is no long-lived credential in the repo to leak.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same real backends CI installs — a release must clear the *same*
+      # gate as every PR, not a weaker one.
+      - name: Install real sandbox + keychain + search backends
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bubblewrap libsecret-tools gnome-keyring dbus-x11 ripgrep
+
+      - name: Install the eval suite's Python toolchain
+        run: |
+          python3 -m pip install --user --quiet pytest ruff
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      # OIDC trusted publishing requires a recent npm; the one bundled with
+      # setup-node is generally older. Pinned to a floor, not a fixed version,
+      # so security fixes still arrive.
+      - name: Ensure an npm new enough for OIDC trusted publishing
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
+      - run: pnpm install --frozen-lockfile
+
+      # The gate. A release that has not passed build + test + lint is not a
+      # release this project is willing to ship (CLAUDE.md's whole premise).
+      - name: Build
+        run: pnpm build
+      - name: Test
+        run: pnpm test
+      - name: Lint
+        run: pnpm lint
+
+      # `pnpm pack` is what rewrites `workspace:*` into a pinned version;
+      # `npm publish` is what speaks OIDC. Neither tool does both, so the
+      # tarball is the handoff between them. Verified locally: the packed
+      # manifest for @clutchcode/cli carries "@clutchcode/agent-api": "0.1.0",
+      # with zero unrewritten workspace: specs.
+      - name: Pack every publishable package
+        run: |
+          mkdir -p dist-tarballs
+          for d in packages/* apps/cli; do
+            [ -f "$d/package.json" ] || continue
+            if [ "$(node -p "require('./$d/package.json').private === true")" = "true" ]; then
+              echo "skip (private): $d"; continue
+            fi
+            (cd "$d" && pnpm pack --pack-destination "$GITHUB_WORKSPACE/dist-tarballs")
+          done
+          ls -l dist-tarballs
+
+      # Fail loudly rather than shipping a tarball that would install a
+      # dependency npm cannot resolve.
+      - name: "Refuse to publish if any workspace: spec survived packing"
+        run: |
+          for t in dist-tarballs/*.tgz; do
+            if tar -xzOf "$t" package/package.json | grep -q '"workspace:'; then
+              echo "::error::$t still contains an unrewritten workspace: dependency"
+              exit 1
+            fi
+          done
+          echo "all tarballs carry resolved versions"
+
+      - name: Publish (or dry-run)
+        env:
+          DRY: ${{ inputs.dry_run }}
+        run: |
+          for t in dist-tarballs/*.tgz; do
+            if [ "$DRY" = "true" ]; then
+              npm publish "$t" --access public --provenance --dry-run
+            else
+              npm publish "$t" --access public --provenance
+            fi
+          done
