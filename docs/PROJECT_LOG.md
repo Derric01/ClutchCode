@@ -2775,3 +2775,67 @@ compiles.
 **Not verified.** Still no live-model A/B: this fixes how observations are
 *counted*, not what a real 14B model scores. No VTCR delta is published, and
 `EVAL_METHODOLOGY.md` still forbids quoting one.
+
+
+### The npm release, proven as far as it can go without owning the scope
+
+**Scope of this unit.** The row is tagged "DO FIRST up to the gate, then stop
+and ask". Everything mechanical is now verified empirically; the decisions that
+remain are genuinely the user's and are stated at the end rather than guessed
+at.
+
+**Verified, and how — all offline, nothing published.**
+
+1. **Lockstep is already the de-facto state.** All 11 publishable manifests sit
+   at `0.1.0`, and `clutchcode-vscode` is correctly `private: true`, so it is
+   excluded from a `-r` publish rather than needing to be remembered.
+2. **`workspace:*` really is rewritten.** This was the row's central unknown and
+   it was checked rather than trusted: `pnpm pack` on `@clutchcode/cli`, then
+   the *packed* `package.json` read back out of the tarball. Source declares
+   `"@clutchcode/agent-api": "workspace:*"`; the tarball contains
+   `"@clutchcode/agent-api": "0.1.0"`. Zero unrewritten `workspace:` specs, and
+   the rewrite pins an exact version, which is the lockstep semantics the row
+   wanted.
+3. **The packed artifacts install and run on their own.** All 11 packed, then
+   installed into a scratch directory as `file:` dependencies - no repo on the
+   path, no workspace links - and the `node_modules/.bin/clutchcode` shim npm
+   generates (`-> ../@clutchcode/cli/dist/cli.js`) invoked directly.
+   `clutchcode --help` renders the full command list.
+4. **Cross-package wiring works, not just commander.** `--help` alone would
+   only prove the binary loads, so `clutchcode doctor` was run from the same
+   clean install: it exercises `@clutchcode/sandbox`, `agent-api`'s keychain
+   detection, and the toolchain probe across ten packages, and returns exit 0
+   with real findings (`bwrap - bubblewrap is installed and successfully
+   created a confined namespace`, `x86_64 seccomp-bpf filter available`,
+   `secret-service`). That is the strongest available evidence that a real
+   `npx clutchcode` would work.
+5. **The dependency claim in `README.md` is independently confirmed.** Reading
+   every packed manifest's non-`@clutchcode` dependencies yields exactly
+   `ajv`, `commander`, `smol-toml` - the three the README names. `npm install`
+   reported 0 vulnerabilities.
+
+**A false alarm, recorded because the first result looked like a bug.** The
+first clean-room attempt failed with `Cannot find module .../dist/cli.js`, which
+reads like a broken package. It was not: `package/dist/cli.js` is present in the
+tarball. The cause was the test harness - packages had been extracted into a
+directory with no `package.json`, and the subsequent `npm install` pruned every
+unlisted directory. Checked before reporting, per "reproduce it, don't assume
+it"; the re-run with the tarballs declared as real dependencies passed. Worth
+recording because the failure mode is convincing and would have produced a
+confident, wrong bug report.
+
+**STOPPED AT THE GATE - two decisions that are not mine to make.**
+
+- **Who owns the `@clutchcode` npm scope**, and which account/organisation
+  publishes. Nothing here can determine that, and a partial publish of an
+  interdependent scope is worse than none.
+- **How the release workflow authenticates.** A publish-capable workflow is a
+  security-posture change: a long-lived `NPM_TOKEN` repository secret versus
+  npm's OIDC trusted publishing, plus the trigger policy (tag push vs manual
+  dispatch). It also cannot be verified in this environment - the workflow
+  would first genuinely run on a real publish. Deliberately **not written**,
+  rather than written and left inert, so nobody merges a publishing path that
+  no one chose.
+
+**What remains after those two answers** is small and now de-risked: add the
+release workflow gated on the existing CI gate, and run `pnpm publish -r`.
