@@ -1,12 +1,9 @@
 {
-  "name": "@clutchcode/cli",
+  "name": "@clutchcode/acp",
   "version": "0.1.0",
-  "description": "The `clutchcode` CLI/TUI \u2014 a thin client of @clutchcode/agent-api (PROJECT_SPEC.md \u00a718).",
+  "description": "The Agent API's Agent Client Protocol (ACP) binding (PROJECT_SPEC.md §18.1/§20/§26): an ndjson-over-stdio ACP agent, built on the official @agentclientprotocol/sdk, wrapping @clutchcode/agent-api's Agent so any ACP client (Zed today; Neovim/Emacs later) can drive a run without a separate reimplementation of agent logic.",
   "license": "Apache-2.0",
   "type": "module",
-  "bin": {
-    "clutchcode": "./dist/cli.js"
-  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
@@ -15,13 +12,11 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@clutchcode/acp": "workspace:*",
+    "@agentclientprotocol/sdk": "^1.4.0",
     "@clutchcode/agent-api": "workspace:*",
-    "@clutchcode/agent-rpc": "workspace:*",
-    "commander": "^15.0.0"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
-    "@agentclientprotocol/sdk": "^1.4.0",
     "typescript": "^5.7.2"
   },
   "files": [
@@ -38,7 +33,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Derric01/ClutchCode.git",
-    "directory": "apps/cli"
+    "directory": "packages/acp"
   },
   "homepage": "https://github.com/Derric01/ClutchCode#readme",
   "bugs": {

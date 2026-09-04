@@ -2899,3 +2899,105 @@ and register the trusted publisher against `Derric01/ClutchCode` +
 npm's documented behaviour and cannot be exercised without a real organisation
 and a real publish. `RELEASING.md` says so in those words, and says to treat
 the first `dry_run` as the test of the file rather than a formality.
+
+### The ACP binding (§18.1/§20/§26) — a rate-limited run's real handoff, finished and closed out
+
+**Context: picking up a subagent's death mid-unit.** A previous run built the
+bulk of `@clutchcode/acp` — the package scaffold, `@agentclientprotocol/sdk`
+dependency, `server.ts` (ndjson-over-stdio wiring), `agent-methods.ts` (the
+`clutchcode/*` extension methods mirroring `agent-rpc`'s surface), `updates.ts`
+(RunState → ACP session-update mapping), `session-config.ts`, and full test
+files for each — then hit the session rate limit with one test failing and its
+own last message reading "Let's write `server.test.ts` and then wire a CLI
+subcommand." `server.test.ts` already existed; the CLI subcommand did not. This
+entry finishes both.
+
+**The failing test, diagnosed rather than patched blind.** `agent-methods.test.ts`'s
+full-prompt-turn test asserted `Array.isArray(checkpoints)` on the result of
+`clutchcode/checkpoints` and got `false`. The handler was returning `{ runId,
+checkpoints: [...] }` — a wrapper object, not the array the test expected.
+Rather than editing the test to match the handler, the sibling `agent-rpc`
+binding's own method for the same operation was checked: `checkpoints: (params)
+=> agent.checkpoints(requireRunId(params))` — a bare array, matching
+`Agent.checkpoints()`'s own return type (`CheckpointRecord[]`). Surveying every
+other ACP handler confirmed `checkpoints` was the one outlier: `diff`/`diffFiles`
+deliberately *add* `runId` alongside their `agent-rpc`-shaped value (additive,
+harmless), but `checkpoints` introduced a shape neither the underlying API nor
+the sibling binding uses anywhere. The test was correct; the handler was fixed
+to return the bare array, matching the established cross-binding convention
+rather than diverging from it for one method.
+
+**A stash-revert false pass, caught before it was trusted.** The standard
+discrimination proof — `git stash push -- <fix file>`, watch the new test fail,
+`git stash pop`, watch it pass — was tried first and appeared to pass *both*
+ways: the test stayed green even with `git stash push` supposedly reverting the
+fix. The file was never actually stashed: `packages/acp/` is new and entirely
+**untracked**, and `git stash push -- <path>` silently no-ops on an untracked
+path without `-u`/`--include-untracked`. Caught by checking `git status
+--short` on the file after the "revert" and seeing it unchanged, rather than
+trusting the passing result. Redone by hand — copy the fixed file aside, edit
+in the pre-fix wrapper, rebuild, confirm the test **fails** (`1 failed | 13
+passed`), restore the saved fixed file, rebuild, confirm **all pass**. The
+lesson: `git stash push -- <path>` on a path that was never `git add`ed is a
+no-op, not a revert, and a green result from one is not evidence of anything.
+
+**What was built to finish the unit.**
+
+- **`clutchcode acp` CLI subcommand** (`apps/cli/src/commands.ts`'s `cmdAcp`,
+  wired in `program.ts` immediately after `serve`, same long-running/no-`emit()`
+  shape, same SIGINT/SIGTERM/stdin-`end` shutdown). Unlike `cmdServe`, it takes
+  no `repoPath` — ACP is a multi-session protocol where each session declares
+  its own `cwd` via `session/new`, not one process bound to one repo at
+  startup.
+- **`@clutchcode/acp` wired into the workspace properly**: added to
+  `apps/cli/package.json`'s `dependencies` and `tsconfig.json`'s `references`,
+  and to the root `tsconfig.json`'s project references (the previous run had
+  already done the latter).
+- **A real-binary spawn test**, `apps/cli/src/acp-integration.test.ts`, mirroring
+  `apps/vscode/src/connection.test.ts`'s proof for `serve`: spawns the actual
+  compiled `dist/cli.js acp` as a genuine child process, wires its real stdin/
+  stdout through `ndJsonStream` (the same wire format an editor would use),
+  and drives a full `initialize` → `session/new` → `session/prompt` turn to
+  `stopReason: "end_turn"`. `server.test.ts` (from the previous run) already
+  proved `serveAcp` wires Node streams correctly using an in-memory
+  `PassThrough` pair; this proves the actual `clutchcode acp` *subcommand* —
+  real argv parsing, real process lifecycle, real OS pipes — is the thing an
+  editor would actually spawn. `@agentclientprotocol/sdk` added to
+  `apps/cli/package.json`'s `devDependencies` since the test imports it
+  directly (it was a phantom dependency before — only reachable transitively
+  through `@clutchcode/acp` — which would have been fragile).
+- **`PROJECT_SPEC.md §20`'s dependency diagram and rule sentence updated**:
+  `acp` added as a second binding alongside `agent-rpc`, both wrapping the same
+  `agent-api` surface over different wire formats, explicitly stated as
+  additive so a reader doesn't have to infer it. **`README.md`** updated to
+  match: the architecture diagram, the features table, and the roadmap gantt
+  (`ACP editor binding` moved from "Next" to "Shipped").
+
+**Verified, and how.**
+
+- Full workspace gate: **`tsc -b` clean, 898/898 passing across 92 files** (up
+  from 860/87 — the ACP package's own tests plus the new CLI integration test),
+  `eslint .` clean.
+- `cli-structure.test.ts` — the generic tree-walk guarding the
+  shared-option-shadowing bug class — passed with `acp` registered, without
+  needing to add `acp` to its own assertions (it walks `buildProgram()`
+  directly).
+- The real-binary integration test genuinely exercises the compiled binary end
+  to end: `node dist/cli.js acp` spawned as a child process, driven entirely
+  over its real stdin/stdout with the actual ACP ndjson wire format, reaching
+  a genuine `DONE`-equivalent `end_turn` stop reason.
+- The `checkpoints` fix's discrimination was proven for real after the false
+  pass was caught (see above) — the corrected proof: fails pre-fix (1/14
+  failing), passes post-fix (14/14).
+
+**NOT VERIFIED — flagged rather than asserted.** No real ACP client (Zed,
+Neovim, Emacs) has connected to this binding in this environment; there is no
+way to install or run one here. What is proven is protocol conformance against
+the official `@agentclientprotocol/sdk`'s own client implementation, driven
+through a real spawned process over the real wire format — the strongest proof
+available without an actual editor. The `acp` package's session-cancellation
+handling also has a documented, honest limitation carried over from the
+previous run (see its header comment on `buildAcpApp`): `session/cancel`
+records the request but cannot yet preempt an in-flight `Agent.run()` call,
+since the underlying `Agent` API has no cooperative cancellation hook — a
+`clutchcode/*`-shaped gap, not an ACP-binding-specific one.

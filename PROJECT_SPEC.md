@@ -1153,9 +1153,15 @@ clutchcode/                      # monorepo (pnpm/bun workspaces), Apache-2.0, D
 **Dependency view of the same structure.** The tree above shows *layout*; this
 shows *who may depend on whom*, which is the part that is normative. The single
 rule that matters: **`apps/*` depend only on `agent-api`** (plus `agent-rpc` for
-the stdio binding) and never reach into `runtime` or below. That is what lets
-the CLI, the VS Code extension, and any future editor client share 100% of the
-runtime code while differing only in presentation.
+the stdio JSON-RPC binding, or `acp` for the real Agent Client Protocol binding
+— §18.1/§26) and never reach into `runtime` or below. That is what lets the
+CLI, the VS Code extension, and any future editor client (Zed, Neovim, Emacs —
+anything that already speaks ACP) share 100% of the runtime code while
+differing only in presentation. `acp` is a *second* binding alongside
+`agent-rpc`, not a replacement: both wrap the same `agent-api` surface over
+different wire formats (`agent-rpc`'s LSP-style `Content-Length` framing vs.
+ACP's newline-delimited JSON), so adding one never requires touching the other
+or the VS Code extension that depends on it.
 
 ```mermaid
 flowchart TB
@@ -1166,6 +1172,7 @@ flowchart TB
     subgraph boundary["the public boundary"]
         API["agent-api"]
         RPC["agent-rpc"]
+        ACP["acp"]
     end
     subgraph core["core"]
         RT["runtime"]
@@ -1181,8 +1188,10 @@ flowchart TB
     end
 
     CLI --> API
+    CLI --> ACP
     VSC --> RPC
     RPC --> API
+    ACP --> API
     API --> RT & CAP & VER & MEM
     RT --> TOOLS & GIT & PROV & SBX
     VER --> TOOLS
