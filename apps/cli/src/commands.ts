@@ -33,6 +33,7 @@ import {
   type WorkflowDeclaration,
   type WorkflowPlan
 } from "@clutchcode/agent-api";
+import { serveAcp, type AcpServerHandle } from "@clutchcode/acp";
 import { serveAgentRpc, type AgentRpcServerHandle } from "@clutchcode/agent-rpc";
 import { exitCodeForRunStatus, EXIT } from "./exit-codes.js";
 
@@ -540,6 +541,20 @@ export async function cmdModelsList(ctx: CliContext): Promise<CommandResult> {
  */
 export function cmdServe(ctx: CliContext, stdin: Readable, stdout: Writable): AgentRpcServerHandle {
   return serveAgentRpc({ repoPath: ctx.repoPath, stateDir: ctx.stateDir }, stdin, stdout);
+}
+
+/**
+ * `clutchcode acp` (§18.1/§20/§26): the same `Agent` runtime `serve` exposes,
+ * spoken over the actual Agent Client Protocol instead of `agent-rpc`'s
+ * LSP-framed JSON-RPC — so an ACP client (Zed today; Neovim/Emacs are
+ * possible clients later) can drive a run without a second reimplementation
+ * of agent logic. No `repoPath` here, unlike `cmdServe`: ACP is a
+ * multi-session protocol where each session declares its own working
+ * directory via `session/new`'s `cwd`, rather than one process bound to one
+ * repo at startup.
+ */
+export function cmdAcp(ctx: CliContext, stdin: Readable, stdout: Writable): AcpServerHandle {
+  return serveAcp({ stateDir: ctx.stateDir }, stdin, stdout);
 }
 
 /**

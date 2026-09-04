@@ -1,6 +1,7 @@
 import { Command, InvalidArgumentError } from "commander";
 import type { ProviderKind } from "@clutchcode/agent-api";
 import {
+  cmdAcp,
   cmdApprove,
   cmdCheckpoints,
   cmdDiff,
@@ -388,6 +389,23 @@ export function buildProgram(): Command {
       // it doesn't — never left orphaned if the editor closes without
       // saying goodbye.
       const handle = cmdServe(ctx(opts), process.stdin, process.stdout);
+      process.stdin.resume();
+      const shutdown = (): void => {
+        handle.close();
+        process.exit(EXIT.SUCCESS);
+      };
+      process.stdin.on("end", shutdown);
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
+    });
+
+  baseOptions(program.command("acp"))
+    .description("speak the real Agent Client Protocol over stdio (§18.1/§20/§26) — for ACP clients (Zed today), not interactive use")
+    .action((opts: GlobalOpts) => {
+      // Same long-running/no-`emit()` shape as `serve` above, deliberately:
+      // stays alive for as long as the client keeps stdin open, exits
+      // cleanly the moment it doesn't.
+      const handle = cmdAcp(ctx(opts), process.stdin, process.stdout);
       process.stdin.resume();
       const shutdown = (): void => {
         handle.close();

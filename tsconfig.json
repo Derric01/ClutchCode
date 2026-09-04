@@ -10,6 +10,7 @@
     { "path": "packages/runtime" },
     { "path": "packages/agent-api" },
     { "path": "packages/agent-rpc" },
+    { "path": "packages/acp" },
     { "path": "apps/cli" },
     { "path": "apps/vscode" },
     { "path": "evals" }

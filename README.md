@@ -91,7 +91,7 @@ Every run is a worktree on its own branch, with per-step checkpoints you can rol
 
 ## 🏗️ Architecture
 
-Ten packages, strict boundaries. `apps/*` depend **only** on `agent-api` — never on runtime internals.
+Eleven packages, strict boundaries. `apps/*` depend **only** on `agent-api` — never on runtime internals.
 
 ```mermaid
 flowchart TB
@@ -103,6 +103,7 @@ flowchart TB
     subgraph boundary["🚪  Public boundary"]
         API["agent-api<br/><i>in-process binding</i>"]
         RPC["agent-rpc<br/><i>JSON-RPC over stdio</i>"]
+        ACP["acp<br/><i>Agent Client Protocol</i>"]
     end
 
     subgraph core["⚙️  Core"]
@@ -120,8 +121,10 @@ flowchart TB
     end
 
     CLI --> API
+    CLI --> ACP
     VSC --> RPC
     RPC --> API
+    ACP --> API
     API --> RT & CAP & VER & MEM
     RT --> TOOLS & GIT & PROV & SBX
     VER --> TOOLS
@@ -193,6 +196,7 @@ The interesting step is the one most agents skip: **after the gate goes green, i
 | 🎛️ | **Workflow engine** | `default` · `quickfix` · `review-only`, plus JSON-Schema-validated custom workflows. |
 | ⏸️ | **Resumable runs** | Hit a budget? `resume --extend-steps N` continues from the persisted transcript. |
 | 🧪 | **Replay harness** | Recorded transcripts re-run the whole loop with zero API calls. |
+| 🔌 | **ACP editor binding** | `clutchcode acp` speaks the real Agent Client Protocol — Zed today, any ACP client tomorrow — over a *second* binding alongside `agent-rpc`, not a replacement. |
 
 ---
 
@@ -324,10 +328,11 @@ gantt
         Workflow engine · VS Code extension      :done, a3, after a2, 45d
         Eval suite · VTCR scoreboard             :done, a4, after a3, 30d
         Naked-vs-harness A/B (the North Star)    :done, a5, after a4, 20d
+        ACP editor binding (Zed today)            :done, a6, after a5, 15d
     section Next
         npm release (npx clutchcode)            :active, b1, 2026-08-01, 30d
         Landlock rung                           :b3, after b1, 30d
-        ACP editor protocol · MCP client         :b4, after b1, 45d
+        MCP client                               :b4, after b1, 30d
     section Later
         SWE-bench Verified subset adapter       :c1, after b4, 60d
         PageRank repo map                       :c2, after c1, 45d
