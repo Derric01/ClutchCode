@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { FakeProvider, textTurn, toolCallTurn } from "@clutchcode/providers";
+import { FakeProvider, textTurn, toolCallTurn, type ScriptedTurn } from "@clutchcode/providers";
 import { computeContextBudget, type EffectiveCapability } from "@clutchcode/capability";
 import { AgentLoop } from "./agent-loop.js";
 import { commitApprovedRun } from "./approve.js";
@@ -206,6 +206,186 @@ describe("AgentLoop (end-to-end with a real worktree + FakeProvider)", () => {
 
       expect(finalState.status).toBe("ESCALATED");
       expect(finalState.escalationReason).toMatch(/loop detected: repeated-call/);
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+});
+
+describe("Cancellation via AbortSignal (§6.5/§6.6, §18.1)", () => {
+  it("a real run genuinely mid-loop is stopped by an abort partway through — lands in CANCELLED, not completing or throwing, and the loop actually stopped (not just the final state)", async () => {
+    const fx = setupAgentLoopFixture("run00000060");
+    try {
+      // Three distinct-args turns so the loop detector never fires — the
+      // point of this test is proving the *signal* stops the loop, not
+      // any other mechanism (a completed run would consume all three; a
+      // fourth, unscripted call would make FakeProvider throw).
+      const provider = new FakeProvider([
+        toolCallTurn("c1", "read_file", JSON.stringify({ path: "math.js" })),
+        toolCallTurn("c2", "read_file", JSON.stringify({ path: "math.test.js" })),
+        toolCallTurn("c3", "read_file", JSON.stringify({ path: "README.md" }))
+      ]);
+      const state = createRunState({ runId: fx.run.runId, task: "investigate slowly", provider: "fake", model: "fake" });
+
+      const controller = new AbortController();
+      const events: RuntimeEvent[] = [];
+      let responseCount = 0;
+      const loop = new AgentLoop(
+        state,
+        { provider, tools: fx.tools, toolContext: fx.toolContext, run: fx.run, toolchainCommands: fx.toolchainCommands, evidenceDir: fx.evidenceDir },
+        {
+          signal: controller.signal,
+          onEvent: (e) => {
+            events.push(e);
+            // Abort the instant the *first* model response comes back —
+            // deterministic (no timers/races): proves the loop stops
+            // before it ever requests a second turn or runs the tool
+            // call the first response asked for.
+            if (e.type === "model.response") {
+              responseCount++;
+              if (responseCount === 1) controller.abort();
+            }
+          }
+        }
+      );
+
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("CANCELLED");
+      // The loop actually stopped iterating: only the first scripted turn
+      // was ever consumed.
+      expect(provider.requestLog).toHaveLength(1);
+      expect(provider.remaining()).toBe(2);
+      // The abort landed before the tool call the first response asked
+      // for was ever dispatched — no half-applied edit (§6.6).
+      expect(finalState.toolCallLog).toHaveLength(0);
+      // The signal was genuinely forwarded into the provider-facing
+      // request (§4.7's real adapters pass this straight to `fetch`'s own
+      // AbortSignal) — not just checked loop-side.
+      expect(provider.requestLog[0]!.signal).toBe(controller.signal);
+      expect(events.some((e) => e.type === "run.end" && e.status === "CANCELLED")).toBe(true);
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("cancellation between tool calls within the same turn: a second tool call in the same response never dispatches once aborted mid-turn", async () => {
+    const fx = setupAgentLoopFixture("run00000061");
+    try {
+      // One turn, two tool calls (c1 harmless read, c2 a write that must
+      // never land) — proves the check between tool calls (not just
+      // between loop iterations) actually stops mid-turn dispatch.
+      const twoToolTurn: ScriptedTurn = {
+        kind: "deltas",
+        deltas: [
+          { type: "tool_call_start", id: "c1", name: "read_file" },
+          { type: "tool_call_delta", id: "c1", argsDelta: JSON.stringify({ path: "math.js" }) },
+          { type: "tool_call_end", id: "c1" },
+          { type: "tool_call_start", id: "c2", name: "write_file" },
+          { type: "tool_call_delta", id: "c2", argsDelta: JSON.stringify({ path: "scratch.txt", body: "should never be written" }) },
+          { type: "tool_call_end", id: "c2" },
+          { type: "done", finishReason: "tool_use" }
+        ]
+      };
+      const provider = new FakeProvider([twoToolTurn, textTurn("unreachable")]);
+      const state = createRunState({ runId: fx.run.runId, task: "two calls in one turn", provider: "fake", model: "fake" });
+
+      const controller = new AbortController();
+      const loop = new AgentLoop(
+        state,
+        { provider, tools: fx.tools, toolContext: fx.toolContext, run: fx.run, toolchainCommands: fx.toolchainCommands, evidenceDir: fx.evidenceDir },
+        {
+          signal: controller.signal,
+          onEvent: (e) => {
+            if (e.type === "tool.call" && e.tool === "read_file") controller.abort();
+          }
+        }
+      );
+
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("CANCELLED");
+      expect(finalState.toolCallLog.map((t) => t.tool)).toEqual(["read_file"]); // c1 ran; c2 never did
+      expect(fs.existsSync(path.join(fx.repoPath, "scratch.txt"))).toBe(false);
+      expect(provider.requestLog).toHaveLength(1);
+      expect(provider.remaining()).toBe(1); // the second scripted turn was never requested
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("cancellation also lands while the (real, synchronous) verification pipeline is what's actually still running — a separate checkpoint from the act-loop's, not just a lucky repeat of it", async () => {
+    const fx = setupAgentLoopFixture("run00000063");
+    try {
+      // A single text-only reply on the default workflow: the loop's own
+      // checks (top-of-loop, post-response) all pass clean since the
+      // abort hasn't happened yet — `toolCalls.length === 0` sends this
+      // straight into `verifyAndFinish()`, which runs the fixture's real
+      // `npm test` (a genuine blocking child-process spawn) before this
+      // test's scheduled abort is ever observed.
+      const provider = new FakeProvider([textTurn("Investigated, no changes needed.")]);
+      const state = createRunState({ runId: fx.run.runId, task: "investigate", provider: "fake", model: "fake" });
+
+      const controller = new AbortController();
+      const events: RuntimeEvent[] = [];
+      const loop = new AgentLoop(
+        state,
+        { provider, tools: fx.tools, toolContext: fx.toolContext, run: fx.run, toolchainCommands: fx.toolchainCommands, evidenceDir: fx.evidenceDir },
+        {
+          signal: controller.signal,
+          onEvent: (e) => {
+            events.push(e);
+            // Scheduled, not synchronous: firing from *inside* the
+            // model.response handler would just get caught by the
+            // act-loop's own post-response check instead of exercising
+            // the one under test. Deferring via `setImmediate` guarantees
+            // it can't win that race — `checkCancelled()` right after
+            // `model.response` runs synchronously in the same tick, so it
+            // always sees `aborted: false` here; the abort can only be
+            // observed once the run yields the event loop again, which
+            // (a text-only, no-tool-call reply) happens next inside
+            // `verifyAndFinish`'s own explicit yield, after the real
+            // `npm test` spawn returns.
+            if (e.type === "model.response") setImmediate(() => controller.abort());
+          }
+        }
+      );
+
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("CANCELLED");
+      // The real pipeline already ran synchronously to completion before
+      // the abort could be observed (nothing undoes that — it isn't a
+      // mutation), but everything *downstream* of the checkpoint stops:
+      // no per-stage results reported or recorded, no cheat review, no
+      // AWAITING_APPROVAL, no commit.
+      expect(finalState.verificationResults).toHaveLength(0);
+      expect(events.some((e) => e.type === "verify.stage")).toBe(false);
+      expect(events.some((e) => e.type === "state.transition" && e.to === "AWAITING_APPROVAL")).toBe(false);
+      expect(events.some((e) => e.type === "state.transition" && e.to === "COMMITTING")).toBe(false);
+      expect(events.some((e) => e.type === "state.transition" && e.to === "VERIFYING")).toBe(true); // it did start verifying — the checkpoint fires *after* the pipeline, not instead of it
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("an already-aborted signal at the very start of a run lands in CANCELLED before any model call is made", async () => {
+    const fx = setupAgentLoopFixture("run00000062");
+    try {
+      const provider = new FakeProvider([toolCallTurn("c1", "read_file", JSON.stringify({ path: "math.js" }))]);
+      const state = createRunState({ runId: fx.run.runId, task: "investigate", provider: "fake", model: "fake" });
+      const controller = new AbortController();
+      controller.abort();
+
+      const loop = new AgentLoop(
+        state,
+        { provider, tools: fx.tools, toolContext: fx.toolContext, run: fx.run, toolchainCommands: fx.toolchainCommands, evidenceDir: fx.evidenceDir },
+        { signal: controller.signal }
+      );
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("CANCELLED");
+      expect(provider.requestLog).toHaveLength(0); // never even asked the model
     } finally {
       fx.cleanup();
     }

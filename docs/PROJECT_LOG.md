@@ -3001,3 +3001,180 @@ previous run (see its header comment on `buildAcpApp`): `session/cancel`
 records the request but cannot yet preempt an in-flight `Agent.run()` call,
 since the underlying `Agent` API has no cooperative cancellation hook — a
 `clutchcode/*`-shaped gap, not an ACP-binding-specific one.
+
+### Real run cancellation (§6.5/§6.6/§18.1): `AbortSignal` threaded through `AgentLoop`, and a second checkpoint the first pass missed
+
+**The gap, reconfirmed before touching anything.** `HANDOFF.md`'s `DO FIRST`
+row claimed `AgentLoopOptions` had no `AbortSignal` and `acp`'s `session/cancel`
+only recorded the request. A fresh grep confirmed both were still true: no
+`AbortSignal`/`AbortController` anywhere in `packages/runtime`, and
+`agent-methods.ts`'s `session/cancel` handler was still just
+`session.cancelRequested = true`. **Coherence check against the spec before
+writing code** (per the work loop's step 3): §6.6 already settled the design —
+*"Cancellation is cooperative: a cancel flag is checked at every await
+point"* — and §6.5 settles the outcome — *"Ctrl-C ... twice = cancel (leave
+worktree intact for inspection)"*. Both matched the row's own scope
+description exactly, so the plan was to implement, not to invent or reopen
+anything. One more thing the grep turned up unprompted: `NormalizedRequest` in
+`@clutchcode/providers` *already* has a `signal?: AbortSignal` field (`types.ts`,
+commented `// Cooperative cancellation (§6.6)`), and both real adapters
+(`anthropic.ts`, `openai-compatible.ts`) already forward it straight into their
+`fetch()` calls. The plumbing at the provider boundary was already built and
+tested (`fake-provider.test.ts`'s "respects an already-aborted signal") — the
+missing piece really was exactly what the row said: nobody upstream ever set
+that field.
+
+**Blast radius, checked before widening `AgentLoopOptions`.** Grepped every
+consumer: `Agent.run()`/`Agent.resume()` in `agent-api`, and the eval harness's
+`replay.ts` (constructs `AgentLoop` directly). All three take an options object
+by shape, none exhaustively switch on its keys — an additive optional
+`signal?: AbortSignal` field is safe, confirmed by a clean `tsc -b` with no
+changes needed anywhere else. `RunState`'s `CANCELLED` status was already a
+full escape-hatch target from every non-terminal, non-`PAUSED` state (`run-state.ts`'s
+`ESCAPE_HATCHES`) — no state-machine change needed either.
+
+**What was built.**
+
+- **`AgentLoopOptions.signal?: AbortSignal`** (`packages/runtime/src/agent-loop.ts`).
+  A private `checkCancelled()` helper mirrors `budgetGuard.check()`'s shape —
+  checked, and if tripped, transitions the run (to `CANCELLED`, not `PAUSED`/
+  `ESCALATED`) and tells the caller to stop. Called at three points in
+  `actLoop()`: the top of the while loop (same spot the budget check already
+  gates continuation), right after a model response returns (in case the
+  abort landed *during* the request — a real adapter that got its `fetch`
+  aborted surfaces that as an ordinary `finishReason: "error"` delta, which
+  would otherwise be misreported as an ESCALATED "provider error" instead of
+  the CANCELLED outcome it actually is), and before each tool call inside a
+  multi-call turn. The signal is also forwarded into every
+  `NormalizedRequest.signal` the loop sends — not just checked loop-side, so a
+  real in-flight model call is actually interrupted at the transport level
+  too, for free, via plumbing that already existed.
+- **A second checkpoint in `verifyAndFinish()`, added after empirical testing
+  exposed a real, practically-important gap the first pass missed** (see
+  below): once a model turn ends with no more tool calls, `actLoop()` returns
+  `"completed"` and the run moves into verification — a real, synchronous,
+  potentially slow stage (a real test/lint/build command via a blocking
+  child-process spawn) with **zero** cancellation checkpoints in the first
+  pass. A run whose model turns were all done and was just waiting on the
+  deterministic gate was, before this, uncancellable for however long that
+  took. Fixed by checking again right after `runPipeline(...)` returns, before
+  cheat detection/checkpointing/the commit decision.
+- **`Agent.run()`/`Agent.resume()` (`agent-api`) forward `opts.signal` into
+  `AgentLoopOptions`** — `RunOptions`/`ResumeOptions` both gained an optional
+  `signal?: AbortSignal`. `agent-rpc` gets the capability as a byproduct with
+  **zero wire-protocol changes** (as scoped: no cancel method added to its
+  JSON-RPC surface, no VS Code UI — the capability exists at the API layer,
+  which is all this unit was asked to deliver there).
+- **`acp`'s `session/cancel` now genuinely preempts.** `AcpSession` gained an
+  `abortController?: AbortController`, created fresh at the top of every
+  `session/prompt` call (before `agent.run()` is invoked) and cleared in a
+  `finally` once that call settles. `session/cancel`'s notification handler
+  now calls `.abort()` on it (still also setting `cancelRequested`, for
+  callers that only poll `clutchcode/status`). `buildAcpApp`'s header comment,
+  which previously documented this as a known, deliberate gap, was rewritten
+  to describe the real mechanism.
+
+**A real, un-obvious bug found by trying to prove it end to end, not by
+reading the code.** The first pass (loop-iteration + post-response + per-tool-call
+checks, no `verifyAndFinish` checkpoint) looked complete against the row's own
+description. Writing a genuine ACP-level end-to-end test — a real spawned run,
+a real `session/cancel` notification, asserting the run's status actually
+becomes `CANCELLED` — is what surfaced the gap. A blind race (fire
+`session/prompt`, immediately fire `session/cancel` right after) failed 5/5
+with `stopReason: "end_turn"`. A *reactive* version (the ACP test client
+firing `session/cancel` back the instant it receives the run's very first
+`session/update`, using `ctx.agent.notify(...)` exposed on the client-side
+notification context) also failed consistently. Debug tracing
+(`console.error` timestamps at `checkCancelled()`, `AgentLoop.run()` start,
+and the `session/cancel` handler — removed before commit) showed why: the
+abort genuinely *did* land in time (`hasController: true`, `.abort()` called
+mid-run), but there was nowhere left in the code to observe it — the model
+call is fast (~4ms with `FakeProvider`), `verifyAndFinish()`'s real
+`npm test` spawn is the only stage that takes real time (~180ms), and it had
+no checkpoint at all. Confirmed *not* a false claim: this was the exact bug
+the "check between loop iterations" framing looks complete without,
+matching CLAUDE.md's "a finding can be real and mis-scoped at the same time" —
+except here it went the other way: the row's own scope description
+undersold what the fix actually needed.
+
+**A second, subtler bug the same debugging pass caught: a check placed right
+after a blocking call still doesn't see an abort that arrived *during* it.**
+Adding `if (this.checkCancelled())` immediately after `runPipeline(...)`
+returns *still* failed the same way — the debug trace showed `aborted: false`
+at that exact point, even though the cancel notification had already been
+processed by the time real wall-clock time (~180ms of blocking `execFileSync`)
+had elapsed. The reason: Node does not process queued callbacks/microtasks
+(including a pending ACP notification's delivery) until the current
+synchronous JS callstack actually yields — a blocking child-process spawn
+occupies that stack for its whole real duration, but returning from it
+resumes the *same* synchronous continuation, with no yield in between,
+regardless of how much wall-clock time passed. Fixed by inserting one
+explicit yield (`await new Promise<void>((resolve) => setImmediate(resolve))`)
+before the checkpoint — deliberate, not decorative, and documented as such:
+it's what actually lets anything queued during the blocking call (a real
+Ctrl-C handler included, not just an ACP notification) be processed before
+the check runs.
+
+**Tested for real, and proven to discriminate.**
+
+- **`packages/runtime/src/agent-loop.test.ts`**, new `describe("Cancellation
+  via AbortSignal (§6.5/§6.6, §18.1)")`: (1) a real multi-turn `FakeProvider`
+  run aborted deterministically (via a synchronous `onEvent` hook, not a
+  timer) right after the first model response — asserts `CANCELLED`, asserts
+  `provider.requestLog` has length 1 (not all 3 scripted turns — the loop
+  genuinely stopped, not just "the final state looks right"), asserts zero
+  tool calls executed, and asserts `provider.requestLog[0].signal ===
+  controller.signal` (the signal really reached the provider-facing request,
+  not just the loop's own bookkeeping); (2) a two-tool-call single turn,
+  aborted between the two calls — the second (a `write_file`) never
+  dispatches, proven by the file's absence on disk; (3) an already-aborted
+  signal at the very start of a run — `CANCELLED` before any model call;
+  (4) the `verifyAndFinish` checkpoint specifically, isolated from the
+  act-loop's own checks by scheduling the abort via `setImmediate` from
+  inside the `model.response` handler (guaranteeing it can't win the race
+  against the *synchronous* post-response check, so it can only be observed
+  once the real `npm test` spawn returns) — asserts `CANCELLED`,
+  `verificationResults` stayed empty, and no `AWAITING_APPROVAL`/`COMMITTING`
+  transition happened, while `VERIFYING` did (the pipeline genuinely ran; it
+  just didn't get to report or act on its result).
+- **`packages/acp/src/agent-methods.test.ts`**: the existing "recorded, not
+  preemptive" test was renamed to describe what it now actually exercises (no
+  run in flight — a harmless no-op beyond the flag) and a new end-to-end test
+  proves real preemption over the real ACP protocol — a real spawned run
+  aborted via a real `session/cancel` notification, asserting both
+  `stopReason: "cancelled"` and the persisted `RunState.status ===
+  "CANCELLED"`. Run 8/8 (and the full file 3/3) with zero flakes after the
+  `setImmediate` fix; the pre-fix version of that same test failed 5/5 with
+  two different racing strategies, which is what led to finding the real bug
+  above rather than papering over a flaky test.
+- **Discrimination proved twice, for real** (`git stash push -- <file>`,
+  confirm the new test fails, `git stash pop`, confirm it passes —
+  `packages/runtime/src/agent-loop.ts` is tracked from a previous session, so
+  `git stash push` genuinely reverts it here, unlike the untracked-file false
+  pass two entries above): (1) stashing the whole `agent-loop.ts` change and
+  re-running `agent-loop.test.ts` — all three loop-level cancellation tests
+  failed with `FakeProvider script exhausted`, confirming the runtime really
+  did keep calling the model without the fix; `git stash pop` restored green.
+  (2) Isolating just the `verifyAndFinish` checkpoint (hand-reverted, since a
+  partial stash isn't possible) and re-running the new checkpoint-specific
+  test: it failed the same way — `FakeProvider script exhausted after 1
+  turn(s)`, because without the checkpoint the run doesn't just fail to
+  cancel, it proceeds into a real repair cycle and makes a second, unscripted
+  model call. Restored, confirmed green again.
+- **Full workspace gate**: `tsc -b` clean, **903/903 passing across 92 files**
+  (up from 898/898 — five new tests: four in `agent-loop.test.ts`, one in
+  `agent-methods.test.ts`), `eslint .` clean.
+
+**Deliberately not attempted, and why.** §6.6 also documents *"an in-flight
+shell command is sent SIGTERM→SIGKILL with a grace period"* — killing a
+real, already-running subprocess a tool call spawned. That's a materially
+different, larger feature (real process-group tracking and signal delivery
+inside `packages/tools`' `shell` tool, not a boolean check) than what this row
+scoped ("check it between loop iterations... tool calls") and what the spec
+section this row cites actually needs to close the gap it named. Left
+queued as its own future row rather than folded in here unasked.
+`agent-rpc`'s own `cancel` JSON-RPC method (a wire-level notification a real
+editor could send) is the same kind of deliberately-not-built UI the row
+called out explicitly — the capability exists at `Agent.run()`'s API surface;
+wiring a method onto the wire protocol is new scope, not part of "gets it as
+a byproduct."

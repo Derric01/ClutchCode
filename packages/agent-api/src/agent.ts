@@ -73,6 +73,16 @@ export interface RunOptions {
   /** Override for the §10.3 project-memory store's location (default: ~/.config/clutchcode/memory); real usage never sets this, tests use it for isolation. */
   memoryDir?: string;
   onEvent?: (event: RuntimeEvent) => void;
+  /**
+   * Cooperative cancellation (§6.5/§6.6): forwarded verbatim to
+   * `AgentLoop` — see `AgentLoopOptions.signal`'s doc comment for how it's
+   * used (checked between loop iterations/tool calls, and passed through
+   * to every model request so a real provider's own `fetch` is asked to
+   * abort too). An aborted run resolves as `RunState.status === "CANCELLED"`
+   * rather than throwing. Both bindings get this for free: `agent-rpc`'s
+   * JSON-RPC callers and `acp`'s `session/cancel` handler.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ResumeOptions {
@@ -94,6 +104,8 @@ export interface ResumeOptions {
   /** Override for the §10.3 project-memory store's location; see `RunOptions.memoryDir`. */
   memoryDir?: string;
   onEvent?: (event: RuntimeEvent) => void;
+  /** Cooperative cancellation (§6.5/§6.6) for the resumed run — see `RunOptions.signal`. */
+  signal?: AbortSignal;
 }
 
 export interface ApproveOptions {
@@ -406,6 +418,7 @@ export class Agent {
       },
       {
         yesMode: opts.yesMode,
+        signal: opts.signal,
         onEvent: (event) => {
           appendEvent(this.stateDir, runId, event);
           this.store.save(state); // persist after every transition (§6.2) — a crash loses at most the in-flight step
@@ -586,6 +599,7 @@ export class Agent {
       },
       {
         yesMode: opts.yesMode ?? state.yesMode,
+        signal: opts.signal,
         onEvent: (event) => {
           appendEvent(this.stateDir, runId, event);
           this.store.save(state);
