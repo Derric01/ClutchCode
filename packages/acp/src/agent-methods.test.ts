@@ -209,7 +209,7 @@ describe("buildAcpApp (§18.1/§20/§26 ACP binding)", () => {
     ).rejects.toThrow(/no run has started/);
   });
 
-  it("session/cancel is recorded honestly (not preemptive — see buildAcpApp's header comment) and observable via clutchcode/status", async () => {
+  it("session/cancel with no run in flight is still recorded (observable via clutchcode/status) — nothing to abort yet, so it's a harmless no-op beyond the flag", async () => {
     const agentApp = buildAcpApp({ stateDir });
     await buildTestClientApp({ name: "test-client" }).connectWith(agentApp, async (ctx) => {
       const session = await ctx.request(AGENT_METHODS.session_new, {
@@ -227,6 +227,49 @@ describe("buildAcpApp (§18.1/§20/§26 ACP binding)", () => {
       expect(after.cancelRequested).toBe(true);
     });
   });
+
+  it("session/cancel genuinely preempts an in-flight run (§6/§18.1): a real spawned run is aborted before it completes, landing in CANCELLED with stopReason 'cancelled' instead of its would-have-been real outcome", async () => {
+    const agentApp = buildAcpApp({ stateDir });
+    let cancelSent = false;
+
+    const outcome = await buildTestClientApp({ name: "test-client" })
+      // Reacting to the *first* streamed `session/update` (the very first
+      // one AgentLoop emits is its own "CREATED → UNDERSTANDING"
+      // transition, before any model call) and firing `session/cancel`
+      // straight back from inside that handler — a real round trip over
+      // the same in-memory ACP connection `server.test.ts` proves the
+      // real stdio framing for — is what makes this deterministic rather
+      // than a timing race: it reliably lands the abort before the run's
+      // single model turn resolves, instead of firing blind from outside
+      // and hoping it beats a run that, once its (synchronous, real
+      // subprocess) verification pipeline starts, cannot be preempted
+      // until that finishes (§6.6 checks "every await point" — a
+      // synchronous `execFileSync` call has none).
+      .onNotification(CLIENT_METHODS.session_update, (ctx2) => {
+        if (cancelSent) return;
+        cancelSent = true;
+        void ctx2.agent.notify(AGENT_METHODS.session_cancel, { sessionId: ctx2.params.sessionId });
+      })
+      .connectWith(agentApp, async (ctx) => {
+        const session = await ctx.request(AGENT_METHODS.session_new, {
+          cwd: repoPath,
+          mcpServers: [],
+          _meta: { "clutchcode/provider": "fake", "clutchcode/model": "n/a" }
+        });
+
+        const promptResult = await ctx.request(AGENT_METHODS.session_prompt, {
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text: "investigate the repo" }]
+        });
+
+        const status = (await ctx.request("clutchcode/status", { sessionId: session.sessionId })) as { state: { status: string } };
+        return { stopReason: promptResult.stopReason as StopReason, runStatus: status.state.status };
+      });
+
+    expect(outcome.stopReason).toBe("cancelled");
+    expect(outcome.runStatus).toBe("CANCELLED");
+    expect(cancelSent).toBe(true); // sanity: the reactive handler actually fired
+  }, 30_000);
 
   it("clutchcode/rollback requires params.sha", async () => {
     const agentApp = buildAcpApp({ stateDir });

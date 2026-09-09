@@ -102,6 +102,20 @@ export interface AgentLoopOptions {
   /** `agent run --yes` (§14.7): auto-commit when the gate is green and no cheats are flagged. */
   yesMode?: boolean;
   onEvent?: (event: RuntimeEvent) => void;
+  /**
+   * Cooperative cancellation (§6.5 "Ctrl-C twice = cancel", §6.6 "a cancel
+   * flag is checked at every await point"). Forwarded verbatim into every
+   * `NormalizedRequest.signal` this run sends (§4.7's real adapters already
+   * pass that straight to `fetch`'s own `AbortSignal`, so a real in-flight
+   * model call is actually interrupted, not just the loop's own
+   * bookkeeping), and re-checked at every loop-iteration/tool-call boundary
+   * via `checkCancelled()`. An aborted run resolves into a real `CANCELLED`
+   * `RunState` rather than throwing or completing — cancellation is a
+   * normal, persisted outcome (§6.2's state machine already has the edge),
+   * and per §6.6 the worktree is left exactly as it was: no partial
+   * commit, no half-applied edit, since a check never fires mid-tool-call.
+   */
+  signal?: AbortSignal;
 }
 
 export class AgentLoop {
@@ -221,6 +235,22 @@ export class AgentLoop {
     return this.state;
   }
 
+  /**
+   * Cooperative cancellation (§6.5/§6.6): the same gate shape as
+   * `budgetGuard.check()` just below in `actLoop` — checked, and if
+   * tripped, transitions the run and reports "stop here" to the caller.
+   * Called at every loop-iteration boundary, right after a model response
+   * returns (in case the abort landed mid-request), and before each tool
+   * call — see `AgentLoopOptions.signal`'s doc comment for why those are
+   * the right points. Returns `true` (having already transitioned to
+   * CANCELLED) when the caller should unwind; `false` otherwise.
+   */
+  private checkCancelled(): boolean {
+    if (!this.opts.signal?.aborted) return false;
+    this.setStatus("CANCELLED");
+    return true;
+  }
+
   async run(): Promise<RunState> {
     this.setStatus("UNDERSTANDING");
 
@@ -309,6 +339,8 @@ export class AgentLoop {
   /** Runs model↔tool turns until the model stops calling tools, or budgets/loop-detection force a stop. */
   private async actLoop(): Promise<"completed" | "stopped"> {
     while (true) {
+      if (this.checkCancelled()) return "stopped";
+
       const budgetResult = this.budgetGuard.check();
       if (!budgetResult.ok) {
         this.emit({ type: "budget.hit", kinds: budgetResult.exceeded });
@@ -347,7 +379,8 @@ export class AgentLoop {
           model: this.state.model,
           messages: this.messages,
           tools: toolsToSchemas(this.effectiveTools),
-          maxOutputTokens: this.contextBudget.reservedOutput
+          maxOutputTokens: this.contextBudget.reservedOutput,
+          signal: this.opts.signal
         })
       );
       this.budgetGuard.recordStep();
@@ -363,6 +396,17 @@ export class AgentLoop {
       // unredacted regardless of what `state.messages` does.
       const redactedResponseText = this.deps.toolContext.redactor.scrub(response.text).text;
       this.emit({ type: "model.response", text: redactedResponseText, toolCalls: response.toolCalls.length });
+
+      // Checked again here, not just at the top of the loop: the abort may
+      // have landed *while the request above was in flight* (it was
+      // forwarded into `NormalizedRequest.signal`, so a real adapter's
+      // `fetch` was asked to abort too) — a real provider surfaces that as
+      // an ordinary `finishReason: "error"` delta (§4.7's adapters have no
+      // way to distinguish "aborted" from any other transport failure at
+      // the `Delta` level), which would otherwise be misreported as an
+      // ESCALATED "provider error" instead of the CANCELLED outcome this
+      // actually is. Checking cancellation first makes that ambiguity moot.
+      if (this.checkCancelled()) return "stopped";
 
       if (response.finishReason === "error") {
         this.setStatus("ESCALATED");
@@ -383,6 +427,12 @@ export class AgentLoop {
 
       let anyEdit = false;
       for (const call of response.toolCalls) {
+        // Between tool calls too (§6.6's "every await point"): a turn with
+        // several tool calls shouldn't keep dispatching the rest of them
+        // once cancellation has been requested, even though the model's
+        // reply asking for them already arrived.
+        if (this.checkCancelled()) return "stopped";
+
         // §6.4: `recordToolCall`/`stableStringify` canonicalize by *key
         // order* so two calls with semantically-identical args (plausible
         // across independent LLM completions — argument key order in
@@ -521,6 +571,32 @@ export class AgentLoop {
       cwd: this.deps.verifyCwd ?? this.deps.run.worktreePath,
       evidenceDir: this.deps.evidenceDir
     });
+
+    // Checked here too, not just inside actLoop's loop: verification is a
+    // real, synchronous, potentially slow stage (a real test/lint/build
+    // command spawned via a blocking child-process call) with no `await`
+    // of its own to interleave a mid-flight check into — but a real
+    // provider call is fast by comparison, so a run whose model turns are
+    // all done and is now just waiting on the deterministic gate would
+    // otherwise be *uncancellable* for however long that takes. The
+    // verification that already ran isn't undone (running the gate is
+    // never itself a mutation, so there's nothing to undo) — but nothing
+    // downstream of it (cheat detection, checkpointing, the commit) runs
+    // once cancelled.
+    //
+    // The explicit yield below is deliberate, not decorative: the
+    // blocking call above ran synchronously start to finish, so nothing
+    // else in this process — a `session/cancel` notification still in
+    // flight over `acp`/`agent-rpc`, a real Ctrl-C handler — got a chance
+    // to actually run while it was in progress, no matter how much real
+    // wall-clock time it took. `checkCancelled()` reads a plain boolean
+    // (`AbortSignal.aborted`), so it would otherwise just observe
+    // whatever was true at the *start* of that blocking call. One tick is
+    // enough to let anything already queued during that window actually
+    // be processed first.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (this.checkCancelled()) return this.finish();
+
     for (const stage of pipelineResult.stages) {
       if (stage.ran) this.emit({ type: "verify.stage", stage: stage.stage, passed: stage.passed });
     }

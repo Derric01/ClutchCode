@@ -5,32 +5,38 @@ session; update it before you stop. See `CLAUDE.md` for timeless working
 conventions (build/test/lint, testing philosophy, quality bar) — this
 file is the time-stamped snapshot of where the project actually stands.
 
-**Snapshot as of:** 2026-09-03
-**Branch:** `claude/start-work-handoff-referral-52eyj1`. Merged **three times**
-this project's history (#17, #18, #19) — restarted from `main`'s tip after each,
-most recently at `35c8a13` ("Merge pull request #19"). **Check a PR's actual
-state before assuming a push lands on it** (`pull_request_read`, or `git
+**Snapshot as of:** 2026-09-09
+**Branch:** `claude/start-work-handoff-referral-52eyj1`. Merged **four times**
+this project's history (#17, #18, #19, #20) — restarted from `main`'s tip after
+each, most recently at `79c2b26` ("Merge pull request #20"). **Check a PR's
+actual state before assuming a push lands on it** (`pull_request_read`, or `git
 merge-base --is-ancestor <head> origin/main` — trust this over the API's
 `merged` field, which has repeatedly read `false` on PRs a `merged_at`
 timestamp and git ancestry both confirm are merged) before every push, not
 once per session.
-**Latest commit:** the ACP binding (§18.1/§20/§26) — `@clutchcode/acp`
-(`server.ts`, `agent-methods.ts`, `updates.ts`, `session-config.ts`), a real
-protocol-conformance bug found and fixed (`clutchcode/checkpoints` returned a
-`{runId, checkpoints}` wrapper no other handler or the sibling `agent-rpc`
-binding uses — fixed to the bare array both actually use), the `clutchcode
-acp` CLI subcommand, and a real-binary spawn integration test.
-**PR:** **none currently open.** Push next, then open one — do not stack more
-unmerged commits on this branch without a PR carrying them (see the branch
-note above for why that's worth repeating).
+**Latest commit:** real run cancellation (§6.5/§6.6/§18.1) — `AgentLoopOptions.signal`
+threaded through `AgentLoop`, forwarded into every `NormalizedRequest` a real
+provider adapter already knew how to abort, checked at loop-iteration/
+tool-call boundaries *and* (a real gap the first pass missed, found by writing
+a genuine ACP end-to-end test rather than trusting the code read) after the
+verification pipeline; `Agent.run()`/`Agent.resume()` forward it; `acp`'s
+`session/cancel` now actually aborts the in-flight run instead of only
+recording the request. See `docs/PROJECT_LOG.md`'s newest entry for the two
+real bugs found while proving this end to end (the missing `verifyAndFinish`
+checkpoint, and a check placed right after a blocking call that still can't
+see an abort that arrived *during* it without an explicit event-loop yield).
+**PR:** **none currently open as of this snapshot.** Push next, then open one —
+do not stack more unmerged commits on this branch without a PR carrying them
+(see the branch note above for why that's worth repeating).
 **Phase:** Phase 1 shipped (§21) — one agent, one default workflow, three provider
 adapters, SEARCH/REPLACE edits with fallback, worktree isolation, deterministic
 verification with cheat detection, terminal CLI. **Phase 2 in progress:** the
 adaptation layer (capability probe §4.9, context budgeter §4.5, edit-format
 selector §4.4) is wired into the live loop; workflow engine §8.1/§8.2, VS Code
 §18.5, credentials §5.1, sandbox Tier 1 §12.5/§12.6, the §16 eval scoreboard,
-the §16.4 naked-vs-harness A/B, and the ACP editor binding landed early.
-**Test suite (locally):** 898/898 passing, 92 test files, clean `tsc -b`, clean
+the §16.4 naked-vs-harness A/B, the ACP editor binding, and real run
+cancellation landed early.
+**Test suite (locally):** 903/903 passing, 92 test files, clean `tsc -b`, clean
 `eslint .` — and **0 skipped**: bwrap genuinely confines in this dev container,
 so every real Tier 1/seccomp test still runs here.
 **CI — GREEN**, since run [#12](https://github.com/Derric01/ClutchCode/actions/runs/33593109279)
@@ -89,12 +95,11 @@ loose "MVP" estimate.
 | SWE-bench Verified subset adapter | §16.3a bullet 1 | large, **blocked on infrastructure** | The other half of the old combined row; **bullet 2 (Terminal-Bench-style shell/tooling tasks) is now shipped** — three tasks, suite at 8. This half needs dataset fetching and per-instance container images, which an offline local-first harness does not currently take on. The `evals/suite/<id>/{repo,oracle,solution}` format is the intended adapter target and is not Node/Python-specific. Do not fake it with a hand-copied slice — the value is in the real, citable instances. |
 | Landlock — **BLOCKED on the host kernel, not on us** | §12.6 | medium, blocked | **Attempted and stopped this round; read the reason before re-queueing it.** The *old* blocker ("needs either a native helper binary or a vetted raw-syscall binding — neither exists yet") is genuinely retired: **`@deepseek-ai/node-addon-landlock-run`** (BSD-3-Clause, `0.1.1`) installs clean, its `linux-x64` prebuilt is a real statically-linked ELF that runs, and its fail-closed contract is observable (a usage error exits `125` with a launcher-owned fatal line). **A different blocker replaced it: this environment's kernel has no Landlock at all**, so not one confined process can be observed here and the security property itself would ship unverified. Three independent confirmations, all reproduced live (see the `docs/PROJECT_LOG.md` entry for the exact commands and output): `/sys/kernel/security/lsm` = `capability,selinux`; `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)` (syscall 444) returns `ENOSYS`; and the kernel's own config says `# CONFIG_SECURITY_LANDLOCK is not set` — **not compiled in**, on a Firecracker microVM kernel that cannot be reconfigured from inside the guest. No `apt-get` fixes this. **Revisit trigger (concrete, checkable):** a host where `zcat /proc/config.gz | grep -i landlock` shows `CONFIG_SECURITY_LANDLOCK=y` **and** `landlock-run --probe` exits `0`. **The implementation plan below is already audited and stands as written — do not redesign it:** (1) add the dep, pinned; (2) add an optional `landlock?: LandlockDetection` field to `SandboxCapability` alongside the existing `seccomp?: SeccompDetection`, and emit the launcher into the argv `buildBwrapSpawn` already produces — Landlock is a *hardening layer under bwrap*, exactly as seccomp is; (3) **do NOT add `"landlock"` to the `SandboxBackend` union** — it is a closed union re-exported as public API from `@clutchcode/agent-api` and guarded by an exhaustive `const exhaustive: never = backend` switch in `buildConfinedSpawn`, and a `"landlock"` backend would falsely imply an unconfined-namespace path that does not exist; (4) write our own **status-gated** runner-failure classification (exit `125` **and** a launcher-owned fatal line, with the exact informational partial-enforcement line excluded) — never a substring bag, per their postmortem 0004 and the two times our own `classifyFailure` was bitten by the same shape; (5) real tests on a Landlock-capable host — a file outside the allow-list genuinely unreadable, **plus** the `§2a` condition-3 fail-closed test. **Consume as a dependency, never vendor** (`LICENSE_AND_REUSE_ANALYSIS.md §2a`, five binding conditions); do not copy their provider, argv construction, or classification code — sandbox policy is CLEAN-ROOM-REQUIRED per §3. Study note: `research/repos/deepseek-harness.md`. |
 | Provider stop/finish-reason conformance — incl. Anthropic `pause_turn` | §4.7/§6.8 | small–medium, **gated** — see the note (its central deliverable needs a decision) | **Confirmed real, currently unreachable** (same posture as the old `snapshot-backup.ts` row). `mapStopReason` in `packages/providers/src/anthropic.ts` has no `pause_turn` case, so it falls through `default:` → `"stop"`. Per Anthropic's published API docs, `pause_turn` means the model **paused a long-running turn and the client is expected to resume it** — so the loop would treat a paused turn as a completed one, the exact defect signature round 3 found six instances of. Not reachable today: `pause_turn` only arises when the request declares Anthropic **server** tools (web search / web fetch / code execution) and we declare none (verified by grep — all our tools are client-side). Doing this right is a small **design decision, not a one-liner**: `FinishReason` is `"stop" \| "tool_use" \| "length" \| "error"` with no paused variant, so it needs a new variant plus a decision about what `AgentLoop` does with it (resubmit? treat as a budgeted continuation?). Left queued rather than decided unilaterally. Scope the work as a **table-driven conformance test per adapter** covering the full documented stop/finish vocabulary — `pause_turn`, `aborted`, `content_filter`, `refusal`, `max_tokens`/`length`, `stop_sequence`, `tool_use`/`tool_calls` — with each case's meaning taken from the **provider's own documentation**, using `@earendil-works/pi-ai`'s vocabulary only as a checklist of what to go look up (`research/repos/pi-agent-harness.md`). Adapters stay ours; do not vendor or port pi-ai. **Blast radius, audited so it is neither over- nor under-estimated:** `finishReason` is confined to `packages/providers` (`types.ts`, the three adapters, `fake-provider.ts`) and one consumer, `packages/runtime/src/agent-loop.ts`. It is **not** part of the `agent-rpc` wire contract and **not** re-exported through `agent-api`, so widening the union does **not** break the JSON-RPC protocol, the VS Code extension, or any `apps/*` consumer. Two packages, one loop — contained. |
-| Thread `AbortSignal` through `AgentLoop` for real run cancellation | §6/§18.1 | small–medium, **DO FIRST** (genuinely ungated — the rows below need a host, an ADR amendment, a human decision, or infra this environment doesn't have) | **Surfaced building the ACP binding, but the gap is in `runtime`, not `acp`.** `AgentLoopOptions` has no `AbortSignal`, so ACP's `session/cancel` and any future "stop this run" affordance can only *record* the request (observable via `clutchcode/status`) — the in-flight `Agent.run()` call still runs to its real outcome instead of resolving early. Confirmed by grep: no `AbortSignal`/`AbortController` anywhere in `packages/runtime`. Scope: add an optional `signal?: AbortSignal` to `AgentLoopOptions`, check it between loop iterations (repair cycles, tool calls) the same way an existing budget check already gates continuation, and have it resolve the run into a real `CANCELLED` state rather than throwing — cancellation is a normal outcome, not an error. Then wire it through `Agent.run()` → both bindings: `agent-rpc` gets real cancellation for free (VS Code currently has no UI for it, but the capability should exist at the API layer regardless), and `acp`'s `session/cancel` handler starts actually preempting instead of only recording. **Check the blast radius first**: `AgentLoopOptions` is consumed by `Agent.run()` in `agent-api` and by the eval harness's `runEvalTask`/`runNakedTask` — an optional field is additive, but confirm nothing exhaustively switches on its keys before adding one. |
 | Generated model catalog to complement the capability probe | §4.9 | medium | We probe every model at runtime because we do not know its context window/capabilities a priori, falling back to provider defaults per ADR-015 when nothing has been probed. A generated catalog for *known hosted* models, with probing retained for *unknown/local* ones, is strictly better than probing everything — and it is what the §4.5 budgeter actually wants (real numbers, not a default). Idea studied from `@earendil-works/pi-ai`'s `models.generated.ts` + `scripts/generate-models.ts`, including its enforced rule that the generator is the source of truth and the generated file is never hand-edited. Implementation ours; the catalog data should come from each provider's own published model documentation / models endpoint, not from copying theirs. **Not** a reason to adopt pi-ai wholesale — see the "what's done" entry for why its dependency footprint disqualifies it for a local-first tool. Study note: `research/repos/pi-agent-harness.md`. **BLOCKED ON AN ADR DECISION — do not implement as written.** Audited against the spec: **ADR-015 (Accepted) explicitly considered and rejected this**, verbatim — *"Alternatives: static per-model tables; probe every run. Why rejected: **static rots**; per-run wastes tokens."* A *generated* catalog is a materially different proposal from the hand-maintained table ADR-015 rejected (regeneration is what answers "static rots", and ADR-015's own migration note already says "fall back to static defaults if probe fails", so static data is not foreign to the design) — but that argument has to be made **in an ADR amendment or a superseding ADR first**, not smuggled in as an implementation task. A future session must either amend ADR-015 or drop this row; silently implementing it would contradict an Accepted decision, which is exactly how an architecture erodes. |
 | arm64 seccomp | §12.6 | small, needs an arm64 host | The x86_64 filter is done and verified; arm64 has a different syscall number table with no way to verify it in this (x86_64) environment — needs either an arm64 host/CI runner or a very high-confidence authoritative source cross-checked the same way libseccomp's resolver was used for x86_64. **Note (new):** this blocker is specific to *seccomp*, whose filter we hand-assemble from architecture-specific syscall numbers. The Landlock row above does **not** inherit it — `@deepseek-ai/node-addon-landlock-run` ships a prebuilt `linux-arm64` binary and carries the ABI burden upstream, so Landlock-on-arm64 arrives free with that work while arm64 *seccomp* stays blocked on a real arm64 host. |
 | VS Code multi-file "changes" view | §18.5, minor | small | The extension opens one real `vscode.diff` editor per changed file (done, see "what's done") rather than combining several into VS Code's newer `vscode.changes` command — deliberately skipped since that command isn't universally available across the `^1.85.0` engine range this extension targets. Revisit if the minimum supported VS Code version is ever raised. |
 | PageRank repo map | §9, Phase 7 | medium | Tier 0 (ripgrep + on-demand tree-sitter) is what's live; the Aider-style PageRank map is Tier 1, triggered by measured retrieval-accuracy failures on large repos, not built preemptively. |
-| Full non-git `AgentLoop` execution path | — | large, separate project | Snapshot-backed (not worktree-backed) execution for non-git directories. `Agent.run` currently refuses cleanly with a "run git init" error instead of attempting this. `SnapshotBackup`'s own traversal gap is already closed (see "what's done"), so this row is now purely "wire the execution path up," not blocked on any open correctness/security gap in the fallback it would use. |
+| Full non-git `AgentLoop` execution path | — | large, separate project, **DO FIRST** (genuinely ungated — every row above it needs a host, an ADR amendment, a human decision, or infra this environment doesn't have; every row below it is itself gated, a watch item, or explicitly out of scope) | Snapshot-backed (not worktree-backed) execution for non-git directories. `Agent.run` currently refuses cleanly with a "run git init" error instead of attempting this. `SnapshotBackup`'s own traversal gap is already closed (see "what's done"), so this row is now purely "wire the execution path up," not blocked on any open correctness/security gap in the fallback it would use. **Re-scope before writing code, though — the row's own "purely wire it up" framing undersells it**: `AgentLoop` calls git-specific functions from `@clutchcode/git` directly throughout its body (`checkpoint`, `diffAgainstBase`, `diffStat`, `approveRun` — not through an injected interface), so making it backend-agnostic needs a real abstraction boundary decision (an interface both `RunWorktree` and a new snapshot-backed equivalent satisfy) before any wiring, not just a swap-in. Checked this round and deliberately not started: attempting it without first designing that boundary risks exactly the half-shipped, contradicts-itself-later outcome `CLAUDE.md`'s quality bar forbids, and doing it justice (the boundary design, every one of checkpoint/diff/rollback/approve/PR re-implemented against snapshots, real tests for each against a real non-git temp dir) is genuinely multi-unit work — start with the design pass, not the first `git` call site you find. |
 | Multi-agent orchestration | §7, Phase 9 | large | Explicitly out of scope until the §7 rule justifies it — the spec argues *against* building this by default. Don't start it without re-reading §7's reasoning first. |
 | Windows sandbox Tier 1 — **revisit trigger only, decision stands** | §12.5/§12.6, A11 | n/a (watch item) | The doc-only/WSL2-recommended decision closed earlier this branch is **not** reopened by this research, and a future session should not treat it as reopened. Recording the evidence honestly so the trigger is legible: DeepSeek Harness ships `sandbox-windows-acl`, a real native Windows rung (a koffi port of a `WRITE_RESTRICTED`-token + restricting-SID mechanism). It **self-reports `enforcement: 'partial'`, not full** — ambient `Everyone` write ACEs and NTFS hard-links leak through, since ACLs bind to file objects rather than paths — and their own design note rejects AppContainer because it "cannot do arbitrary-path reads at all." Both facts **corroborate** §12.5's `[C:Low]` rating of the native path rather than contradicting it, and §29's team-size reasoning is untouched. Revisit only if (a) a Windows contributor/CI host materializes, **and** (b) a native path appears that reports *full*, not partial, enforcement. |
 
@@ -339,6 +344,42 @@ loose "MVP" estimate.
   un-committed), or for a genuinely new file, revert by hand (copy it
   aside, edit in the pre-fix version, test, restore) rather than trusting
   `git stash` to have done anything.
+
+- **A cancellation/cooperative-abort check placed immediately after a
+  blocking synchronous call (a real `execFileSync` child-process spawn)
+  can still miss an abort that arrived *during* that call — even though
+  real wall-clock time genuinely passed.** Node doesn't process queued
+  callbacks/microtasks (including a pending JSON-RPC notification's
+  delivery) until the *current* synchronous JS callstack actually yields;
+  resuming from a blocking call is still the same synchronous
+  continuation, with no yield in between, no matter how long the call
+  took. Bit `AgentLoop.verifyAndFinish`'s new cancellation checkpoint
+  directly: a real ACP end-to-end test (real spawned run, real
+  `session/cancel`, real `npm test` spawn taking ~180ms) kept failing even
+  though debug tracing showed the abort genuinely landing mid-verification
+  — `checkCancelled()` right after `runPipeline(...)` returned still read
+  `aborted: false`. Fixed by inserting one explicit yield
+  (`await new Promise<void>((resolve) => setImmediate(resolve))`) before
+  the check. Any cancellation/interrupt checkpoint placed right after a
+  *synchronous* blocking operation (not an `await`) needs this same
+  explicit yield, or it's checking a stale snapshot of the signal's state
+  regardless of how much real time elapsed underneath it.
+- **Racing an ACP/JSON-RPC notification against a `FakeProvider`-backed
+  run that has no real latency reliably loses — by two orders of
+  magnitude, not a coin flip.** A blind race (fire a request, then
+  immediately fire a notification meant to interrupt it) and a *reactive*
+  race (fire the notification from inside a handler reacting to the
+  target's very first streamed update) both failed 100% of runs (5/5 and
+  8/8 respectively, before the yield fix above) trying to cancel a
+  same-process, in-memory-stream ACP connection: a `FakeProvider`'s
+  zero-latency single turn resolves in ~4-7ms, while the transport
+  round-trip for a notification (even in-process, even reactive) measured
+  ~190-280ms in this environment. A test that needs to genuinely race a
+  cancellation against work will only be reliable if that work has real,
+  measurable duration to interleave into (here: the fixture's real
+  `npm test` spawn) — don't trust a race against instantaneous scripted
+  work, even across a handful of manual re-runs; it can look flake-free
+  by coincidence and still be structurally guaranteed to lose.
 
 ## How to resume
 

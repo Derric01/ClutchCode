@@ -12,7 +12,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=for-the-badge)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-774%20passing-brightgreen?style=for-the-badge)](#-what-were-actually-sure-of)
+[![Tests](https://img.shields.io/badge/tests-903%20passing-brightgreen?style=for-the-badge)](#-what-were-actually-sure-of)
 [![CI](https://github.com/Derric01/ClutchCode/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Derric01/ClutchCode/actions/workflows/ci.yml)
 
 [![Stars](https://img.shields.io/github/stars/Derric01/ClutchCode?style=flat-square&color=f5c518)](https://github.com/Derric01/ClutchCode/stargazers)
@@ -195,6 +195,7 @@ The interesting step is the one most agents skip: **after the gate goes green, i
 | 🧽 | **Secret redaction** | Every boundary scrubbed, proven by a canary test that injects a fake secret. |
 | 🎛️ | **Workflow engine** | `default` · `quickfix` · `review-only`, plus JSON-Schema-validated custom workflows. |
 | ⏸️ | **Resumable runs** | Hit a budget? `resume --extend-steps N` continues from the persisted transcript. |
+| 🛑 | **Real cancellation** | An `AbortSignal` threaded through the loop and the model call itself — a cancel genuinely stops a run instead of letting it complete, and lands the worktree in `CANCELLED` untouched. |
 | 🧪 | **Replay harness** | Recorded transcripts re-run the whole loop with zero API calls. |
 | 🔌 | **ACP editor binding** | `clutchcode acp` speaks the real Agent Client Protocol — Zed today, any ACP client tomorrow — over a *second* binding alongside `agent-rpc`, not a replacement. |
 
@@ -284,8 +285,8 @@ No invented benchmarks here. The eval scoreboard and the §16.4 A/B now exist �
 
 | Claim | How it's proven |
 |---|---|
-| **854 tests, 86 files** | `pnpm test`. Real git repos, real shells, real filesystems — `FakeProvider` stubs *only* the model. |
-| **The suite runs on CI, not just locally** | GitHub Actions, Node 20 + 22 on every PR: the same suite plus `tsc -b` and `eslint .`, with 16 tests skipped there. Those 16 skips are the bwrap confinement/seccomp suites — a hosted runner cannot create those namespaces, so they skip there and run in full locally (774, 0 skipped). **CI green therefore does not prove the sandbox confines**; only a bwrap-capable host does. |
+| **903 tests, 92 files** | `pnpm test`. Real git repos, real shells, real filesystems — `FakeProvider` stubs *only* the model. |
+| **The suite runs on CI, not just locally** | GitHub Actions, Node 20 + 22 on every PR: the same suite plus `tsc -b` and `eslint .`, with 16 tests skipped there. Those 16 skips are the bwrap confinement/seccomp suites — a hosted runner cannot create those namespaces, so they skip there and run in full locally (903, 0 skipped). **CI green therefore does not prove the sandbox confines**; only a bwrap-capable host does. |
 | **Sandbox actually confines** | A test writes outside the workspace, then asserts a sandboxed `cat` of it fails. Network fetch inside the sandbox asserted unreachable. These run for real wherever bwrap can genuinely create namespaces (this project's dev container can); where it can't — a hosted CI runner, an unprivileged container — they skip and ClutchCode falls back to Tier 0 **and says so**, rather than claiming a confinement it isn't getting. |
 | **Seccomp actually blocks** | Each denied syscall invoked by number inside real bwrap → `EPERM`, with an unfiltered control run proving the syscall otherwise succeeds. |
 | **Secrets don't leak** | A canary secret injected into a full recorded run, asserted absent from every transcript, event log and artifact. |

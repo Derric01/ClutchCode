@@ -30,7 +30,16 @@ interface AcpSession {
   model: string;
   baseUrl?: string;
   lastRunId?: string;
-  /** Recorded by `session/cancel` — see the header comment on `buildAcpApp` for why this cannot (yet) preempt an in-flight `Agent.run()`. */
+  /**
+   * Set (and recorded via `cancelRequested`) by `session/cancel`. Created
+   * fresh at the start of every `session/prompt` call and forwarded as
+   * `Agent.run()`'s `signal` (§6/§18.1) — `session/cancel` calling
+   * `.abort()` on it is what actually preempts the in-flight
+   * `AgentLoop`, not just records the request. `undefined` between prompt
+   * turns (no run in flight to cancel).
+   */
+  abortController?: AbortController;
+  /** Observable via `clutchcode/status` — true once `session/cancel` has been received for the current (or most recent) prompt turn. Reset to `false` at the start of every new `session/prompt`. */
   cancelRequested: boolean;
 }
 
@@ -187,14 +196,18 @@ function registerClutchCodeExtensionMethods(app: AgentApp, sessions: Map<string,
  *   terminal-for-this-turn state; if that state is `AWAITING_APPROVAL`, the
  *   final `agent_message_chunk` says so and the client finishes the loop
  *   with the `clutchcode/approve`/`clutchcode/reject` extension methods.
- * - `session/cancel` is honored as a notification but — same underlying
- *   reason — cannot actually preempt an in-flight `Agent.run()` today:
- *   `AgentLoopOptions` has no `AbortSignal`. The notification is recorded
- *   (observable via `clutchcode/status`) but the in-flight `session/prompt`
- *   still resolves with the run's real outcome, not `"cancelled"`. Wiring
- *   real preemption needs an `AbortSignal` threaded through `AgentLoop`
- *   itself — a runtime change, intentionally out of scope for an additive
- *   binding package; flagged in `HANDOFF.md`'s "What's left".
+ * - `session/cancel` genuinely preempts the in-flight run (§6/§18.1): each
+ *   `session/prompt` call creates a fresh `AbortController` and forwards
+ *   its `signal` into `Agent.run()`, which forwards it into `AgentLoop`
+ *   (checked between loop iterations/tool calls, and passed through to
+ *   every model request so a real provider's own in-flight `fetch` is
+ *   asked to abort too — see `AgentLoopOptions.signal`'s doc comment in
+ *   `@clutchcode/runtime`). `session/cancel` calls `.abort()` on that
+ *   controller — the notification is still recorded on `cancelRequested`
+ *   (observable via `clutchcode/status`) for callers that only want to
+ *   poll, but the in-flight `session/prompt` now actually resolves with
+ *   `stopReason: "cancelled"` once the run lands in `CANCELLED`, instead
+ *   of running to its would-have-been real outcome.
  */
 export function buildAcpApp(opts: AcpAgentMethodsOptions = {}): AgentApp {
   const sessions = new Map<string, AcpSession>();
@@ -238,6 +251,8 @@ export function buildAcpApp(opts: AcpAgentMethodsOptions = {}): AgentApp {
     if (!task) throw RequestError.invalidParams(undefined, "prompt must include at least one non-empty text content block");
 
     session.cancelRequested = false;
+    const abortController = new AbortController();
+    session.abortController = abortController;
     const mapEvent = createSessionUpdateMapper();
 
     let state: RunState;
@@ -247,6 +262,7 @@ export function buildAcpApp(opts: AcpAgentMethodsOptions = {}): AgentApp {
         providerKind: session.providerKind,
         model: session.model,
         ...(session.baseUrl ? { baseUrl: session.baseUrl } : {}),
+        signal: abortController.signal,
         onEvent: (event) => {
           for (const update of mapEvent(event)) {
             void ctx.client.notify("session/update", { sessionId: ctx.params.sessionId, update });
@@ -255,6 +271,14 @@ export function buildAcpApp(opts: AcpAgentMethodsOptions = {}): AgentApp {
       });
     } catch (e) {
       throw RequestError.internalError(undefined, (e as Error).message);
+    } finally {
+      // Nothing left to abort once this turn is over — clearing avoids a
+      // stray late `session/cancel` calling `.abort()` on a controller
+      // that no longer corresponds to any in-flight run (harmless either
+      // way, since `AbortController.abort()` on an already-settled
+      // request is a no-op, but leaving a stale reference around invites
+      // exactly that confusion).
+      session.abortController = undefined;
     }
 
     session.lastRunId = state.runId;
@@ -263,7 +287,9 @@ export function buildAcpApp(opts: AcpAgentMethodsOptions = {}): AgentApp {
 
   app.onNotification("session/cancel", (ctx) => {
     const session = sessions.get(ctx.params.sessionId);
-    if (session) session.cancelRequested = true; // see the header comment above: recorded, not (yet) preemptive
+    if (!session) return;
+    session.cancelRequested = true;
+    session.abortController?.abort(); // see the header comment above: this is what actually preempts the in-flight AgentLoop
   });
 
   registerClutchCodeExtensionMethods(app, sessions);
