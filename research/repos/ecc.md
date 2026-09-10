@@ -160,3 +160,40 @@ implying more coverage than was done. It does not change the ADR-016
 posture above: a clean security audit says the *content* is safe to
 read and learn from, not that copying it verbatim satisfies this
 project's own reuse policy, which is a separate, non-security question.
+
+## Second pass — 10 more skills sampled, same rigor (2026-09-10)
+
+Requested explicitly ("continue," after an offer to keep going with the
+same lens). Same method as the first pass: sample plausible candidates,
+check each against what this project already does or actually is,
+adopt only what's genuinely additive.
+
+**Result: 1 of 10 worth adopting.** That low hit rate is itself a real
+finding, not a failure to look hard enough — see the note at the end.
+
+| ECC skill | Verdict | Why |
+|---|---|---|
+| `verification-loop` | Rejected | Generic "how Claude should verify its own session work" — collides with §14's actual verification gate + cheat detection, which is shipped product code, not session guidance. Same collision shape as `tdd-workflow` in the first pass. |
+| `eval-harness` | Rejected | Same collision, against §16's actual eval scoreboard (`evals/`) |
+| `delivery-gate` | Rejected | A generic Stop-hook that blocks completion until checks pass — this project's own `CLAUDE.md` Autonomous continuation loop already specifies exact stop conditions and a build/test/lint gate; a second, differently-shaped gate would compete with it |
+| `autonomous-loops` | Rejected | ECC's own file says "retained for compatibility only... use `continuous-agent-loop` instead" — and `continuous-agent-loop` would hit the same collision as `delivery-gate` against this project's own bespoke Autonomous continuation convention (`start-work`/`refer-handoff`) |
+| `e2e-testing` | Rejected — inapplicable | Playwright/Page-Object-Model patterns. ClutchCode has no browser UI at all to test this way |
+| `make-interfaces-feel-better` | Rejected — inapplicable | Visual/GUI polish (spacing, shadows, motion). No custom UI surface exists — the VS Code extension uses VS Code's own native diff editor, not a built one |
+| `production-audit` | Rejected — inapplicable | Entirely about deployed-service readiness (auth boundaries, payment boundaries, rollback path). ClutchCode explicitly has no hosted service — this is load-bearing in this project's own license reasoning (`LICENSE_AND_REUSE_ANALYSIS.md §1`: *"There is no hosted service to protect"*) |
+| `mcp-server-patterns` | Rejected — wrong direction | About *building* an MCP server (registering tools for others to call). This project's roadmap item and `PROJECT_SPEC.md`'s ADR-017 are both about *consuming* MCP as a client, treating external tools as untrusted — the opposite direction. Revisit only if the roadmap item becomes "expose an MCP server," not before. |
+| `living-docs-governance` | Rejected — already built, more specifically | Reads as an almost point-for-point generic description of this project's own `CLAUDE.md`/`HANDOFF.md`/`PROJECT_LOG.md` three-tier system — "assign constitution/map/status/history roles... prefer the repository's current docs structure... reuse and link them in place" is exactly the reasoning `CLAUDE.md`'s own "three continuation documents" section already gives, independently, in more project-specific detail. Worth recording as convergent validation, not worth importing: the project doesn't need to be told to do what it already does. |
+| `code-tour` | **Adopted, adapted** | Genuinely additive: CodeTour (`microsoft/codetour`, MIT) is a real, unrelated-to-web-stack format for guided `.tour` walkthroughs, and this project ships an actual editor extension (`apps/vscode`) that could plausibly have it installed. No existing convention collides with it. Adapted with a ClutchCode-specific example (touring the agent-loop → verification → cheat-detection path) replacing ECC's generic payments-service example, and a note on where tours actually pay off in *this* codebase's specific shape (package-boundary tours, PR tours across boundaries, RCA tours for the multi-package bugs `docs/PROJECT_LOG.md` already records). |
+
+**Why the hit rate is low, and why that's the honest finding rather than
+insufficient effort.** ECC's 286 skills skew toward what a generic
+full-stack SaaS team needs — deployed services, payment flows, browser
+E2E, custom UI polish, database ORMs, mobile platforms. ClutchCode is a
+local-first CLI + library with no hosted service, no browser surface, no
+payment flow, and — because its own domain *is* "coding-agent harness" —
+the skills that sound most relevant by name (verification, eval,
+autonomous loops) are exactly the ones most likely to collide with a
+product feature or bespoke convention this project already built more
+specifically. Two rounds, 16 skills sampled, 3 adopted (`error-handling`,
+`codebase-onboarding`, `code-tour`) is a defensible, honestly-reported
+result — not a signal to keep grinding through the remaining 270 without
+a specific reason to expect a different pattern.

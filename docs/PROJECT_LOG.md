@@ -3278,3 +3278,68 @@ for ECC (MIT, STUDY-ONLY, same ADR-016 posture as every other
 skill/prompt source) and `research/repos/ecc.md` documents the full
 comparison — what was sampled, what was rejected and why, what was
 adapted and how.
+
+
+### ECC, second pass - 10 more skills sampled, and the project's own hygiene test caught a bug in this session's own earlier work
+
+**What was asked and done.** Continuing the ECC skills track with the
+same rigor as the first pass: 10 more plausible candidates sampled
+against what this project already does before deciding anything. Result:
+**1 of 10 worth adopting** (`code-tour`). Full reasoning per skill is in
+`research/repos/ecc.md`'s "Second pass" section; the short version -
+`verification-loop`/`eval-harness`/`delivery-gate`/`autonomous-loops` all
+collide with a product feature (§14, §16) or this project's own bespoke
+Autonomous continuation convention, the same collision shape the first
+pass found; `e2e-testing`/`make-interfaces-feel-better` are inapplicable
+(no browser UI, no custom interface surface); `production-audit` is
+inapplicable (no hosted service - load-bearing in this project's own
+license reasoning); `mcp-server-patterns` is the wrong direction (builds
+an MCP server; this project's roadmap and ADR-017 are about consuming
+MCP as a client); `living-docs-governance` reads as an almost point-for-
+point generic description of this project's own `CLAUDE.md`/`HANDOFF.md`/
+`PROJECT_LOG.md` three-tier system, recorded as convergent validation
+rather than imported, since the project doesn't need to be told to do
+what it already does more specifically.
+
+**The low hit rate is reported as the honest finding, not hedged as
+insufficient effort.** ECC's 286 skills skew toward a generic full-stack
+SaaS team's needs (deployments, payments, browser E2E, custom UI, ORMs);
+ClutchCode is a local-first CLI + library with none of that surface, and
+its own domain identity (a coding-agent harness) is exactly what makes
+the *most plausible-sounding* skill names the most likely to collide.
+Two rounds, 16 sampled, 3 adopted (`error-handling`, `codebase-
+onboarding`, `code-tour`) - stated as a defensible result, not a reason
+to keep sampling the remaining 270 without a specific reason to expect a
+different pattern.
+
+**`code-tour`, adopted and adapted.** CodeTour (`microsoft/codetour`,
+MIT) - real, unrelated-to-any-web-stack `.tour` walkthrough format,
+opened directly in an editor. Genuinely additive: this project ships an
+actual editor extension (`apps/vscode`), and its own architecture note
+(`PROJECT_SPEC.md §20`) already states a payoff a tour is the natural way
+to *show* rather than assert - the CLI/VS Code/ACP clients converging on
+one `agent-api` boundary. Rewritten with a ClutchCode-specific example
+(touring the agent-loop -> verification -> cheat-detection path,
+`packages/runtime/src/agent-loop.ts` -> `packages/verification/src/
+pipeline.ts` -> `cheat-detection.ts`) replacing ECC's generic payments-
+service example, verified against the real class names
+(`grep`-confirmed `class AgentLoop`, `class Agent`) rather than assumed.
+
+**A genuinely funny, genuinely real bug this session's own tooling
+caught.** `tests/source-hygiene.test.ts` - the test written earlier this
+session specifically to catch a literal NUL byte making a source file
+read as binary - failed on **this session's own `error-handling` skill
+file**, written in the previous round. The sentence explaining "use an
+escape sequence, never the raw byte" had, ironically, the literal raw
+byte typed into it instead of the escaped textual form. Found
+by running the full gate rather than assuming a docs-only change couldn't
+fail it, fixed the same way the original bug was fixed (replace the raw
+byte with the literal escape-sequence text), and reconfirmed:
+`file(1)` now reports the file as `Unicode text, UTF-8 text`,
+`source-hygiene.test.ts` passes, and the full suite is back to **903/903**.
+Left in the log rather than quietly amended away, because a test this
+project wrote to prevent a class of mistake catching that same session's
+own instance of it is worth recording, not hiding.
+
+**Verified overall.** `tsc -b` clean, 903/903 across 92 files, `eslint .`
+clean.
