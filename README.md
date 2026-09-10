@@ -219,6 +219,9 @@ Deliberately dependency-light. The seccomp BPF filter is hand-assembled in TypeS
 
 ## 🚀 Quick Start
 
+> [!NOTE]
+> Pre-1.0, not yet on npm — `npx clutchcode` isn't real yet. Build from source below; that's the only install path right now.
+
 **Requirements** — Node ≥ 20, pnpm, git. On Linux, `bubblewrap` for the OS sandbox (without it you get Tier 0 — policy engine only — and `doctor` will say so).
 
 ```bash
@@ -281,7 +284,8 @@ Replays a scripted transcript through the whole loop. It's how the test suite wo
 
 ## 📊 What we're actually sure of
 
-No invented benchmarks here. The eval scoreboard and the §16.4 A/B now exist — **but no VTCR number or delta for any real model is published, because none has been measured** (this project's CI has neither an API key nor a local GPU). What the scoreboard gives you is the machinery to measure your own, and a methodology you can argue with: [`docs/EVAL_METHODOLOGY.md`](./docs/EVAL_METHODOLOGY.md).
+> [!IMPORTANT]
+> No invented benchmarks here. The eval scoreboard and the §16.4 A/B now exist — **but no VTCR number or delta for any real model is published, because none has been measured** (this project's CI has neither an API key nor a local GPU). What the scoreboard gives you is the machinery to measure your own, and a methodology you can argue with: [`docs/EVAL_METHODOLOGY.md`](./docs/EVAL_METHODOLOGY.md).
 
 | Claim | How it's proven |
 |---|---|
