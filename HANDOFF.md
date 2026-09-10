@@ -50,8 +50,9 @@ caught a real stale-`dist` cross-package false-pass mid-proof — see the
 gotcha below). Full detail: `docs/PROJECT_LOG.md`'s three entries before
 this session's newest one.
 
-**PR:** none open yet this session — push this session's commit(s) and
-open a fresh PR against `main` (PR #25 above is merged; do not reuse it).
+**PR:** [**#26**](https://github.com/Derric01/ClutchCode/pull/26), open
+against `main` (PR #25 above is merged; #26 is the fresh one for this
+session — push any further work in this session to it).
 **Phase:** Phase 1 shipped (§21) — one agent, one default workflow, three provider
 adapters, SEARCH/REPLACE edits with fallback, worktree isolation, deterministic
 verification with cheat detection, terminal CLI. **Phase 2 in progress:** the
