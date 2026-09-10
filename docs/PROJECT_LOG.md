@@ -3730,3 +3730,87 @@ realistic adversary-controlled input in the current design since
 attacker-chosen). A macOS/Windows-specific angle on any of the above was
 out of scope, as always, for the reason already stated at the top of
 `HANDOFF.md`'s "What's left" table.
+
+### The `runNoIndexDiff` hypothesis, actually tried — real content corruption, fixed and stash-revert-proven
+
+The previous entry (this same audit round, a few hours earlier) left
+`SnapshotBackup.runNoIndexDiff`'s literal `.split().join()` rewrite as an
+**unfixed hypothesis** — plausible mechanism, judged "low-risk-in-practice"
+and not escalated without a reproduction. Per `CLAUDE.md`'s own "prove it,
+don't assume it": a plausibility judgment is not the same as actually
+trying, and trying it directly against `SnapshotBackup` (not through a
+model at all — no need to simulate an adversarial LLM to test a pure
+string-substitution bug) confirmed it in one shot, cheaply, which is
+exactly why the earlier "not exercised adversarially" framing undersold
+it — the corruption mechanism itself needed no adversary to trigger, only
+an ordinary coincidence between a file's content and the backup path.
+
+**The bug, confirmed real**: `runNoIndexDiff` ran its absolute-path
+(`beforeArg`/`afterArg`, stripped of a leading `/`) → `relPath` rewrite as
+a literal `.split(stripped).join(relPath)` over the **entire** raw `git
+diff --no-index` output — header lines *and* hunk body content both, with
+no structural distinction between them. Reproduced directly against
+`SnapshotBackup` (no `AgentLoop`, no model, no fixture beyond two temp
+dirs): a file's content was set to a line that literally equals the
+backup file's own stripped absolute path
+(`path.join(backupDir, relPath)` with the leading `/` stripped — exactly
+what `stripLeadingSlash(beforeArg)` computes). `diffText()` came back with
+that added line silently rewritten to `+evil.txt` (the bare `relPath`)
+instead of the real, much longer added content — a genuine misrepresentation
+of what changed, in the exact text `detectCheats`'s `parseUnifiedDiff`
+(§14.6) treats as ground truth. First empirically confirmed real `git diff
+--no-index --src-prefix=a/ --dst-prefix=b/` output for modified/added/
+deleted/mode-change cases (run directly against a real throwaway
+`/tmp` pair, not assumed) to see exactly where the absolute-path string
+legitimately appears — only in the `diff --git a/… b/…`, `--- a/…`/`---
+/dev/null`, and `+++ b/…`/`+++ /dev/null` header lines, never inside the
+hunk body itself, and confirmed a path containing whitespace gets a
+trailing-tab appended by git on the `---`/`+++` lines — which is exactly
+why the fix below is a *scoped substitution*, not a hand-rolled re-parse
+of the header's exact shape (a re-parse would need to reproduce that
+trailing-tab convention and any other git-version-specific formatting
+quirk; scoping the existing substitution to a byte range sidesteps all of
+that).
+
+**Fix**: `runNoIndexDiff` now finds the first line starting with `@@`
+(the start of the hunk body) and restricts the `.split().join()`
+substitution to the text **before** that line only; everything from the
+first hunk marker onward is passed through byte-for-byte, untouched. When
+no `@@` line exists at all (a pure mode-only change with identical
+content — confirmed this is a real, if rare, `git diff --no-index` output
+shape by reproducing it directly with `chmod +x`), the whole text is
+still header-shaped and the substitution runs over all of it, matching
+the pre-fix behavior for that case exactly (nothing to protect there,
+since there's no content body).
+
+**Verified and proven to discriminate.** A permanent regression test
+added to `snapshot-backup.test.ts`, right alongside the existing
+`diffText`/`diffFiles` suite: writes a file whose content is `"line
+one\n<the backup's own stripped absolute path>\nline two\n"`, asserts
+`diffText()` contains the real added line (`+<stripped path>`) and does
+**not** contain the corrupted form (`+evil.txt`), plus a `diffFiles()`
+assertion that `after` matches the real written content exactly.
+`packages/git/src/snapshot-backup.ts` was a tracked file with real
+uncommitted changes (`git status --short` showed `M`); `git stash push --
+packages/git/src/snapshot-backup.ts` reverted it (confirmed via `grep -n
+hunkStart` coming back empty), the new test failed exactly as predicted
+(expected the real added line, got the corrupted `+evil.txt` line
+instead — the assertion failure message showing the exact corruption),
+`git stash pop` restored the fix, and the full `snapshot-backup.test.ts`
+file went green again: **18/18** (up from 17, the one new test). Full
+workspace gate: `tsc -b` clean, `eslint .` clean, `vitest run` **923/923**
+across 92 files (up from 922/922 after this round's first fix — one more
+new test, zero regressions).
+
+**Why this matters beyond "a diff looked slightly wrong"**: this project's
+entire premise is that verification (and, by extension, the diff text
+cheat detection reads) is the truth oracle, not the model's own claim of
+what it did. A diff-generation bug that can silently substitute a bare
+filename for real, longer content — however contrived the triggering
+input needs to be — is exactly the shape of gap that would matter most
+if it ever *did* line up with something cheat detection cares about, so
+it was worth fixing on the strength of the reproduction alone, without
+needing to also construct a full end-to-end "and here is how a model
+would exploit this to hide a cheat" scenario before treating it as
+real — the corruption itself, not just a downstream consequence of it,
+is the actual bug.

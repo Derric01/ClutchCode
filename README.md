@@ -290,8 +290,8 @@ Replays a scripted transcript through the whole loop. It's how the test suite wo
 
 | Claim | How it's proven |
 |---|---|
-| **922 tests, 92 files** | `pnpm test`. Real git repos, real non-git directories, real shells, real filesystems — `FakeProvider` stubs *only* the model. |
-| **The suite runs on CI, not just locally** | GitHub Actions, Node 20 + 22 on every PR: the same suite plus `tsc -b` and `eslint .`, with 16 tests skipped there. Those 16 skips are the bwrap confinement/seccomp suites — a hosted runner cannot create those namespaces, so they skip there and run in full locally (922, 0 skipped). **CI green therefore does not prove the sandbox confines**; only a bwrap-capable host does. |
+| **923 tests, 92 files** | `pnpm test`. Real git repos, real non-git directories, real shells, real filesystems — `FakeProvider` stubs *only* the model. |
+| **The suite runs on CI, not just locally** | GitHub Actions, Node 20 + 22 on every PR: the same suite plus `tsc -b` and `eslint .`, with 16 tests skipped there. Those 16 skips are the bwrap confinement/seccomp suites — a hosted runner cannot create those namespaces, so they skip there and run in full locally (923, 0 skipped). **CI green therefore does not prove the sandbox confines**; only a bwrap-capable host does. |
 | **Sandbox actually confines** | A test writes outside the workspace, then asserts a sandboxed `cat` of it fails. Network fetch inside the sandbox asserted unreachable. These run for real wherever bwrap can genuinely create namespaces (this project's dev container can); where it can't — a hosted CI runner, an unprivileged container — they skip and ClutchCode falls back to Tier 0 **and says so**, rather than claiming a confinement it isn't getting. |
 | **Seccomp actually blocks** | Each denied syscall invoked by number inside real bwrap → `EPERM`, with an unfiltered control run proving the syscall otherwise succeeds. |
 | **Secrets don't leak** | A canary secret injected into a full recorded run, asserted absent from every transcript, event log and artifact. |

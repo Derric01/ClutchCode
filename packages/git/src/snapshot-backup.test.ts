@@ -168,6 +168,34 @@ describe("SnapshotBackup (§13.4 non-git fallback)", () => {
       expect(files).toEqual([{ path: "math.ts", status: "modified", before: "export const add = (a, b) => a - b;\n", after: "export const add = (a, b) => a + b;\n", binary: false }]);
     });
 
+    it("does not corrupt real file content that happens to textually match the backup/workspace absolute path (§14.6 cheat-detection input integrity)", () => {
+      // Real, reproduced bug: `runNoIndexDiff` used to run its
+      // absolute-path→relPath rewrite as a `.split().join()` over the
+      // *entire* raw `git diff --no-index` output, headers and hunk body
+      // both. A line of real file content that happens to equal the
+      // backup file's own stripped absolute path (e.g. a model that knows
+      // this project's `~/.local/state/clutchcode` convention and its own
+      // run id could construct one deliberately) got silently rewritten
+      // down to `relPath` too — the actually-added content lost, replaced
+      // with something indistinguishable from a legitimate line, in the
+      // exact text `detectCheats`'s `parseUnifiedDiff` (§14.6) treats as
+      // ground truth for what changed. Confirmed with a direct
+      // reproduction before the fix (see docs/PROJECT_LOG.md): this exact
+      // assertion failed, with the middle line coming back as `+evil.txt`
+      // (the bare relPath) instead of the real added content below.
+      fs.writeFileSync(path.join(workspace, "evil.txt"), "line one\nline two\n", "utf8");
+      backup.snapshotBeforeFirstEdit("evil.txt");
+      const backupPathStripped = path.join(backupDir, "evil.txt").replace(/^\/+/, "");
+      fs.writeFileSync(path.join(workspace, "evil.txt"), `line one\n${backupPathStripped}\nline two\n`, "utf8");
+
+      const text = backup.diffText();
+      expect(text).toContain(`+${backupPathStripped}`);
+      expect(text).not.toContain("+evil.txt"); // would indicate the corruption: the real content silently swapped for the bare relPath
+
+      const files = backup.diffFiles();
+      expect(files[0]!.after).toBe(`line one\n${backupPathStripped}\nline two\n`);
+    });
+
     it("reports a newly-created file as 'added', diffed against /dev/null", () => {
       backup.snapshotBeforeFirstEdit("new.txt");
       fs.writeFileSync(path.join(workspace, "new.txt"), "brand new\n", "utf8");

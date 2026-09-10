@@ -15,37 +15,50 @@ trust this over the API's `merged` field, which has repeatedly read `false`
 on PRs a `merged_at` timestamp and git ancestry both confirm are merged)
 before every push, not once per session — this has now mattered eight-plus
 times.
-**Latest commit:** a fresh audit round (per `CLAUDE.md`'s work-loop step
+**Latest commits:** a fresh audit round (per `CLAUDE.md`'s work-loop step
 2c — no `DO FIRST` row was queued going into this session) fanning out
 across the newly-merged `RunBackend`/`SnapshotRunBackend` surface (PR
 #24), ACP-cancellation/`RunBackend` composition, and a spot-check of
-`packages/tools`/CLI arg parsing. **One real, reproduced bug found and
-fixed**: `write_file`/`edit_file` called with an absolute path that
-legitimately resolves *inside* the workspace succeeded under the
-`git-worktree` backend but failed outright with `errorCode:
-"snapshot-failed"` under the `snapshot` backend, for the exact same call
-— `agent-loop.ts`'s `runToolCall` passed the model's raw, unmodified
-`path` argument straight into `RunBackend.beforeEdit`, whose contract is
-workspace-*relative*, while the tool itself (`resolveInWorkspace`)
-explicitly supports and allows an absolute in-workspace path through.
-Fixed by normalizing an absolute `targetPath` to workspace-relative
-before calling `beforeEdit`, mirroring the tool's own resolution exactly;
-a genuinely-outside absolute path is unaffected (still rejected, just via
-the `".."`-segment check instead of the bare `path.isAbsolute` one — same
-fail-closed outcome). Reproduced for real (two throwaway `AgentLoop`
-fixtures, one per backend, same absolute-path `write_file` call, opposite
-outcomes) before fixing, and stash-revert-proven (`git stash push --
-packages/runtime/src/agent-loop.ts`, new test fails as predicted, `git
-stash pop`, passes again). Several other fanned-into areas — `Snapshot-
-Backup`'s path-traversal defenses, the ACP-cancellation/`RunBackend`
-composition, `packages/tools`'s symlink handling, CLI arg parsing —
-checked clean; see `docs/PROJECT_LOG.md`'s newest entry for the per-area
-detail, including one hypothesis (`runNoIndexDiff`'s literal
-`.split().join()` rewrite) explicitly left unfixed for lack of a
-reproduction, not treated as confirmed.
-**PR:** **none currently open as of this snapshot.** Push next, then open one —
-do not stack more unmerged commits on this branch without a PR carrying them
-(see the branch note above for why that's worth repeating).
+`packages/tools`/CLI arg parsing. **Two real, reproduced bugs found and
+fixed, both in the `snapshot`-backend (non-git, §13.4) path, both
+stash-revert-proven:**
+1. `write_file`/`edit_file` called with an absolute path that legitimately
+   resolves *inside* the workspace succeeded under the `git-worktree`
+   backend but failed outright with `errorCode: "snapshot-failed"` under
+   the `snapshot` backend, for the exact same call — `agent-loop.ts`'s
+   `runToolCall` passed the model's raw, unmodified `path` argument
+   straight into `RunBackend.beforeEdit`, whose contract is
+   workspace-*relative*, while the tool itself (`resolveInWorkspace`)
+   explicitly supports and allows an absolute in-workspace path through.
+   Fixed by normalizing an absolute `targetPath` to workspace-relative
+   before calling `beforeEdit`. A genuinely-outside absolute path is
+   unaffected (still rejected, via the `".."`-segment check now instead
+   of the bare `path.isAbsolute` one — same fail-closed outcome).
+2. `SnapshotBackup.runNoIndexDiff` could silently corrupt real file
+   content in `diffText()`/`diffFiles()` — the exact text §14.6's
+   `detectCheats` treats as ground truth for what changed. It rewrote
+   git's absolute-path headers back to `relPath` via a literal
+   `.split().join()` over the **entire** raw diff output, headers and
+   hunk body both; a content line that happens to equal the backup file's
+   own stripped absolute path got silently swapped for the bare
+   `relPath` too. Confirmed with a direct reproduction against
+   `SnapshotBackup` alone (no model needed — a pure string-substitution
+   bug). Fixed by scoping the substitution to the header lines only
+   (everything before the first `@@` hunk marker); the hunk body is now
+   passed through byte-for-byte, untouched. This was flagged as an
+   unescalated *hypothesis* earlier in this same session's audit
+   ("low-risk-in-practice", not reproduced) — trying it directly, cheaply,
+   confirmed it in one shot; see `docs/PROJECT_LOG.md`'s newest entry for
+   why the earlier framing undersold it.
+
+Several other fanned-into areas — `SnapshotBackup`'s path-traversal
+defenses, the ACP-cancellation/`RunBackend` composition, `packages/
+tools`'s symlink handling, CLI arg parsing — checked clean; see
+`docs/PROJECT_LOG.md`'s two newest entries for the full per-area detail.
+**PR:** [**#25**](https://github.com/Derric01/ClutchCode/pull/25), open
+against `main`. Push any further work in this session to it (it already
+carries the first fix above as of this snapshot) rather than opening a
+second PR for this branch.
 **Phase:** Phase 1 shipped (§21) — one agent, one default workflow, three provider
 adapters, SEARCH/REPLACE edits with fallback, worktree isolation, deterministic
 verification with cheat detection, terminal CLI. **Phase 2 in progress:** the
@@ -54,7 +67,7 @@ selector §4.4) is wired into the live loop; workflow engine §8.1/§8.2, VS Cod
 §18.5, credentials §5.1, sandbox Tier 1 §12.5/§12.6, the §16 eval scoreboard,
 the §16.4 naked-vs-harness A/B, the ACP editor binding, and real run
 cancellation landed early.
-**Test suite (locally):** 922/922 passing, 92 test files, clean `tsc -b`, clean
+**Test suite (locally):** 923/923 passing, 92 test files, clean `tsc -b`, clean
 `eslint .` — and **0 skipped**: bwrap genuinely confines in this dev container,
 so every real Tier 1/seccomp test still runs here.
 **CI — GREEN**, since run [#12](https://github.com/Derric01/ClutchCode/actions/runs/33593109279)
@@ -107,17 +120,18 @@ loose "MVP" estimate.
 **No `DO FIRST` tag is set right now — say so plainly, don't invent one.**
 This session ran the audit round the previous snapshot called for (per
 `CLAUDE.md`'s work-loop step 2c) instead of picking a table row — see the
-snapshot header / `docs/PROJECT_LOG.md`'s newest entry for the one real
-bug it found and fixed (an absolute-path parity gap between the two
-`RunBackend` implementations) and the several other areas it checked and
-found clean. That fix did not unblock or otherwise change any row below —
-every row remains genuinely gated — a host this environment doesn't have,
-a human/ADR decision, or explicitly out of scope — checked freshly this
-session, not inherited from the previous snapshot's framing. A future
-session should either continue fanning the audit into areas this round
-didn't reach (grep `docs/PROJECT_LOG.md` for what's been covered vs. not)
-or re-run a fresh review round, rather than assume either the table below
-or this round's coverage is exhaustive.
+snapshot header / `docs/PROJECT_LOG.md`'s two newest entries for the two
+real bugs it found and fixed (both in the `snapshot`-backend `§13.4` path:
+an absolute-path parity gap in `RunBackend.beforeEdit`, and a real diff-text
+content-corruption bug in `SnapshotBackup.runNoIndexDiff`) and the several
+other areas it checked and found clean. Neither fix unblocked or otherwise
+changed any row below — every row remains genuinely gated — a host this
+environment doesn't have, a human/ADR decision, or explicitly out of
+scope — checked freshly this session, not inherited from the previous
+snapshot's framing. A future session should either continue fanning the
+audit into areas this round didn't reach (grep `docs/PROJECT_LOG.md` for
+what's been covered vs. not) or re-run a fresh review round, rather than
+assume either the table below or this round's coverage is exhaustive.
 
 | Item | Spec ref | Rough effort | Notes |
 |---|---|---|---|

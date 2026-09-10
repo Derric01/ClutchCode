@@ -241,13 +241,48 @@ function isBinaryNoIndexDiff(beforeArg: string, afterArg: string, cwd: string): 
  * consumer — none of which should need to know or care this run had no
  * repository at all. `/dev/null` (git's own added/deleted sentinel) is
  * left untouched, never rewritten.
+ *
+ * The rewrite is scoped to the **header** lines only (`diff --git a/… b/…`,
+ * `index …`, `--- a/…`/`--- /dev/null`, `+++ b/…`/`+++ /dev/null`, any
+ * `old mode`/`new mode`/`deleted file mode`/`new file mode` line) — never
+ * the hunk body that follows the first `@@` marker. A real, reproduced bug
+ * (see `snapshot-backup.test.ts`): the previous version ran the same
+ * literal `.split(stripped).join(relPath)` substitution over the **entire**
+ * diff text, headers and content both. `beforeArg`/`afterArg` are absolute
+ * paths under `backupDir`/`workspaceRoot` — a model that already knows this
+ * project's default state-dir convention (`~/.local/state/clutchcode`,
+ * documented in this very repo) and its own run id (both plausibly
+ * learnable mid-run) could write a content line that *happens to equal*
+ * that exact absolute-path string, and the old code would silently rewrite
+ * that line of real file content down to `relPath` in the diff text — the
+ * genuinely-added/removed content misrepresented, indistinguishable from an
+ * actual `relPath`-only line, in the exact text `detectCheats`'s §14.6
+ * `parseUnifiedDiff` treats as the truth oracle for what changed. Confirmed
+ * with a direct reproduction before this fix: a file whose new content was
+ * literally the backup file's own stripped absolute path came back in
+ * `diffText()` as `+relPath` instead of the real added line. Restricting
+ * the substitution to the header section removes the corruption vector
+ * entirely (a hunk body's own content is never touched) while keeping every
+ * existing header shape working (verified against real `git diff --no-index`
+ * output for the modified/added/deleted/mode-change cases, including the
+ * trailing-tab convention git appends to `---`/`+++ ` lines for a path
+ * containing whitespace — which is exactly why this is a *scoped* literal
+ * substitution and not a hand-rolled re-parse of the header's exact shape).
  */
 function runNoIndexDiff(beforeArg: string, afterArg: string, relPath: string, cwd: string): string {
   const raw = execGitNoIndex(["diff", "--no-index", "--src-prefix=a/", "--dst-prefix=b/", "--", beforeArg, afterArg], cwd);
   if (!raw.trim()) return "";
-  let text = raw;
-  if (beforeArg !== "/dev/null") text = text.split(stripLeadingSlash(beforeArg)).join(relPath);
-  if (afterArg !== "/dev/null") text = text.split(stripLeadingSlash(afterArg)).join(relPath);
+
+  const lines = raw.split("\n");
+  const hunkStart = lines.findIndex((line) => line.startsWith("@@"));
+  const headerEnd = hunkStart === -1 ? lines.length : hunkStart; // no hunk at all (e.g. a pure mode change) — whole text is header-shaped, safe to substitute throughout
+
+  let header = lines.slice(0, headerEnd).join("\n");
+  if (beforeArg !== "/dev/null") header = header.split(stripLeadingSlash(beforeArg)).join(relPath);
+  if (afterArg !== "/dev/null") header = header.split(stripLeadingSlash(afterArg)).join(relPath);
+
+  const body = lines.slice(headerEnd).join("\n"); // untouched, byte-for-byte — this is real file content, never substituted
+  const text = headerEnd === lines.length ? header : `${header}\n${body}`;
   return text.endsWith("\n") ? text : `${text}\n`;
 }
 
