@@ -8,19 +8,14 @@ import { Denylist, PolicyEngine, Redactor, detectSandboxBackend } from "@clutchc
 import { nativeToolSet, type Tool, type ToolContext } from "@clutchcode/tools";
 import {
   createRunWorktree,
-  diffAgainstBase,
-  diffFilesAgainstBase,
   diffStat,
-  git,
   githubCompareUrl,
   isGitRepo,
-  listCheckpoints,
   listLfsPatterns,
   listSubmodules,
   parseGitHubRemote,
   pushBranch,
   remoteUrl,
-  rollbackTo,
   type CheckpointRecord,
   type FileDiff,
   type RunWorktree
@@ -34,13 +29,18 @@ import {
   BUILTIN_WORKFLOW_IDS,
   RunStateStore,
   commitApprovedRun,
+  createGitWorktreeBackend,
   createRunState,
+  createSnapshotBackend,
   isBuiltinWorkflowId,
   loadWorkflowDeclaration,
   rejectRun,
   resolveBuiltinWorkflowPlan,
   resolveWorkflowPlan,
+  reviveRunBackend,
   type Budgets,
+  type RunBackend,
+  type RunBackendState,
   type RunState,
   type RuntimeEvent,
   type WorkflowPlan
@@ -50,7 +50,7 @@ import { loadConfig, isTrustedRepo, type AgentConfig } from "./config.js";
 import { loadCredentials, type Credentials } from "./credentials.js";
 import { buildProvider, type ProviderKind } from "./provider-factory.js";
 import { appendEvent, readEvents } from "./events.js";
-import { loadRunWorktree, saveRunWorktree } from "./worktree-store.js";
+import { loadRunBackendState, saveRunBackend } from "./worktree-store.js";
 import { resolveMemoryCacheKeyPath } from "./memory.js";
 
 export interface RunOptions {
@@ -230,7 +230,7 @@ export class Agent {
   private buildRunDeps(
     model: string,
     providerKind: ProviderKind,
-    run: RunWorktree,
+    run: RunBackend,
     opts: { baseUrl?: string; modelsDir?: string; scope?: string; memoryDir?: string }
   ): RunDeps {
     const config = loadConfig(this.repoPath);
@@ -242,40 +242,41 @@ export class Agent {
     // pipeline cwd) — fs read/write stays repo-wide, since a scoped
     // package in a real monorepo routinely needs to read siblings it
     // depends on; restricting reads to the scope dir would break that.
-    const verifyCwd = opts.scope ? path.join(run.worktreePath, opts.scope) : run.worktreePath;
+    const verifyCwd = opts.scope ? path.join(run.workspaceRoot, opts.scope) : run.workspaceRoot;
     if (opts.scope && !fs.existsSync(verifyCwd)) {
-      throw new Error(`--scope "${opts.scope}" does not exist in the worktree (resolved to ${verifyCwd})`);
+      throw new Error(`--scope "${opts.scope}" does not exist in the workspace (resolved to ${verifyCwd})`);
     }
 
     // §10.3: a persisted, provenance-timestamped cache — not a fresh
     // `detectToolchain` call every run — with `AGENTS.md` overrides
     // (point 4, "human edits win") re-applied on every re-derive. Cached
     // under the *stable* repo (+scope) path, not `verifyCwd` — that's a
-    // fresh git-worktree directory every single run, so keying the cache
-    // on it would mean it never hits at all, silently defeating the
-    // point of caching; `detectFrom` still reads the live worktree
-    // content, since that's what's actually being verified this run.
+    // fresh git-worktree directory every single run (or, for the §13.4
+    // snapshot backend, the same real repo path — either way not a stable
+    // cache key), so keying the cache on it would mean it never hits at
+    // all, silently defeating the point of caching; `detectFrom` still
+    // reads the live workspace content, since that's what's actually being
+    // verified this run.
     const memoryCacheKeyPath = resolveMemoryCacheKeyPath(this.repoPath, opts.scope);
     // §10.3 point 4 ("human edits win") only makes sense for content a
     // human actually wrote — a real gap caught in round 3 of security
-    // review: this used to read AGENTS.md from the *live* worktree
-    // (`run.worktreePath`), which the model itself is actively editing
-    // this very run. `applyAgentsMdOverrides` trusts a `test:`/`build:`/
-    // `lint:`/`typecheck:` line unconditionally with no further check, so
-    // a model asked to "make the tests pass" could simply add `test: echo
-    // ok` to AGENTS.md (not on any denylist) and have the deterministic
+    // review: this used to read AGENTS.md from the *live* worktree, which
+    // the model itself is actively editing this very run.
+    // `applyAgentsMdOverrides` trusts a `test:`/`build:`/`lint:`/
+    // `typecheck:` line unconditionally with no further check, so a model
+    // asked to "make the tests pass" could simply add `test: echo ok` to
+    // AGENTS.md (not on any denylist) and have the deterministic
     // verification gate — the entire premise this project is built on —
     // run a no-op instead of the real suite, with zero cheat-detection
     // signal (AGENTS.md isn't a test/snapshot file `detectCheats` looks
-    // at). Fixed by reading AGENTS.md from the run's *base commit*
-    // (`run.baseCommit`, via `git show`) instead of the live worktree —
-    // an override only takes effect if it already existed before this
-    // run's own edits, which is what "human-authored" actually means
-    // here. `allowFailure: true` gives an empty string (no override) both
-    // when the file didn't exist at the base commit and when it was
-    // added fresh this run.
-    const agentsMdContent =
-      git(["show", `${run.baseCommit}:AGENTS.md`], { cwd: run.worktreePath, allowFailure: true }) || undefined;
+    // at). Fixed by reading AGENTS.md as it existed at run start
+    // (`RunBackend.readAtRunStart` — `git show baseCommit:AGENTS.md` for
+    // `git-worktree`, a pre-edit `SnapshotBackup` read for `snapshot`, see
+    // that method's own doc comment for why both stay correct across a
+    // `resume()`'s second call) instead of the live workspace — an
+    // override only takes effect if it already existed before this run's
+    // own edits, which is what "human-authored" actually means here.
+    const agentsMdContent = run.readAtRunStart("AGENTS.md");
     const memoryOpts = opts.memoryDir ? { configDir: opts.memoryDir } : undefined;
     const { commands: toolchainCommands } = getOrDetectToolchain(verifyCwd, memoryCacheKeyPath, agentsMdContent, memoryOpts);
 
@@ -307,16 +308,21 @@ export class Agent {
         : detectSandboxBackend();
 
     const toolContext: ToolContext = {
-      workspaceRoot: run.worktreePath,
+      workspaceRoot: run.workspaceRoot,
       evidenceDir,
       policy: new PolicyEngine(),
       denylist: new Denylist(),
       redactor,
       repoTrustMode: isTrustedRepo(config, this.repoPath) ? ("trusted" as const) : ("untrusted" as const),
       networkAllowlist: [],
-      // §13.4: read once per run from repo metadata, not shelled out to per tool call.
-      submodulePaths: listSubmodules(run.worktreePath),
-      lfsPatterns: listLfsPatterns(run.worktreePath),
+      // §13.4: read once per run from repo metadata, not shelled out to per
+      // tool call. Both return `[]` immediately for the `snapshot` backend
+      // (no `.gitmodules`/`.gitattributes` in a non-git directory, in the
+      // overwhelmingly common case) without any git-specific branching
+      // needed here — see `listSubmodules`/`listLfsPatterns`'s own
+      // `fs.existsSync` guards.
+      submodulePaths: listSubmodules(run.workspaceRoot),
+      lfsPatterns: listLfsPatterns(run.workspaceRoot),
       sandbox
     };
 
@@ -334,20 +340,6 @@ export class Agent {
   }
 
   async run(opts: RunOptions): Promise<RunState> {
-    if (!isGitRepo(this.repoPath)) {
-      // §13.4 "not a git repo at all": worktree isolation needs a git repo
-      // to branch/worktree from. `SnapshotBackup` (this package) exists as
-      // the spec's named fallback primitive for that case, but wiring a
-      // full parallel non-git AgentLoop execution path (checkpoint/diff/
-      // rollback/approve all re-based on snapshots instead of git) is a
-      // distinctly larger, separate piece of work this pass doesn't
-      // attempt — so this fails loudly and actionably instead of half-
-      // supporting it via a confusing git error three calls deep.
-      throw new Error(
-        `${this.repoPath} is not a git repository — ClutchCode needs one for worktree isolation (§13.1). Run "git init" (or "clutchcode init" to scaffold config too) and try again.`
-      );
-    }
-
     if (opts.workflowId !== undefined && opts.workflowFile !== undefined) {
       throw new Error(`"workflowId" and "workflowFile" are mutually exclusive — pick one (§8.1/§8.2)`);
     }
@@ -375,8 +367,16 @@ export class Agent {
 
     const runId = opts.runId ?? newRunId();
 
-    const run = createRunWorktree({ repoPath: this.repoPath, stateDir: this.stateDir, runId, slug: slugify(opts.task) });
-    saveRunWorktree(this.stateDir, run);
+    // §13.1/§13.4: git-worktree isolation when the target is a real git
+    // repo; the `snapshot` fallback (real, wired end-to-end via
+    // `@clutchcode/runtime`'s `RunBackend`, not the "fails loudly instead"
+    // stub this used to be) otherwise — edits land directly on
+    // `this.repoPath`, in place, with `SnapshotBackup` as the pre-edit
+    // safety net. See `run-backend.ts`'s doc comment for the full design.
+    const run: RunBackend = isGitRepo(this.repoPath)
+      ? createGitWorktreeBackend(createRunWorktree({ repoPath: this.repoPath, stateDir: this.stateDir, runId, slug: slugify(opts.task) }))
+      : createSnapshotBackend(runId, this.repoPath, path.join(this.stateDir, "runs", runId));
+    saveRunBackend(this.stateDir, run.toState());
 
     const deps = this.buildRunDeps(opts.model, opts.providerKind, run, { baseUrl: opts.baseUrl, modelsDir: opts.modelsDir, scope: opts.scope, memoryDir: opts.memoryDir });
 
@@ -396,8 +396,9 @@ export class Agent {
         ...opts.budgets
       }
     });
-    state.worktreePath = run.worktreePath;
-    state.baseCommit = run.baseCommit;
+    const runBackendState = run.toState();
+    state.worktreePath = run.workspaceRoot;
+    state.baseCommit = runBackendState.kind === "git-worktree" ? runBackendState.baseCommit : undefined;
     this.store.save(state);
 
     const loop = new AgentLoop(
@@ -433,19 +434,19 @@ export class Agent {
   }
 
   diff(runId: string): string {
-    const run = this.requireRunWorktree(runId);
-    return diffAgainstBase(run);
+    const run = this.requireRunBackend(runId);
+    return run.diffAgainstBase();
   }
 
   /** Per-file before/after content (§18.5) — what a native two-sided diff view needs that `diff()`'s unified-diff text can't drive on its own. */
   diffFiles(runId: string): FileDiff[] {
-    const run = this.requireRunWorktree(runId);
-    return diffFilesAgainstBase(run);
+    const run = this.requireRunBackend(runId);
+    return run.diffFilesAgainstBase();
   }
 
   approve(runId: string, opts: ApproveOptions = {}): RunState {
     const state = this.requireState(runId);
-    const run = this.requireRunWorktree(runId);
+    const run = this.requireRunBackend(runId);
     const updated = commitApprovedRun(state, run, opts);
     this.store.save(updated);
     return updated;
@@ -453,35 +454,35 @@ export class Agent {
 
   reject(runId: string): RunState {
     const state = this.requireState(runId);
-    const run = this.requireRunWorktree(runId);
+    const run = this.requireRunBackend(runId);
     const updated = rejectRun(state, run);
     this.store.save(updated);
     return updated;
   }
 
-  /** `agent checkpoints <runId>` (§13.3): every checkpoint commit made so far, oldest first. */
+  /** `agent checkpoints <runId>` (§13.3): every checkpoint made so far, oldest first — one commit per verify pass for `git-worktree`, at most one synthetic baseline entry for `snapshot` (see `RunBackend.checkpoint`'s doc comment for why). */
   checkpoints(runId: string): CheckpointRecord[] {
-    const run = this.requireRunWorktree(runId);
-    return listCheckpoints(run);
+    const run = this.requireRunBackend(runId);
+    return run.listCheckpoints();
   }
 
   /**
-   * `agent rollback <runId> <sha>` (§13.3): resets the worktree to an
-   * earlier checkpoint, including removing untracked files created after
-   * it. Accepts a checkpoint's full or abbreviated sha (`git log --oneline`
-   * width) — resolved against `checkpoints()` first so a typo'd/foreign
-   * sha fails with a clear error instead of `git reset --hard` silently
-   * doing something the caller didn't mean.
+   * `agent rollback <runId> <sha>` (§13.3): resets to an earlier
+   * checkpoint, including removing untracked/newly-created files. Accepts
+   * a checkpoint's full or abbreviated sha (`git log --oneline` width for
+   * `git-worktree`; the single fixed id for `snapshot`) — resolved against
+   * `checkpoints()` first so a typo'd/foreign sha fails with a clear error
+   * instead of silently doing something the caller didn't mean.
    */
   rollback(runId: string, sha: string): RunState {
     const state = this.requireState(runId);
-    const run = this.requireRunWorktree(runId);
-    const match = listCheckpoints(run).find((c) => c.sha === sha || c.sha.startsWith(sha));
+    const run = this.requireRunBackend(runId);
+    const match = run.listCheckpoints().find((c) => c.sha === sha || c.sha.startsWith(sha));
     if (!match) {
       throw new Error(`no checkpoint matching "${sha}" for run ${runId}; see \`agent checkpoints ${runId}\` for valid values`);
     }
-    rollbackTo(run, match.sha);
-    this.store.save(state); // bumps updatedAt; rollback changes worktree content, not run status
+    run.rollbackTo(match.sha);
+    this.store.save(state); // bumps updatedAt; rollback changes workspace content, not run status
     return state;
   }
 
@@ -493,10 +494,26 @@ export class Agent {
    * Opens the PR via the `gh` CLI when it's on PATH and authenticated;
    * otherwise falls back to a real GitHub compare URL when the remote is
    * recognizably GitHub, or just confirms the push.
+   *
+   * **git-worktree only.** A PR is fundamentally a git+remote concept — the
+   * §13.4 `snapshot` backend has no branch, no remote, nothing to push,
+   * since it never had a repository at all. Throws a clear, actionable
+   * error rather than silently no-op-ing or attempting some fake
+   * compare-URL substitute.
    */
   async pr(runId: string, opts: PrOptions = {}): Promise<PrResult> {
     const state = this.requireState(runId);
-    const run = this.requireRunWorktree(runId);
+    const backendState = this.requireRunBackendState(runId);
+    if (backendState.kind !== "git-worktree") {
+      throw new Error(
+        `run ${runId} used the non-git snapshot fallback (§13.4) — "agent pr" needs a real git repository with a remote to push to. Run "git init" in ${backendState.workspaceRoot} and start a new run to enable PR support.`
+      );
+    }
+    // `backendState` (narrowed to `{ kind: "git-worktree" } & RunWorktree`
+    // above) is passed as-is, not destructured to drop `kind` — TS only
+    // excess-property-checks an object *literal*, not an existing typed
+    // variable, so the extra field is harmless against `RunWorktree`.
+    const run: RunWorktree = backendState;
     if (!fs.existsSync(run.worktreePath)) {
       throw new Error(`worktree for run ${runId} no longer exists at ${run.worktreePath}; nothing to open a PR for`);
     }
@@ -572,9 +589,9 @@ export class Agent {
       return state;
     }
 
-    const run = this.requireRunWorktree(runId);
-    if (!fs.existsSync(run.worktreePath)) {
-      throw new Error(`worktree for run ${runId} no longer exists at ${run.worktreePath}; cannot resume`);
+    const run = this.requireRunBackend(runId);
+    if (!fs.existsSync(run.workspaceRoot)) {
+      throw new Error(`workspace for run ${runId} no longer exists at ${run.workspaceRoot}; cannot resume`);
     }
 
     if (opts.extendSteps) state.budgets.steps += opts.extendSteps;
@@ -619,9 +636,13 @@ export class Agent {
     return state;
   }
 
-  private requireRunWorktree(runId: string): RunWorktree {
-    const run = loadRunWorktree(this.stateDir, runId);
-    if (!run) throw new Error(`no worktree metadata for run: ${runId}`);
-    return run;
+  private requireRunBackendState(runId: string): RunBackendState {
+    const state = loadRunBackendState(this.stateDir, runId);
+    if (!state) throw new Error(`no worktree metadata for run: ${runId}`);
+    return state;
+  }
+
+  private requireRunBackend(runId: string): RunBackend {
+    return reviveRunBackend(this.requireRunBackendState(runId));
   }
 }

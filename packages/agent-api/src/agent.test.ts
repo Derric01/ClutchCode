@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { detectBwrapUsable } from "@clutchcode/sandbox";
 import { saveCapabilityProfile, type CapabilityProfile } from "@clutchcode/capability";
 import { Agent } from "./agent.js";
-import { addBareOrigin, makeMonorepo, makeSampleRepo, makeTempDir, sseChunk, startScriptedServer, type ScriptedServer } from "./test-helpers.js";
+import { addBareOrigin, makeMonorepo, makeSamplePlainDir, makeSampleRepo, makeTempDir, sseChunk, startScriptedServer, type ScriptedServer } from "./test-helpers.js";
 import { initRepo } from "./scaffold.js";
 import { markTrusted, saveConfig, loadConfig } from "./config.js";
 import { correctMemoryFact, forgetMemoryFact, listMemory, showMemoryFact } from "./memory.js";
@@ -707,18 +707,122 @@ describe("Agent.run workflowFile (§8.1 user-declarative workflows)", () => {
   }, 30_000);
 });
 
-describe("Agent.run requires a git repo (§13.4)", () => {
-  it("fails loudly and actionably instead of a raw git error, three calls deep", async () => {
-    const dir = makeTempDir("clutchcode-agentapi-nongit-");
-    const stateDir = makeTempDir("clutchcode-agentapi-state-");
-    try {
-      const agent = new Agent(dir, stateDir);
-      await expect(agent.run({ task: "investigate", providerKind: "fake", model: "n/a" })).rejects.toThrow(/not a git repository/);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-      fs.rmSync(stateDir, { recursive: true, force: true });
-    }
+/**
+ * §13.4's non-git fallback, wired end-to-end through the real `Agent` API
+ * boundary (not just `AgentLoop`/`RunBackend` in isolation — `packages/
+ * runtime/src/agent-loop.test.ts` already covers that layer directly).
+ * `Agent.run` used to refuse outright for a non-git directory; it now
+ * builds a `snapshot` `RunBackend` instead (`agent.ts`'s `run()`) and the
+ * whole lifecycle — diff/approve/reject/checkpoints/rollback, plus `pr`'s
+ * deliberate refusal — goes through unchanged from the caller's point of
+ * view, same as it does for a real git repo.
+ */
+describe("Agent.run against a real non-git directory (§13.4 snapshot RunBackend)", () => {
+  let repoPath: string;
+  let stateDir: string;
+  let server: ScriptedServer;
+
+  beforeEach(() => {
+    repoPath = makeSamplePlainDir();
+    stateDir = makeTempDir("clutchcode-agentapi-state-");
+    markTrusted(repoPath); // trust is path-keyed, not git-specific — works the same for a non-git dir
   });
+
+  afterEach(async () => {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    await server?.close();
+  });
+
+  it("runs end-to-end in --yes mode against a real non-git directory and reaches DONE, with the edit already on the real file", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "investigate the repo", providerKind: "fake", model: "n/a", yesMode: true });
+
+    expect(state.status).toBe("DONE");
+    expect(state.worktreePath).toBe(repoPath); // §13.4: no isolated copy — the workspace *is* the real directory
+    expect(state.baseCommit).toBeUndefined(); // no commit concept without a repo
+    expect(agent.status()!.runId).toBe(state.runId);
+  }, 30_000);
+
+  it("stops at AWAITING_APPROVAL without --yes; the write already landed on the real file (no worktree to merge from), and diff()/diffFiles() produce real git-format output with no repository at all", async () => {
+    server = await startScriptedServer([
+      [
+        sseChunk({
+          choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "write_file", arguments: JSON.stringify({ path: "feature.txt", body: "v1\n" }) } }] } }]
+        }),
+        sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+        "data: [DONE]\n\n"
+      ],
+      [sseChunk({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }), "data: [DONE]\n\n"]
+    ]);
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "add a feature", providerKind: "openai-compatible", model: "gpt-test", baseUrl: server.baseUrl });
+    expect(state.status).toBe("AWAITING_APPROVAL");
+
+    // Deliberately the opposite of the git-worktree test's assertion at the
+    // top of this file: there was never an isolated copy, so the file is
+    // already live on the real directory well before approval.
+    expect(fs.readFileSync(path.join(repoPath, "feature.txt"), "utf8")).toBe("v1\n");
+
+    expect(agent.diff(state.runId)).toContain("diff --git a/feature.txt b/feature.txt");
+    const files = agent.diffFiles(state.runId);
+    expect(files).toEqual([{ path: "feature.txt", status: "added", before: undefined, after: "v1\n", binary: false }]);
+
+    const approved = agent.approve(state.runId, { squash: true, message: "approved" });
+    expect(approved.status).toBe("DONE");
+    expect(fs.readFileSync(path.join(repoPath, "feature.txt"), "utf8")).toBe("v1\n"); // approve() is a near no-op here — nothing changes
+  }, 30_000);
+
+  it("reject ACTIVELY restores the pre-run file content — real, necessary work `SnapshotBackup.rollback()` does that the git backend's discard() doesn't need to", async () => {
+    fs.writeFileSync(path.join(repoPath, "existing.txt"), "original\n", "utf8");
+    server = await startScriptedServer([
+      [
+        sseChunk({
+          choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "write_file", arguments: JSON.stringify({ path: "existing.txt", body: "overwritten by the agent\n" }) } }] } }]
+        }),
+        sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+        "data: [DONE]\n\n"
+      ],
+      [sseChunk({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }), "data: [DONE]\n\n"]
+    ]);
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "edit existing.txt", providerKind: "openai-compatible", model: "gpt-test", baseUrl: server.baseUrl });
+    expect(state.status).toBe("AWAITING_APPROVAL");
+    expect(fs.readFileSync(path.join(repoPath, "existing.txt"), "utf8")).toBe("overwritten by the agent\n");
+
+    const rejected = agent.reject(state.runId);
+    expect(rejected.status).toBe("CANCELLED");
+    expect(fs.readFileSync(path.join(repoPath, "existing.txt"), "utf8")).toBe("original\n");
+  }, 30_000);
+
+  it("checkpoints()/rollback() round-trip through the single snapshot-baseline checkpoint (§13.4's stated scope, not git's per-step granularity)", async () => {
+    server = await startScriptedServer([
+      [
+        sseChunk({
+          choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "write_file", arguments: JSON.stringify({ path: "feature.txt", body: "v1\n" }) } }] } }]
+        }),
+        sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+        "data: [DONE]\n\n"
+      ],
+      [sseChunk({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }), "data: [DONE]\n\n"]
+    ]);
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "add a feature", providerKind: "openai-compatible", model: "gpt-test", baseUrl: server.baseUrl });
+    expect(state.status).toBe("AWAITING_APPROVAL");
+
+    const checkpoints = agent.checkpoints(state.runId);
+    expect(checkpoints).toHaveLength(1); // one synthetic baseline entry, not one per verify pass
+
+    const rolledBack = agent.rollback(state.runId, checkpoints[0]!.sha);
+    expect(rolledBack.runId).toBe(state.runId);
+    expect(fs.existsSync(path.join(repoPath, "feature.txt"))).toBe(false); // back to before the run ever touched it
+  }, 30_000);
+
+  it("agent pr refuses with a clear, actionable error instead of silently no-op-ing or faking a compare URL", async () => {
+    const agent = new Agent(repoPath, stateDir);
+    const state = await agent.run({ task: "investigate the repo", providerKind: "fake", model: "n/a" });
+    await expect(agent.pr(state.runId)).rejects.toThrow(/non-git snapshot fallback.*git init/s);
+  }, 30_000);
 });
 
 describe("Agent sandbox Tier 1 (§12.5/§12.6) — real confinement, not just plumbing", () => {

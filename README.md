@@ -12,7 +12,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=for-the-badge)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-903%20passing-brightgreen?style=for-the-badge)](#-what-were-actually-sure-of)
+[![Tests](https://img.shields.io/badge/tests-921%20passing-brightgreen?style=for-the-badge)](#-what-were-actually-sure-of)
 [![CI](https://github.com/Derric01/ClutchCode/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Derric01/ClutchCode/actions/workflows/ci.yml)
 
 [![Stars](https://img.shields.io/github/stars/Derric01/ClutchCode?style=flat-square&color=f5c518)](https://github.com/Derric01/ClutchCode/stargazers)
@@ -54,7 +54,7 @@ ClutchCode is built around one rule: **the model's opinion doesn't count.** A ru
 
 ## 🎯 What it does
 
-Point it at a task and a model. It works in an **isolated git worktree**, edits code, runs your toolchain, repairs what it broke, and stops. Nothing reaches your branch until you approve a diff.
+Point it at a task and a model. In a git repo it works in an **isolated worktree**, edits code, runs your toolchain, repairs what it broke, and stops — nothing reaches your branch until you approve a diff. Point it at a plain directory with no `.git` at all and it still works: edits land in place with a pre-edit backup taken before each file's first change, `diff`/`rollback`/`reject` all operate against those backups instead of a worktree, and the diff text is real, `git diff`-format output either way — worktree isolation is the stronger guarantee, so `git init` is still the recommended default.
 
 <table>
 <tr>
@@ -190,6 +190,7 @@ The interesting step is the one most agents skip: **after the gate goes green, i
 | 🔬 | **Deterministic completion gate** | Real build + test + lint. No self-reported success. |
 | 🕵️ | **Cheat detection** | Catches deleted assertions, skip markers, hardcoded outputs, unjustified snapshot edits. |
 | 📦 | **Git worktree isolation** | Per-run branch, per-step checkpoints, `rollback` to any of them. |
+| 🗂️ | **Non-git fallback** | No `.git`? Edits land in place with a pre-edit backup per touched file; `diff`/`rollback`/`reject` still work, real `git`-format diff text either way. Weaker than worktree isolation — `git init` first if you can. |
 | 🛡️ | **Tier-1 OS sandbox** | bubblewrap + seccomp-BPF (x86_64 Linux, kernel-verified). Seatbelt profile for macOS. |
 | 🔑 | **3-tier credential storage** | OS keychain → encrypted file store → env. Keys read from stdin, never argv. |
 | 🧽 | **Secret redaction** | Every boundary scrubbed, proven by a canary test that injects a fake secret. |
@@ -289,8 +290,8 @@ Replays a scripted transcript through the whole loop. It's how the test suite wo
 
 | Claim | How it's proven |
 |---|---|
-| **903 tests, 92 files** | `pnpm test`. Real git repos, real shells, real filesystems — `FakeProvider` stubs *only* the model. |
-| **The suite runs on CI, not just locally** | GitHub Actions, Node 20 + 22 on every PR: the same suite plus `tsc -b` and `eslint .`, with 16 tests skipped there. Those 16 skips are the bwrap confinement/seccomp suites — a hosted runner cannot create those namespaces, so they skip there and run in full locally (903, 0 skipped). **CI green therefore does not prove the sandbox confines**; only a bwrap-capable host does. |
+| **921 tests, 92 files** | `pnpm test`. Real git repos, real non-git directories, real shells, real filesystems — `FakeProvider` stubs *only* the model. |
+| **The suite runs on CI, not just locally** | GitHub Actions, Node 20 + 22 on every PR: the same suite plus `tsc -b` and `eslint .`, with 16 tests skipped there. Those 16 skips are the bwrap confinement/seccomp suites — a hosted runner cannot create those namespaces, so they skip there and run in full locally (921, 0 skipped). **CI green therefore does not prove the sandbox confines**; only a bwrap-capable host does. |
 | **Sandbox actually confines** | A test writes outside the workspace, then asserts a sandboxed `cat` of it fails. Network fetch inside the sandbox asserted unreachable. These run for real wherever bwrap can genuinely create namespaces (this project's dev container can); where it can't — a hosted CI runner, an unprivileged container — they skip and ClutchCode falls back to Tier 0 **and says so**, rather than claiming a confinement it isn't getting. |
 | **Seccomp actually blocks** | Each denied syscall invoked by number inside real bwrap → `EPERM`, with an unfiltered control run proving the syscall otherwise succeeds. |
 | **Secrets don't leak** | A canary secret injected into a full recorded run, asserted absent from every transcript, event log and artifact. |

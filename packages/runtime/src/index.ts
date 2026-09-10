@@ -48,6 +48,9 @@ export type { AgentLoopDeps, AgentLoopOptions, RuntimeEvent } from "./agent-loop
 
 export { commitApprovedRun, rejectRun } from "./approve.js";
 
+export { createGitWorktreeBackend, createSnapshotBackend, reviveRunBackend } from "./run-backend.js";
+export type { RunBackend, RunBackendState } from "./run-backend.js";
+
 export { BUILTIN_WORKFLOWS, BUILTIN_WORKFLOW_IDS, isBuiltinWorkflowId, resolveBuiltinWorkflowPlan } from "./workflow.js";
 export type { BuiltinWorkflowId, WorkflowDescriptor, WorkflowPlan } from "./workflow.js";
 
