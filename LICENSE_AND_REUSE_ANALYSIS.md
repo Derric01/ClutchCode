@@ -70,6 +70,7 @@ SPDX identifiers verified by reading each repo's `LICENSE`/`LICENSE.md` at the p
 | smolagents | Apache-2.0 | No | Yes | NOTICE + license text | Yes | **STUDY-ONLY** |
 | Hermes-Function-Calling (Nous Research) | MIT | No | No | Copyright + license text | Yes | **FORMAT REUSE-eligible** (open tool-call protocol, same posture as MCP/ACP); their parser impl **do-not-copy on merit** (XML-roots the whole message — breaks on code); **prompts STUDY-ONLY** per ADR-016 |
 | grok-cli (superagent-ai) | MIT | No | No | Copyright + license text | Yes | **STUDY-ONLY** (community tool; not official xAI) |
+| ECC (affaan-m) | MIT | No | No | Copyright + license text | Yes | **STUDY-ONLY** — a harness-config/skills library, not an agent to embed. Its 286 `skills/` are prompt/instruction files, same category ADR-016 already governs: idea reusable, text rewritten from scratch. 4 of 6 candidates sampled collide with a stricter existing project convention and were **not** adopted at all (see `research/repos/ecc.md`); 2 (`error-handling`, `codebase-onboarding`) were adapted clean-room into `.claude/skills/`. |
 | gemini-cli | Apache-2.0 | No | Yes | NOTICE + license text | Yes | **STUDY-ONLY** |
 | MCP spec | Apache-2.0 (spec text often CC-BY-4.0) | No | Yes | attribution | Yes | **REUSE — protocol impl** (we implement the open protocol) |
 | DeepSeek Harness (`dsh`) | MIT | No | No | Copyright + license text | Yes | **STUDY-ONLY** (see `research/repos/deepseek-harness.md`) |

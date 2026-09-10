@@ -3178,3 +3178,103 @@ editor could send) is the same kind of deliberately-not-built UI the row
 called out explicitly — the capability exists at `Agent.run()`'s API surface;
 wiring a method onto the wire protocol is new scope, not part of "gets it as
 a byproduct."
+
+### ECC studied for two unrelated things at once — a README pattern and a skills-harness ask, disentangled
+
+**What was actually asked, and the ambiguity resolved first.** The user
+asked to "integrate ECC's ideas into our marketing/landing page" and,
+separately, to add "those skills" to this project's own harness. Two
+blocking ambiguities were surfaced and resolved via `AskUserQuestion`
+before touching anything, per this project's own "inspect first, don't
+hallucinate" standard: (1) "ECC" named no URL — confirmed as
+`github.com/affaan-m/ECC`, not guessed; (2) this project has **no web
+frontend at all** (`apps/` is only `cli` and `vscode`; no React/Next/Vue,
+no landing-page directory) — confirmed by grep before assuming, and the
+user then confirmed `README.md` *is* the marketing page, matching what
+this project already built it to be earlier this branch.
+
+**What ECC actually turned out to be.** Not a landing-page reference at
+all — cloned and read, and it's **"the agent harness operating system"**:
+an npm-distributed installer (`ecc-universal`) for 286 Claude-Code-style
+`skills/`, plus `agents/`, `commands/`, `hooks/`, `plugins/`,
+`mcp-configs/`. Its README is a 1400+-line install/reference manual with
+a marketing-shaped top (hero image, badge row, one-command install CTA)
+above it, not a landing page throughout. This reframed the two asks
+correctly: the skills track is where ECC's actual substance lives; the
+README track is only about its top-of-file structure.
+
+**Track A — README, three ECC patterns evaluated, one kept.** Read
+ECC's full hero/badge block. Two patterns were explicitly **not**
+adopted after inspection, not by default: a star-history trending badge
+(would render sparse/hollow on a repo with no real star history yet —
+exactly the "impressive on a big project, hollow copied onto a small
+one" trap the task warned against) and the 13-language README-link row
+plus sponsor/pricing tiers (this project has no translations and no
+funding model — faking either would be dishonest, not "adapted to our
+product"). What was kept: GitHub's native `[!NOTE]`/`[!IMPORTANT]` alert-
+box syntax, applied to two things this README already said in plain
+prose — "no VTCR benchmark published, none may be quoted" (front of
+`## What we're actually sure of`) and "pre-1.0, not on npm — build from
+source" (front of `## Quick Start`). Zero new claims, zero dependencies;
+the existing "Honest limitations" `<details>` block is untouched, and
+only the two highest-stakes caveats got promoted to a visually distinct
+callout, deliberately not more — overusing the alert syntax dilutes it.
+
+**Track B — skills, most candidates rejected on inspection, not
+imported by name.** Sampled 6 plausible ECC skills against what this
+project already does before deciding anything:
+
+| ECC skill | Rejected because |
+|---|---|
+| `security-review` | We have our own `/security-review`, exercised across 3 real review rounds, plus `SECURITY.md` |
+| `architecture-decision-records` | Our ADRs (001–020) already live inside `PROJECT_SPEC.md`, cited by section number throughout the codebase — a separate log would fork, not extend, that |
+| `tdd-workflow` | Its 80%-coverage rule contradicts `CLAUDE.md`'s actual testing philosophy (real-over-mocked, stash-revert discrimination proof, no coverage-% target at all) |
+| `git-workflow` | Generic branching/merge advice is *more permissive* than this project's own firm rules (never rebase someone else's branch, DCO sign-off) |
+
+Two collided with nothing and were adopted — **as rewrites, not copies**.
+`ADR-016` (already cited in `CLAUDE.md`'s Reuse Rules — *"prompts are
+copyrightable... adapt others' prompts [rejected]... original prompts"*)
+applies here even though ECC is MIT-licensed: a `SKILL.md` is a prompt by
+another name, and this project's own policy is stricter than the license
+requires. `error-handling` was rewritten around what this codebase
+*actually* does — `GitError`/`InvalidTransitionError extends Error` with
+structured `readonly` fields (real code, `packages/git/src/git-exec.ts`,
+`packages/runtime/src/run-state.ts`), the `{type:"error", retryable}`
+provider-delta pattern that already decides retry eligibility at the
+point the real signal exists (`packages/providers/src/anthropic.ts`) —
+not ECC's Next.js/FastAPI/React content, none of which applies to a CLI
+with no web server. It also explicitly distinguishes this axis from
+`error-taxonomy.ts`'s §6.8 classification (a different thing — how the
+*agent* classifies a failure it hit mid-run — that a same-named skill
+could otherwise get confused with). `codebase-onboarding` kept the
+useful shape (phased recon → architecture map → convention detection →
+artifact) but every example was rewritten against this repo's real stack,
+and it gained a rule ECC's own version has no reason to need: **defer to
+this project's own `CLAUDE.md`/`HANDOFF.md`/`PROJECT_SPEC.md` rather than
+regenerating them** when asked to onboard someone to ClutchCode itself —
+it exists for studying a *different*, unfamiliar codebase.
+
+**Verified, and how.** `tsc -b` clean, **903/903 across 92 files**
+(unchanged — docs-only change), `eslint .` clean. Confirmed no test
+scans `.claude/skills/` or `research/repos/` for structure (grep, none
+found), so nothing needed updating there. GitHub's alert-box syntax
+(`> [!NOTE]` / `> [!IMPORTANT]`, every line `>`-prefixed) checked
+character-for-character against ECC's own working `[!WARNING]` block
+before use, since it can't be rendered locally to confirm.
+
+**Branch handling.** PR #21 (the previous unit) merged mid-session, a
+fourth time this branch has merged (#17, #18, #19, #20, #21 — five now).
+Caught before committing: `git status --short` showed uncommitted work in
+progress when the merge was discovered, so the restart used
+`git stash push -u` (the `-u` matters — this project's own gotcha list
+already warns that a plain `git stash push -- <path>` no-ops on an
+untracked path; the new skill files and study note were all untracked),
+`git checkout -B <branch> origin/main`, then `git stash pop` — verified
+the branch was clean of unmerged commits first, and re-ran the full gate
+after restoring the stash rather than trusting it carried over cleanly.
+
+**Reuse verdict recorded.** `LICENSE_AND_REUSE_ANALYSIS.md` gained a row
+for ECC (MIT, STUDY-ONLY, same ADR-016 posture as every other
+skill/prompt source) and `research/repos/ecc.md` documents the full
+comparison — what was sampled, what was rejected and why, what was
+adapted and how.

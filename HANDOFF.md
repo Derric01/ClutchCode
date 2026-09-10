@@ -5,26 +5,36 @@ session; update it before you stop. See `CLAUDE.md` for timeless working
 conventions (build/test/lint, testing philosophy, quality bar) — this
 file is the time-stamped snapshot of where the project actually stands.
 
-**Snapshot as of:** 2026-09-09
-**Branch:** `claude/start-work-handoff-referral-52eyj1`. Merged **four times**
-this project's history (#17, #18, #19, #20) — restarted from `main`'s tip after
-each, most recently at `79c2b26` ("Merge pull request #20"). **Check a PR's
-actual state before assuming a push lands on it** (`pull_request_read`, or `git
-merge-base --is-ancestor <head> origin/main` — trust this over the API's
-`merged` field, which has repeatedly read `false` on PRs a `merged_at`
-timestamp and git ancestry both confirm are merged) before every push, not
-once per session.
-**Latest commit:** real run cancellation (§6.5/§6.6/§18.1) — `AgentLoopOptions.signal`
-threaded through `AgentLoop`, forwarded into every `NormalizedRequest` a real
-provider adapter already knew how to abort, checked at loop-iteration/
-tool-call boundaries *and* (a real gap the first pass missed, found by writing
-a genuine ACP end-to-end test rather than trusting the code read) after the
-verification pipeline; `Agent.run()`/`Agent.resume()` forward it; `acp`'s
-`session/cancel` now actually aborts the in-flight run instead of only
-recording the request. See `docs/PROJECT_LOG.md`'s newest entry for the two
-real bugs found while proving this end to end (the missing `verifyAndFinish`
-checkpoint, and a check placed right after a blocking call that still can't
-see an abort that arrived *during* it without an explicit event-loop yield).
+**Snapshot as of:** 2026-09-10
+**Branch:** `claude/start-work-handoff-referral-52eyj1`. Merged **five times**
+this project's history (#17, #18, #19, #20, #21) — restarted from `main`'s tip
+after each, most recently at `3c48456` ("Merge pull request #21"), discovered
+**mid-unit** this round (uncommitted work was already in progress) —
+handled with `git stash push -u` (the `-u` matters: the new files were
+untracked) before the restart, `git stash pop` after, full gate re-run to
+confirm the pop carried over cleanly. **Check a PR's actual state before
+assuming a push lands on it** (`pull_request_read`, or `git merge-base
+--is-ancestor <head> origin/main` — trust this over the API's `merged` field,
+which has repeatedly read `false` on PRs a `merged_at` timestamp and git
+ancestry both confirm are merged) before every push, not once per session —
+this is now the sixth time it's mattered.
+**Latest commit:** ECC studied for two unrelated asks at once (a README
+marketing-pattern comparison and a "add skills to our harness" request) —
+disentangled via two rounds of `AskUserQuestion` before writing anything,
+since "ECC" named no URL and this project turned out to have no web frontend
+at all (`README.md` confirmed as the actual marketing page). ECC itself
+turned out to be a Claude-Code skills/harness installer (286 `skills/`), not
+a landing-page reference — reframed the two tracks correctly. **README:**
+two GitHub native `[!NOTE]`/`[!IMPORTANT]` alert boxes added to promote two
+already-stated caveats (no npm yet, no VTCR benchmark published) — zero new
+claims. **Skills:** 4 of 6 sampled ECC skills rejected on inspection (each
+collided with a stricter existing convention — our own `/security-review`,
+ADRs already inside `PROJECT_SPEC.md`, our stricter testing philosophy, our
+firmer git rules); 2 (`error-handling`, `codebase-onboarding`) adapted
+**clean-room** into `.claude/skills/` per `ADR-016` (a `SKILL.md` is a
+prompt; MIT licensing makes copying legal, this project's own policy is
+stricter and still applies). See `docs/PROJECT_LOG.md`'s newest entry and
+`research/repos/ecc.md` for the full comparison.
 **PR:** **none currently open as of this snapshot.** Push next, then open one —
 do not stack more unmerged commits on this branch without a PR carrying them
 (see the branch note above for why that's worth repeating).
