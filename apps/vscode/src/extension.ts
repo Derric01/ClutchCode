@@ -109,6 +109,9 @@ function buildTaskUI(diffProvider: DiffContentProvider): TaskUI {
     showError(message) {
       void vscode.window.showErrorMessage(message);
     },
+    showWarning(message) {
+      void vscode.window.showWarningMessage(message);
+    },
     async pickRun(runs, placeholder) {
       const picked = await vscode.window.showQuickPick(
         runs.map((state) => ({
@@ -181,8 +184,15 @@ export function activate(context: vscode.ExtensionContext): void {
         const runId = await pickRunOrWarn(ui, "Select a run to approve", (s) => s.status === "AWAITING_APPROVAL");
         if (!runId) return;
         const { client } = getConnection();
-        await client.request("approve", { runId, squash: true });
+        const state = await client.request<RunState>("approve", { runId, squash: true });
         void vscode.window.showInformationMessage(`ClutchCode: run ${runId} approved and committed.`);
+        // Real, reproduced gap (see `RunState.stashRestoreWarning`'s own
+        // doc comment in `@clutchcode/runtime`): a stash-restore conflict
+        // at approve time leaves literal `<<<<<<<` markers in the user's
+        // own working tree. The RPC response already carries this field —
+        // the wire contract needed no change — this was purely a case of
+        // the response being discarded here without ever being read.
+        if (state.stashRestoreWarning) ui.showWarning(`ClutchCode: ${state.stashRestoreWarning}`);
       } catch (e) {
         void vscode.window.showErrorMessage(`ClutchCode: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -196,8 +206,9 @@ export function activate(context: vscode.ExtensionContext): void {
         const runId = await pickRunOrWarn(ui, "Select a run to reject", (s) => s.status === "AWAITING_APPROVAL");
         if (!runId) return;
         const { client } = getConnection();
-        await client.request("reject", { runId });
+        const state = await client.request<RunState>("reject", { runId });
         void vscode.window.showInformationMessage(`ClutchCode: run ${runId} rejected.`);
+        if (state.stashRestoreWarning) ui.showWarning(`ClutchCode: ${state.stashRestoreWarning}`);
       } catch (e) {
         void vscode.window.showErrorMessage(`ClutchCode: ${e instanceof Error ? e.message : String(e)}`);
       }

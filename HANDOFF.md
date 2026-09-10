@@ -51,13 +51,40 @@ stash-revert-proven:**
    confirmed it in one shot; see `docs/PROJECT_LOG.md`'s newest entry for
    why the earlier framing undersold it.
 
+A **third** bug, found while checking the CLI's presentation of the
+`RunBackend` surface rather than its mechanics, turned out to **predate
+`RunBackend` entirely** (traced to `cdc1500`, the first Phase 1 commit) —
+kept in scope per `CLAUDE.md`'s "fix a real bug you find along the way":
+3. `approve`/`reject` silently discarded `RunBackend.approve()`/
+   `.discard()`'s `stashRestoreWarning` — the warning `@clutchcode/git`'s
+   `restoreStashIfAny` exists specifically to surface when restoring a
+   `handleDirtyTree` auto-stash after approve/reject genuinely conflicts
+   with what the run produced. A run could reach a clean `DONE` while the
+   user's own working tree had real `<<<<<<<` markers in it, with zero
+   indication anywhere — CLI, `--json`, or VS Code. Fixed end to end:
+   `RunState` gains `stashRestoreWarning?`/`mergedSha?`; `approve.ts`
+   captures and assigns them (root-cause fix); the CLI prints a loud
+   `WARNING:` line and includes both fields in `--json`; the VS Code
+   `TaskUI` gains a `showWarning` method wired into both the orchestrated
+   (`runClutchCodeTask`) and standalone approve/reject command paths. The
+   RPC wire format needed no change — the field already rode along on
+   `RunState`, unread on the receiving end. **A real stale-`dist`
+   false-pass was caught mid-proof**, not trusted: the first stash-revert
+   attempt showed both new regression tests passing even with the
+   root-cause fix reverted, because `apps/cli`/`apps/vscode` resolve
+   `@clutchcode/runtime` through its compiled `dist/`, which the stash
+   (a source-only revert) didn't touch — see the new gotcha below and
+   `docs/PROJECT_LOG.md`'s newest entry for the full sequence.
+
 Several other fanned-into areas — `SnapshotBackup`'s path-traversal
 defenses, the ACP-cancellation/`RunBackend` composition, `packages/
-tools`'s symlink handling, CLI arg parsing — checked clean; see
-`docs/PROJECT_LOG.md`'s two newest entries for the full per-area detail.
+tools`'s symlink handling, CLI arg parsing, `cmdCheckpoints`'s truncated-
+sha display (checked against `Agent.rollback`'s matcher and confirmed
+*not* a bug — a real prefix match handles it) — checked clean; see
+`docs/PROJECT_LOG.md`'s three newest entries for the full per-area detail.
 **PR:** [**#25**](https://github.com/Derric01/ClutchCode/pull/25), open
 against `main`. Push any further work in this session to it (it already
-carries the first fix above as of this snapshot) rather than opening a
+carries all three fixes above as of this snapshot) rather than opening a
 second PR for this branch.
 **Phase:** Phase 1 shipped (§21) — one agent, one default workflow, three provider
 adapters, SEARCH/REPLACE edits with fallback, worktree isolation, deterministic
@@ -67,7 +94,7 @@ selector §4.4) is wired into the live loop; workflow engine §8.1/§8.2, VS Cod
 §18.5, credentials §5.1, sandbox Tier 1 §12.5/§12.6, the §16 eval scoreboard,
 the §16.4 naked-vs-harness A/B, the ACP editor binding, and real run
 cancellation landed early.
-**Test suite (locally):** 923/923 passing, 92 test files, clean `tsc -b`, clean
+**Test suite (locally):** 925/925 passing, 92 test files, clean `tsc -b`, clean
 `eslint .` — and **0 skipped**: bwrap genuinely confines in this dev container,
 so every real Tier 1/seccomp test still runs here.
 **CI — GREEN**, since run [#12](https://github.com/Derric01/ClutchCode/actions/runs/33593109279)
@@ -120,16 +147,18 @@ loose "MVP" estimate.
 **No `DO FIRST` tag is set right now — say so plainly, don't invent one.**
 This session ran the audit round the previous snapshot called for (per
 `CLAUDE.md`'s work-loop step 2c) instead of picking a table row — see the
-snapshot header / `docs/PROJECT_LOG.md`'s two newest entries for the two
-real bugs it found and fixed (both in the `snapshot`-backend `§13.4` path:
-an absolute-path parity gap in `RunBackend.beforeEdit`, and a real diff-text
-content-corruption bug in `SnapshotBackup.runNoIndexDiff`) and the several
-other areas it checked and found clean. Neither fix unblocked or otherwise
-changed any row below — every row remains genuinely gated — a host this
-environment doesn't have, a human/ADR decision, or explicitly out of
-scope — checked freshly this session, not inherited from the previous
-snapshot's framing. A future session should either continue fanning the
-audit into areas this round didn't reach (grep `docs/PROJECT_LOG.md` for
+snapshot header / `docs/PROJECT_LOG.md`'s three newest entries for the
+three real bugs it found and fixed (an absolute-path parity gap in
+`RunBackend.beforeEdit`; a real diff-text content-corruption bug in
+`SnapshotBackup.runNoIndexDiff`; a pre-Phase-1 gap where `approve`/
+`reject` silently discarded a real stash-restore-conflict warning) and the
+several other areas it checked and found clean. None of the three fixes
+unblocked or otherwise changed any row below — every row remains
+genuinely gated — a host this environment doesn't have, a human/ADR
+decision, or explicitly out of scope — checked freshly this session, not
+inherited from the previous snapshot's framing. A future session should
+either continue fanning the audit into areas this round didn't reach (grep
+`docs/PROJECT_LOG.md` for
 what's been covered vs. not) or re-run a fresh review round, rather than
 assume either the table below or this round's coverage is exhaustive.
 
@@ -426,6 +455,33 @@ assume either the table below or this round's coverage is exhaustive.
   `npm test` spawn) — don't trust a race against instantaneous scripted
   work, even across a handful of manual re-runs; it can look flake-free
   by coincidence and still be structurally guaranteed to lose.
+- **A stash-revert proof that touches a file consumed *cross-package*
+  needs a rebuild of that package after the stash, or it can produce a
+  false pass — the most dangerous direction for a discrimination proof to
+  be wrong in.** `apps/cli`/`apps/vscode` resolve `@clutchcode/runtime`
+  (and every other internal package) through its published `dist/`
+  (`package.json`'s `"main"`), not the TS source directly — unlike a test
+  living *inside* the same package, which vitest transforms straight from
+  `.ts`. Bit the `approve`/`reject` stash-restore-warning fix's own
+  discrimination proof directly: `git stash push --
+  packages/runtime/src/approve.ts` correctly reverted the source (`grep`
+  confirmed the fix's own symbols were gone), but the two new regression
+  tests in `apps/cli`/`apps/vscode` **passed anyway** — `packages/
+  runtime/dist/approve.js`, compiled *before* the stash, still had the
+  fix, and neither test's import path ever re-read the source. Caught
+  before being trusted (`grep -n stashRestoreWarning packages/runtime/
+  dist/approve.js` still matched post-stash), not after. Fixed the proof
+  by running `npx tsc -b packages/runtime` after the stash — only then
+  did both tests fail exactly as predicted. This is a **different** trap
+  from the two already-documented stash gotchas above (`git stash push
+  --include-untracked` hiding new files; a plain `git stash push -- <path>`
+  silently no-op'ing on a never-`git add`ed file) — those two both fail
+  loud (the test stays green for an obviously-wrong reason, or the stash
+  visibly does nothing); this one fails *quiet*, looking exactly like a
+  correct, successful discrimination proof. Any stash-revert proof for a
+  fix whose test lives in a **different** workspace package than the fix
+  itself needs an explicit rebuild step before trusting the "it failed as
+  predicted" result.
 
 ## How to resume
 

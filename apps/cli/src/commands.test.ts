@@ -112,6 +112,51 @@ describe("CLI commands (pure functions, no process spawning)", () => {
     expect(rejected.output).toContain("CANCELLED");
   }, 30_000);
 
+  it("approve surfaces a real stash-restore conflict as a loud WARNING line — real gap found and fixed this session's audit", async () => {
+    // Real, reproduced gap (see `RunState.stashRestoreWarning`'s own doc
+    // comment in `@clutchcode/runtime`): §13.4's default dirty-tree
+    // handling auto-stashes the user's uncommitted local changes before a
+    // run starts. If the run itself edits the same file, and restoring
+    // that auto-stash after approve conflicts with the run's own result,
+    // this warning used to be computed by `@clutchcode/git` and then
+    // discarded before ever reaching `apps/cli` — `agent approve` used to
+    // report a clean-looking DONE while the user's own working tree sat
+    // with literal `<<<<<<<` conflict markers in it.
+    fs.writeFileSync(path.join(repoPath, "README.md"), "user's local uncommitted edit\n", "utf8");
+
+    const scripted = await startScriptedServer([
+      [
+        sseChunk({
+          choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "write_file", arguments: JSON.stringify({ path: "README.md", body: "run-produced content\n" }) } }] } }]
+        }),
+        sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+        "data: [DONE]\n\n"
+      ],
+      [sseChunk({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }), "data: [DONE]\n\n"]
+    ]);
+    try {
+      const runResult = await cmdRun(
+        { repoPath, stateDir, json: true },
+        { task: "rewrite the README", providerKind: "openai-compatible", model: "gpt-test", baseUrl: scripted.baseUrl }
+      );
+      const runId = (JSON.parse(runResult.output) as { runId: string }).runId;
+
+      const approved = await cmdApprove({ repoPath, stateDir }, runId, { squash: true });
+      expect(approved.exitCode).toBe(EXIT.SUCCESS);
+      expect(approved.output).toContain("DONE"); // the merge itself genuinely succeeded
+      expect(approved.output).toMatch(/WARNING:.*stash/i);
+
+      // Also check the machine-readable shape via the persisted run status.
+      const status = JSON.parse((await cmdStatus({ repoPath, stateDir, json: true })).output) as { stashRestoreWarning?: string };
+      expect(status.stashRestoreWarning).toMatch(/stash/i);
+
+      // The conflict is real, on disk, right now — not just a string in a warning.
+      expect(fs.readFileSync(path.join(repoPath, "README.md"), "utf8")).toContain("<<<<<<<");
+    } finally {
+      await scripted.close();
+    }
+  }, 30_000);
+
   it("trust marks the repo trusted", async () => {
     const result = await cmdTrust({ repoPath });
     expect(result.exitCode).toBe(EXIT.SUCCESS);

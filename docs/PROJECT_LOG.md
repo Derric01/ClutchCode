@@ -3814,3 +3814,145 @@ needing to also construct a full end-to-end "and here is how a model
 would exploit this to hide a cheat" scenario before treating it as
 real — the corruption itself, not just a downstream consequence of it,
 is the actual bug.
+
+### `approve`/`reject`'s stash-restore-conflict warning, silently discarded since Phase 1 — closed CLI-to-VS Code, with a real stale-`dist` trap caught mid-proof
+
+Third unit of this session's audit round. Continued fanning into areas the
+brief named (`packages/tools`/CLI) via the CLI's own presentation layer for
+the newly-general `RunBackend` surface, rather than only its mechanics
+(already covered by the first two units) — specifically, whether the CLI
+correctly *displays* what the backend reports. One genuinely new finding
+surfaced along the way, unrelated to `RunBackend`/`§13.4` and **predating
+it entirely** (traced to `cdc1500`, the very first Phase 1 commit) — kept
+in scope anyway per `CLAUDE.md`'s "prefer fixing a real bug you find along
+the way."
+
+**A clean check first, worth recording as such.** `cmdCheckpoints` displays
+a checkpoint's sha truncated to 10 characters (`c.sha.slice(0, 10)`,
+mirroring `git log --oneline`'s short-hash convention) — for the
+`snapshot` backend, the checkpoint id is the fixed string
+`"snapshot:baseline"`, so the displayed value is `"snapshot:b"`. Traced
+whether a user copy-pasting that truncated value into `agent rollback
+<runId> snapshot:b` would actually work: `Agent.rollback`'s matcher is
+`c.sha === sha || c.sha.startsWith(sha)` — a real prefix match, not an
+exact-string check — and `"snapshot:baseline".startsWith("snapshot:b")` is
+true, so it resolves correctly. Checked, not assumed; no fix needed.
+
+**The real finding.** `packages/git/src/worktree.ts`'s `restoreStashIfAny`
+exists — per its own extensive doc comment — specifically to surface a
+real stash-pop conflict as a warning "instead of masking it as an
+unqualified exception" when `handleDirtyTree`'s default `"stash"` strategy
+auto-stashed the user's uncommitted local changes before a run started,
+and restoring that stash after `approve`/`reject` genuinely conflicts with
+what the run itself produced. `worktree.ts`'s own test suite already
+proves the git-level mechanism works (`worktree.test.ts`'s "approveRun
+surfaces a stash-restore conflict..." test, pre-existing). But
+`packages/runtime/src/approve.ts`'s `commitApprovedRun`/`rejectRun` — the
+**only** callers that matter in the live system (`agent-api` → `apps/cli`
+and `apps/vscode`) — discarded `run.approve()`/`run.discard()`'s return
+value entirely, and had done so since the very first Phase 1 commit
+(`cdc1500`), not something the `RunBackend` refactor introduced or
+regressed. Net effect: a run could reach a clean-looking `DONE`/
+`CANCELLED` while the user's own working tree sat with real, literal
+`<<<<<<<` conflict markers in it, with **zero** indication anywhere —
+CLI, `--json`, or the VS Code extension — that anything needed attention.
+
+**Reproduced for real, twice, at two different real boundaries** (per
+`CLAUDE.md`'s "prove it, don't assume it" — no assumption that the git-
+level test already covered this layer): (1) a direct `createRunWorktree`
++ `commitApprovedRun` call mirroring `worktree.test.ts`'s own conflict
+setup (a tracked file with a local uncommitted edit, stashed at run
+start; the run itself edits the same file differently; approve succeeds,
+the stash restore conflicts) — confirmed the returned `RunState` had no
+`stashRestoreWarning` field at all, while the repo's file on disk
+genuinely had `<<<<<<<` markers. (2) The same scenario driven through the
+**real** `AgentRpcClient`/`Agent`/scripted-HTTP-provider stack
+`runTask.test.ts` already uses for its other tests (no new fixture
+machinery) — confirmed the VS Code command handlers never even read the
+RPC response.
+
+**Fix, threaded end to end:**
+- `RunState` (`packages/runtime/src/run-state.ts`) gains two new optional
+  fields, `stashRestoreWarning?: string` and `mergedSha?: string` — both
+  come from the exact same `{mergedSha?, stashRestoreWarning?}` return
+  value `RunBackend.approve()`/`.discard()` already compute; additive,
+  optional, no exhaustive-`never` switch anywhere touches `RunState`'s
+  shape, so this is a safe widen (checked before making it, per this
+  project's own "check the blast radius before widening a shared type"
+  rule — grepped every `RunState` consumer: `agent-rpc` passes the object
+  through untyped/unshaped, no wire-schema needed updating).
+- `approve.ts`'s `commitApprovedRun`/`rejectRun` now capture and assign
+  the previously-discarded return value onto `state` before returning it.
+  This is the root-cause fix — everything below is presentation built on
+  top of it.
+- `apps/cli/src/commands.ts`'s `formatRunState`/`summarizeRunState`: a
+  loud, separate `WARNING: ...` line in the human-readable form (not
+  folded in among the routine status lines) and the two new fields in the
+  `--json` shape.
+- `apps/vscode/src/runTask.ts`: `TaskUI` gains a `showWarning` method
+  (distinct from `showError` — the approve/reject itself already
+  succeeded; conflating the two would misreport a completed operation as
+  failed), and `handlePostRunState` reads the RPC response instead of
+  discarding it. `apps/vscode/src/extension.ts`'s two standalone
+  `clutchcode.approve`/`clutchcode.reject` commands (outside the
+  `runClutchCodeTask` orchestration path) get the same treatment. The
+  `agent-rpc` wire format needed **no** change — the field was already
+  riding along on the `RunState` response object; the gap was purely that
+  nothing on the receiving end ever read it.
+
+**A real stale-`dist` false-pass, caught mid-proof — not silently
+trusted.** Per `CLAUDE.md`'s stash-revert discipline, stashed
+`packages/runtime/src/approve.ts` (the root-cause fix; a tracked file
+with a real diff, `git status --short` showed `M`) and re-ran the two new
+regression tests expecting a failure. **They passed anyway** — a
+would-be false "the fix doesn't matter" result, caught before being
+trusted rather than after: `apps/cli`/`apps/vscode` resolve
+`@clutchcode/runtime` via its published `dist/index.js`
+(`packages/runtime/package.json`'s `"main"`), not the TS source directly,
+unlike a test living *inside* `packages/runtime` itself (which vitest
+transforms straight from `.ts`). The compiled `dist/approve.js` from
+*before* the stash was still sitting on disk, fix and all, so the revert
+of `src/approve.ts` alone was invisible to any cross-package consumer.
+Confirmed directly: `grep -n stashRestoreWarning packages/runtime/dist/
+approve.js` still matched after the stash. Fixed the proof itself by
+rebuilding just that package (`npx tsc -b packages/runtime`) after
+stashing, confirmed the compiled output now had **no** match, re-ran the
+two tests: **both failed exactly as predicted** (`expected [] to have a
+length of 1`; `WARNING:.*stash` not found in the output). `git stash
+pop` restored the fix; a full clean rebuild (`rm -rf packages/*/dist
+packages/*/*.tsbuildinfo apps/*/dist apps/*/*.tsbuildinfo evals/dist
+evals/*.tsbuildinfo && npx tsc -b`) plus a full `vitest run` confirmed
+both green again. **Lesson for `HANDOFF.md`'s gotchas**: a stash-revert
+proof that touches a file consumed *cross-package* (via a workspace's
+compiled `dist/`, not a same-package relative import) needs a rebuild of
+that package after the stash, or the proof silently tests against
+whatever was last built — a different, narrower trap than the two
+already-documented stash gotchas (untracked files silently no-op'ing;
+`--include-untracked` hiding new files), worth its own entry since this
+one produces a **false pass**, the most dangerous direction for a
+discrimination proof to be wrong in.
+
+**What was verified and how.** Two new real, end-to-end regression tests,
+neither mocking the layer under test: `apps/cli/src/commands.test.ts`
+("approve surfaces a real stash-restore conflict as a loud WARNING
+line") drives `cmdRun` → `cmdApprove` → `cmdStatus --json` through a real
+scripted HTTP provider and a real dirty repo, asserting the human output
+contains `WARNING:.*stash` and the JSON output's `stashRestoreWarning`
+field is set — and that the file on disk genuinely still has `<<<<<<<`
+markers. `apps/vscode/src/runTask.test.ts` ("surfaces a real stash-
+restore conflict through showWarning") drives the identical scenario
+through the real `AgentRpcClient`/`Agent` stack this file's other tests
+already use, asserting `ui.warnings` (the new `TaskUI.showWarning` sink)
+receives exactly one matching message. Full workspace gate after a
+genuinely clean rebuild: `tsc -b` clean, `eslint .` clean, `vitest run`
+**925/925** across 92 files (up from 923/923 — two new tests, zero
+regressions).
+
+**Net across this session's three units**: 921/921 → 925/925, three real,
+independently-reproduced-and-fixed bugs, all in different parts of the
+system (`RunBackend`'s absolute-path handling, `SnapshotBackup`'s diff-text
+generation, and `approve`/`reject`'s result plumbing — the last one
+pre-dating `RunBackend` entirely), plus a fourth genuine finding this unit
+made about the audit process itself (the stale-`dist` stash trap) that
+will save a future session from trusting a false-pass discrimination
+proof the same way.
