@@ -3956,3 +3956,151 @@ pre-dating `RunBackend` entirely), plus a fourth genuine finding this unit
 made about the audit process itself (the stale-`dist` stash trap) that
 will save a future session from trusting a false-pass discrimination
 proof the same way.
+
+### Fresh audit round: `packages/memory`, `packages/verification`, `packages/capability` fanned into for the first time as dedicated adversarial targets — one real bug found and fixed, several areas checked clean
+
+Per `CLAUDE.md`'s work-loop step 2c (no `DO FIRST` row queued going into
+this session; `HANDOFF.md` named `packages/sandbox`'s deeper mechanics,
+`packages/verification`'s pipeline/toolchain-detection, and
+`packages/capability`/`packages/memory` as areas not yet given a dedicated
+adversarial pass). Grepped `docs/PROJECT_LOG.md` first to confirm that
+framing: `packages/verification/src/cheat-detection.ts` had a round-3
+pass, but `toolchain.ts`/`pipeline.ts` hadn't; `packages/capability` and
+`packages/memory` had only incidental mentions, never a dedicated round.
+
+**Real, reproduced finding: `forgetToolchainFact` silently failed to force
+re-derivation, contradicting its own documented contract.**
+`packages/memory/src/toolchain-memory.ts`'s docstring for
+`forgetToolchainFact` promises "forces re-derivation of the whole record
+next time `getOrDetectToolchain` is called for this repo, since the
+record no longer looks complete/trustworthy as a unit" — the entire point
+of `agent memory forget <key>` (§10.3 point 5's sibling operation) is to
+let a human say "re-detect this, I don't trust what's cached." But the
+implementation only ever deleted `cached.facts[key]` and re-saved the
+record with its **existing** `manifestHash` untouched.
+`getOrDetectToolchain`'s cache-hit check
+(`cached.manifestHash === currentHash && !anyStale`) never looks at
+whether a fact is *missing* — only whether the manifest hash changed or a
+fact was explicitly marked `stale`. A forgotten fact is neither of those,
+so the very next `getOrDetectToolchain` call (manifest genuinely
+unchanged) read as a clean cache hit and returned the record with a
+silent hole where the forgotten fact used to be. For `test`/`build`/
+`lint`/`typecheck`, `factsToCommands` turns that hole into an `undefined`
+command — and `runPipeline`'s `runStage` treats an undefined command as
+`ran: false, passed: true` (§14.5's "skipped, not failed"). Concretely:
+`agent memory forget test` followed by a run with an unchanged manifest
+would silently **skip the test stage and report it as passed**, not
+re-detect it — exactly the kind of gap "verification is the truth oracle"
+(§10.3 point 3) exists to prevent, now reachable from the opposite
+direction (a human explicitly asking to forget, rather than a stale cache
+going unnoticed).
+
+**Reproduced for real before writing a fix**, per `CLAUDE.md`'s "prove it,
+don't assume it": added a regression test to the existing
+`showToolchainFact / forgetToolchainFact / correctToolchainFact` describe
+block in `toolchain-memory.test.ts` — forget the `test` fact, call
+`getOrDetectToolchain` again with the manifest untouched, assert
+`fromCache: false` and `commands.test` back to its detected value. Ran it
+against the pre-fix code first: failed exactly as hypothesized
+(`expected true to be false` — the call came back a cache hit).
+
+**Fix**: `forgetToolchainFact` now clears `cached.manifestHash` to `""`
+before saving. `computeManifestHash` always returns a full SHA-256 hex
+digest (64 chars, confirmed by the file's own "is the same for a repo
+with no manifest files at all, every time" test — hashing nothing still
+produces a real digest, never an empty string), so `""` can never
+coincidentally match a real hash; the next `getOrDetectToolchain` call is
+guaranteed to see `cached.manifestHash !== currentHash` and fall through
+to a full re-derive, which is exactly the "whole record" behavior the
+docstring already promised. `showToolchainFact`'s immediate
+"already-forgotten key reads back as undefined" behavior and "forgetting
+one fact doesn't disturb others" (both already covered by existing tests)
+are unaffected — neither reads `manifestHash`.
+
+**Verified and proven to discriminate, per `CLAUDE.md`'s stash-revert
+discipline, and checked explicitly against both documented false-pass
+traps.** Both `toolchain-memory.ts` (the fix) and its test file were
+tracked (`git status --short` showed `M`, not `??` — the untracked-file
+stash no-op trap doesn't apply). This test lives in the same package as
+the fix and is transformed directly from source by vitest (no
+`apps/cli`/`apps/vscode`-style cross-package `dist/` resolution in the
+path — confirmed by checking there is no CLI-level `.test.ts` exercising
+`agent memory forget` that would need a rebuild step; the regression test
+added here is the only consumer). `git stash push -- packages/memory/
+src/toolchain-memory.ts` reverted the fix (confirmed via `grep -n
+'manifestHash = ""'` coming back empty); the new test failed identically
+to the pre-fix reproduction. `git stash pop` restored the fix; the file's
+full suite passed 21/21. Full workspace gate: `tsc -b` clean, `eslint .`
+clean, `vitest run` **926/926** across 92 files (up from the 925/925
+baseline — one new test, zero regressions).
+
+**Other areas fanned into this round, checked and found clean (not a
+failure to find something — a legitimate, reportable outcome):**
+- **`packages/verification/src/toolchain.ts`** (`detectNode`/`detectPython`/
+  `detectRust`/`detectGo`, `applyAgentsMdOverrides`) — every derived
+  command is built from fixed string literals (`"pnpm run build"`,
+  `"pytest -q"`, …) keyed off a hardcoded package-manager/script-name
+  choice, never by concatenating untrusted file content into a shell
+  string; the one piece of genuinely external input in this file (AGENTS.md
+  override lines) is already scoped to reading from the run's *base
+  commit*, not the live model-editable worktree (round-3 finding, closed
+  in an earlier session — re-confirmed still true by re-reading `agent.ts`'s
+  `buildRunDeps` rather than trusting the earlier write-up). No injection
+  or trust-boundary gap found.
+- **`packages/verification/src/pipeline.ts`** (`runStage`/`runPipeline`) —
+  `spawnSync(command, { shell: true, ... })` with `command` as a single
+  string and no separate `args` array is exactly Node's documented
+  "hand the whole string to the shell" shape, not a `file`+`args` call
+  that `shell:true` could reinterpret unexpectedly; `command` itself is
+  always one of the fixed-shape strings `toolchain.ts` builds or an
+  AGENTS.md override (already trust-boundary-scoped, per above), never
+  raw model output. Timeout/output-budget handling and the "no command
+  configured" → `ran: false, passed: true` "skipped" semantics read
+  correctly for every stage. No bug found here directly — it's the
+  *consumer* of the bug above (an `undefined` command silently reading
+  as "skipped, passed"), not the source.
+- **`packages/capability/src/probe.ts`/`scoring.ts`/`resolve.ts`** — the
+  six §4.9 checks (diff accuracy, stop obedience, tool-protocol validity,
+  structured-output reliability, context probe, loop sanity) are each a
+  pure function of the model's own text/tool-call output, table-driven
+  and directly unit-testable via `FakeProvider`; `resolveCapability`'s
+  probed-vs-unprobed fallback matches ADR-015's "static defaults if probe
+  fails" migration note exactly, and the `0.75` unprobed-diff-accuracy
+  default is documented as deliberately matching the pre-adaptation-layer
+  status quo. No gap found.
+- **`packages/capability/src/store.ts`** (`safeFileName`, model-profile
+  persistence under `~/.config/clutchcode/models/`) — re-checked the
+  `safeFileName` flattening against a `../../etc/passwd`-shaped model id
+  by hand-tracing the regex (`[^a-zA-Z0-9._-]+` → `_`): every `/` (the
+  only OS path separator the regex doesn't already allow through) gets
+  collapsed to `_`, so the result can never contain a directory
+  separator regardless of how many `..` segments the input has — a
+  flattened id with literal dots left in it (e.g. `".._.._etc_passwd"`)
+  is still just one filename component once joined with `modelsDir`, not
+  a traversal. No bug found.
+- **`packages/memory`'s `correctToolchainFact`/monorepo-scope key
+  consistency** — re-traced `resolveMemoryCacheKeyPath` (`packages/
+  agent-api/src/memory.ts`) against `buildRunDeps`'s own
+  `memoryCacheKeyPath` computation to confirm the write path (a run) and
+  the inspect/correct path (`agent memory list/show/forget/correct`)
+  key off the *same* stable repo(+scope) path, not an ephemeral worktree
+  — they do. Noted, but not chased further: `correctToolchainFact`
+  computes its fresh `manifestHash` from that same stable repo(+scope)
+  path, which is the *actual on-disk* content a human runs `agent memory
+  correct` against — not necessarily bit-identical to what a run's
+  `detectFrom` (an ephemeral worktree checked out from a base commit) saw
+  if the stable repo has local uncommitted manifest edits at the moment
+  of correction. This is a real, narrow edge case (an over-eager
+  invalidation, not data loss or a security gap — the correction is
+  simply superseded by a fresh, correct re-detection sooner than ideal)
+  and is being recorded here rather than fixed speculatively, per
+  `CLAUDE.md`'s "prove it, don't assume it": no reproduction was
+  attempted this round (it needs a specific, fairly contrived precondition
+  — uncommitted manifest changes in the stable repo at correction time —
+  to manifest at all), so it is not escalated to a confirmed bug.
+
+**Deliberately not pursued further this round**: the `correctToolchainFact`
+hash-source edge case immediately above (recorded as a hypothesis, not
+reproduced); `packages/sandbox`'s deeper mechanics beyond what the
+existing seccomp/bwrap tests already cover — not reached this round,
+still open for a future pass per `HANDOFF.md`.
