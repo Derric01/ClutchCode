@@ -570,7 +570,31 @@ export class AgentLoop {
       const targetPath = (validated.value as { path?: unknown }).path;
       if (typeof targetPath === "string") {
         try {
-          this.deps.run.beforeEdit(targetPath);
+          // `RunBackend.beforeEdit`'s contract is a workspace-*relative*
+          // path (see its own doc comment's `relPath` param name), but the
+          // tool itself (`resolveInWorkspace`,
+          // packages/tools/src/workspace-path.ts) also accepts an
+          // *absolute* `path` argument, resolving it against
+          // `workspaceRoot` and allowing it through whenever it resolves
+          // inside. Mirror that same resolution here before calling
+          // `beforeEdit` — real, reproduced parity bug otherwise:
+          // `write_file`/`edit_file` called with an absolute path that
+          // legitimately resolves inside the workspace succeeded under the
+          // `git-worktree` backend (`beforeEdit` there is a no-op, so the
+          // tool's own more permissive check is all that ever runs) but
+          // failed outright with `"snapshot-failed"` under the `snapshot`
+          // backend, because `SnapshotBackup.snapshotBeforeFirstEdit`'s
+          // `assertSafeRelPath` rejects *every* absolute path unconditionally,
+          // with no regard for whether it's actually contained in the
+          // workspace — the exact same tool call behaving differently
+          // depending on which backend happened to be picked for this repo,
+          // for a call that both backends' own policies would otherwise
+          // allow. A path outside the workspace is unaffected by this
+          // change and still ends up rejected (now via the `".."`-segment
+          // check `path.relative` produces, same fail-closed outcome as
+          // before).
+          const relForBackup = path.isAbsolute(targetPath) ? path.relative(this.deps.run.workspaceRoot, targetPath) : targetPath;
+          this.deps.run.beforeEdit(relForBackup);
         } catch (e) {
           const message = e instanceof Error ? e.message : String(e);
           return {

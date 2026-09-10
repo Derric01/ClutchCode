@@ -1037,4 +1037,51 @@ describe("AgentLoop (end-to-end with a real non-git temp dir + the §13.4 snapsh
       fx.cleanup();
     }
   });
+
+  it("write_file with an absolute path resolving inside the workspace succeeds — same outcome as the git backend, not rejected by beforeEdit's relative-path validator", async () => {
+    // Real, reproduced parity bug (fixed in runToolCall): `resolveInWorkspace`
+    // (packages/tools/src/workspace-path.ts) accepts an absolute `path` tool
+    // argument and allows it through whenever it resolves inside the
+    // workspace — but `RunBackend.beforeEdit`'s contract is a
+    // workspace-relative path, and `SnapshotBackup.snapshotBeforeFirstEdit`'s
+    // `assertSafeRelPath` used to reject *every* absolute path
+    // unconditionally, with no regard for containment. That meant the exact
+    // same tool call (an absolute, in-workspace path) succeeded under the
+    // git-worktree backend but failed outright with "snapshot-failed" under
+    // this one — the same tool call behaving differently purely because of
+    // which backend happened to be picked for this repo. Confirmed via
+    // `git stash push -- agent-loop.ts` + re-run: this test fails
+    // (tool.result comes back `ok: false, errorCode: "snapshot-failed"`,
+    // and the file is never created) against the pre-fix code.
+    const fx = setupAgentLoopSnapshotFixture("run00000107");
+    try {
+      const absPath = path.join(fx.repoPath, "newfile.txt");
+      // Also applies FIX_EDIT so verification actually goes green and the
+      // run reaches DONE in one pass — the point under test is the
+      // write_file tool.result for the absolute-path call, not the repair
+      // loop, so keep the script's second turn from needing a third.
+      const provider = new FakeProvider([
+        toolCallTurn("c1", "write_file", JSON.stringify({ path: absPath, body: "hello\n" })),
+        toolCallTurn("c2", "edit_file", FIX_EDIT),
+        textTurn("done")
+      ]);
+      const state = createRunState({ runId: fx.run.runId, task: "write a new file and fix add()", provider: "fake", model: "fake" });
+
+      const events: RuntimeEvent[] = [];
+      const loop = new AgentLoop(
+        state,
+        { provider, tools: fx.tools, toolContext: fx.toolContext, run: fx.run, toolchainCommands: fx.toolchainCommands, evidenceDir: fx.evidenceDir },
+        { yesMode: true, onEvent: (e) => events.push(e) }
+      );
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("DONE");
+      const toolResult = events.find((e) => e.type === "tool.result" && e.tool === "write_file");
+      expect(toolResult).toMatchObject({ type: "tool.result", tool: "write_file", ok: true });
+      expect(fs.existsSync(absPath)).toBe(true);
+      expect(fs.readFileSync(absPath, "utf8")).toBe("hello\n");
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
 });

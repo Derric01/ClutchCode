@@ -14,13 +14,21 @@ import type { RunBackend } from "./run-backend.js";
  */
 export function commitApprovedRun(state: RunState, run: RunBackend, opts: ApproveOptions = {}): RunState {
   transition(state, "COMMITTING");
-  run.approve(opts);
+  // Real, reproduced gap this closes (see `RunState.stashRestoreWarning`'s
+  // own doc comment): `run.approve()`'s result used to be discarded here
+  // entirely, so a genuine stash-restore conflict at approve time — real
+  // `<<<<<<<` markers left in the user's working tree — reached `DONE`
+  // with zero indication anything needed attention.
+  const result = run.approve(opts);
+  state.mergedSha = result.mergedSha;
+  state.stashRestoreWarning = result.stashRestoreWarning;
   transition(state, "DONE");
   return state;
 }
 
 export function rejectRun(state: RunState, run: RunBackend): RunState {
   transition(state, "CANCELLED");
-  run.discard();
+  const result = run.discard();
+  state.stashRestoreWarning = result.stashRestoreWarning;
   return state;
 }

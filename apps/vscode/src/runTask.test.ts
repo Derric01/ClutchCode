@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { RunState } from "@clutchcode/agent-api";
@@ -21,24 +22,28 @@ function fakeUI(
   diffs: Array<{ runId: string; files: unknown[] }>;
   infos: string[];
   errors: string[];
+  warnings: string[];
   picks: RunState[][];
 } {
   const lines: string[] = [];
   const diffs: Array<{ runId: string; files: unknown[] }> = [];
   const infos: string[] = [];
   const errors: string[] = [];
+  const warnings: string[] = [];
   const picks: RunState[][] = [];
   return {
     lines,
     diffs,
     infos,
     errors,
+    warnings,
     picks,
     showOutputLine: (line) => lines.push(line),
     showDiff: (runId, files) => diffs.push({ runId, files }),
     askApproveOrReject: async () => opts.approveDecision ?? "later",
     showInfo: (m) => infos.push(m),
     showError: (m) => errors.push(m),
+    showWarning: (m) => warnings.push(m),
     pickRun: async (runs) => {
       picks.push(runs);
       return opts.pick ? opts.pick(runs) : runs[0]?.runId;
@@ -100,6 +105,43 @@ describe("runClutchCodeTask (§18.5 UX, over a real AgentRpcClient/Agent)", () =
       expect(files[0]!.path).toBe("feature.txt");
       expect(files[0]!.status).toBe("added");
       expect(files[0]!.after).toBe("v1\n");
+    } finally {
+      await scripted.close();
+    }
+  }, 30_000);
+
+  it("surfaces a real stash-restore conflict through showWarning — a real gap this session's audit found and fixed", async () => {
+    // Real, reproduced gap (see `RunState.stashRestoreWarning`'s own doc
+    // comment in `@clutchcode/runtime`): §13.4's default dirty-tree
+    // handling auto-stashes the user's uncommitted local changes before a
+    // run starts. If the run itself edits the same file and the later
+    // stash-restore conflicts with the run's own result, that warning used
+    // to be computed by `@clutchcode/git` and then discarded before ever
+    // reaching the VS Code UI — a run could show "approved and committed"
+    // while the user's own working tree sat with literal `<<<<<<<`
+    // conflict markers in it. Driven through the *real* `AgentRpcClient`/
+    // `Agent` this whole file already uses, not a mock of any layer.
+    fs.writeFileSync(path.join(repoPath, "README.md"), "user's local uncommitted edit\n", "utf8");
+
+    const scripted = await startScriptedServer([
+      [
+        sseChunk({
+          choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "write_file", arguments: JSON.stringify({ path: "README.md", body: "run-produced content\n" }) } }] } }]
+        }),
+        sseChunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+        "data: [DONE]\n\n"
+      ],
+      [sseChunk({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }), "data: [DONE]\n\n"]
+    ]);
+    try {
+      const ui = fakeUI({ approveDecision: "approve" });
+      await runClutchCodeTask(client, { task: "rewrite the README", providerKind: "openai-compatible", model: "gpt-test", baseUrl: scripted.baseUrl }, ui);
+
+      expect(ui.infos.some((m) => m.includes("approved and committed"))).toBe(true); // the merge itself genuinely succeeded
+      expect(ui.warnings).toHaveLength(1);
+      expect(ui.warnings[0]).toMatch(/stash/i);
+      // The conflict is real, on disk, right now — not just a string in a warning.
+      expect(fs.readFileSync(path.join(repoPath, "README.md"), "utf8")).toContain("<<<<<<<");
     } finally {
       await scripted.close();
     }

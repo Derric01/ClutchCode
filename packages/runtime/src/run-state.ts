@@ -170,6 +170,26 @@ export interface RunState {
   lastError?: { class: string; detail: string };
   escalationReason?: string;
 
+  /**
+   * §13.1/§13.4 `agent approve`/`agent reject`: set when the run's approve/
+   * discard had to restore a `handleDirtyTree` auto-stash (§13.4's default
+   * dirty-working-tree strategy) and that restore hit a real conflict —
+   * `RunBackend.approve()`/`.discard()`'s own `stashRestoreWarning` (see
+   * `@clutchcode/git`'s `restoreStashIfAny`, whose own doc comment states
+   * its whole purpose is "make that fact visible to the caller instead of
+   * masking it"). Real, reproduced gap this field closes: `approve.ts`'s
+   * `commitApprovedRun`/`rejectRun` used to discard that return value
+   * entirely (since Phase 1 — `cdc1500`, not something the `RunBackend`
+   * refactor introduced), so a genuine stash-pop conflict — literal
+   * `<<<<<<<` markers left in the user's own working tree — reached `DONE`/
+   * `CANCELLED` with zero indication anything needed attention. `mergedSha`
+   * below comes from the exact same return value and is threaded through
+   * for the same reason, though it carries no data-loss risk on its own.
+   */
+  stashRestoreWarning?: string;
+  /** `agent approve`'s resulting commit sha (`git-worktree` backend only — the `snapshot` backend has nothing to merge, see `RunBackend.approve`'s doc comment). Informational; unset for a `snapshot`-backend run or a run that made no edits (a no-op squash). */
+  mergedSha?: string;
+
   createdAt: number;
   updatedAt: number;
 }

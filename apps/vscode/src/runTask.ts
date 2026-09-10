@@ -17,6 +17,15 @@ export interface TaskUI {
   askApproveOrReject(): Promise<"approve" | "reject" | "later">;
   showInfo(message: string): void;
   showError(message: string): void;
+  /**
+   * A real, non-fatal problem worth the user's attention but not an error —
+   * currently only `handlePostRunState`'s `stashRestoreWarning` surfacing
+   * (see `RunState.stashRestoreWarning`'s own doc comment in
+   * `@clutchcode/runtime`). Kept distinct from `showError` since a stash-
+   * restore conflict means the approve/reject itself already succeeded;
+   * conflating the two would misreport a completed operation as failed.
+   */
+  showWarning(message: string): void;
   /** §18.5 polish: a run-picker instead of typing a run id by hand. `runs` is pre-filtered by the caller; returns undefined if the user cancels. */
   pickRun(runs: RunState[], placeholder: string): Promise<string | undefined>;
 }
@@ -49,11 +58,18 @@ async function handlePostRunState(client: AgentRpcClient, state: RunState, ui: T
 
     const decision = await ui.askApproveOrReject();
     if (decision === "approve") {
-      await client.request("approve", { runId: state.runId, squash: true });
+      // Real, reproduced gap (see `RunState.stashRestoreWarning`'s own doc
+      // comment): a stash-restore conflict at approve time leaves literal
+      // `<<<<<<<` markers in the user's own working tree. The RPC response
+      // already carries this field — no wire-contract change needed — this
+      // was purely the response being discarded here without being read.
+      const approved = await client.request<RunState>("approve", { runId: state.runId, squash: true });
       ui.showInfo(`ClutchCode: run ${state.runId} approved and committed.`);
+      if (approved.stashRestoreWarning) ui.showWarning(`ClutchCode: ${approved.stashRestoreWarning}`);
     } else if (decision === "reject") {
-      await client.request("reject", { runId: state.runId });
+      const rejected = await client.request<RunState>("reject", { runId: state.runId });
       ui.showInfo(`ClutchCode: run ${state.runId} rejected.`);
+      if (rejected.stashRestoreWarning) ui.showWarning(`ClutchCode: ${rejected.stashRestoreWarning}`);
     } else {
       ui.showInfo(`ClutchCode: run ${state.runId} is awaiting your review — approve/reject it later from the run list.`);
     }

@@ -6,44 +6,86 @@ conventions (build/test/lint, testing philosophy, quality bar) — this
 file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-09-10
-**Branch:** `claude/start-work-handoff-referral-52eyj1`. Merged **seven
-times** this project's history (#17–#23) — restarted from `main`'s tip
-after each, most recently at `ea85e52` ("Merge pull request #23").
+**Branch:** `claude/start-work-handoff-referral-52eyj1`. Merged **eight
+times** this project's history (#17–#24) — restarted from `main`'s tip
+after each, most recently at `992b560` ("Merge pull request #24").
 **Check a PR's actual state before assuming a push lands on it**
 (`pull_request_read`, or `git merge-base --is-ancestor <head> origin/main` —
 trust this over the API's `merged` field, which has repeatedly read `false`
 on PRs a `merged_at` timestamp and git ancestry both confirm are merged)
-before every push, not once per session — this has now mattered eight times.
-**Latest commit:** the `DO FIRST` row — **full non-git `AgentLoop` execution
-path (§13.4, ADR-004)** — designed and fully implemented, not just
-designed. A new `RunBackend` interface (`packages/runtime/src/run-
-backend.ts`) abstracts the four git-specific call sites `AgentLoop` used to
-call directly (`checkpoint`/`diffAgainstBase`/`diffStat`/`approveRun`),
-with two real implementations: `GitWorktreeRunBackend` (unchanged git
-behavior, just wrapped) and `SnapshotRunBackend` (built on `SnapshotBackup`
-plus a new `git diff --no-index`-backed diff generator, so cheat detection
-parses snapshot-backend diffs with zero format-specific branching).
-`Agent.run()` now builds whichever backend `isGitRepo` calls for, instead
-of refusing; every run-lifecycle method (`diff`/`diffFiles`/`approve`/
-`reject`/`checkpoints`/`rollback`) goes through the backend; `Agent.pr()`
-refuses clearly for the non-git case (a PR needs a git remote that doesn't
-exist). Two real bugs found and fixed via genuine reproduction, both
-stash-revert-proven: `git diff --no-index`'s exit-1-means-found-a-diff
-semantics was silently discarding the diff text through `git()`'s shared
-`allowFailure`, and `SnapshotBackup`'s "already snapshotted" bookkeeping
-lived only in an in-memory `Set`, invisible the moment `agent-api`
-reconstructs the backend in a fresh process (exactly what `agent diff`/
-`approve`/`reject` routinely do) — fixed by deriving state from disk
-instead. See `docs/PROJECT_LOG.md`'s newest entry for the full design
-rationale, the blast-radius trace (including one consumer — `evals/src/
-replay.ts` — an initial grep sweep missed, caught by the full-workspace
-`tsc -b`), and exactly which behaviors are deliberately, honestly
-*different* between the two backends (not just re-plumbed) versus which
-are a deliberate, spec-grounded scope limit (single-point rollback, no PR
-equivalent).
-**PR:** **none currently open as of this snapshot.** Push next, then open one —
-do not stack more unmerged commits on this branch without a PR carrying them
-(see the branch note above for why that's worth repeating).
+before every push, not once per session — this has now mattered eight-plus
+times.
+**Latest commits:** a fresh audit round (per `CLAUDE.md`'s work-loop step
+2c — no `DO FIRST` row was queued going into this session) fanning out
+across the newly-merged `RunBackend`/`SnapshotRunBackend` surface (PR
+#24), ACP-cancellation/`RunBackend` composition, and a spot-check of
+`packages/tools`/CLI arg parsing. **Two real, reproduced bugs found and
+fixed, both in the `snapshot`-backend (non-git, §13.4) path, both
+stash-revert-proven:**
+1. `write_file`/`edit_file` called with an absolute path that legitimately
+   resolves *inside* the workspace succeeded under the `git-worktree`
+   backend but failed outright with `errorCode: "snapshot-failed"` under
+   the `snapshot` backend, for the exact same call — `agent-loop.ts`'s
+   `runToolCall` passed the model's raw, unmodified `path` argument
+   straight into `RunBackend.beforeEdit`, whose contract is
+   workspace-*relative*, while the tool itself (`resolveInWorkspace`)
+   explicitly supports and allows an absolute in-workspace path through.
+   Fixed by normalizing an absolute `targetPath` to workspace-relative
+   before calling `beforeEdit`. A genuinely-outside absolute path is
+   unaffected (still rejected, via the `".."`-segment check now instead
+   of the bare `path.isAbsolute` one — same fail-closed outcome).
+2. `SnapshotBackup.runNoIndexDiff` could silently corrupt real file
+   content in `diffText()`/`diffFiles()` — the exact text §14.6's
+   `detectCheats` treats as ground truth for what changed. It rewrote
+   git's absolute-path headers back to `relPath` via a literal
+   `.split().join()` over the **entire** raw diff output, headers and
+   hunk body both; a content line that happens to equal the backup file's
+   own stripped absolute path got silently swapped for the bare
+   `relPath` too. Confirmed with a direct reproduction against
+   `SnapshotBackup` alone (no model needed — a pure string-substitution
+   bug). Fixed by scoping the substitution to the header lines only
+   (everything before the first `@@` hunk marker); the hunk body is now
+   passed through byte-for-byte, untouched. This was flagged as an
+   unescalated *hypothesis* earlier in this same session's audit
+   ("low-risk-in-practice", not reproduced) — trying it directly, cheaply,
+   confirmed it in one shot; see `docs/PROJECT_LOG.md`'s newest entry for
+   why the earlier framing undersold it.
+
+A **third** bug, found while checking the CLI's presentation of the
+`RunBackend` surface rather than its mechanics, turned out to **predate
+`RunBackend` entirely** (traced to `cdc1500`, the first Phase 1 commit) —
+kept in scope per `CLAUDE.md`'s "fix a real bug you find along the way":
+3. `approve`/`reject` silently discarded `RunBackend.approve()`/
+   `.discard()`'s `stashRestoreWarning` — the warning `@clutchcode/git`'s
+   `restoreStashIfAny` exists specifically to surface when restoring a
+   `handleDirtyTree` auto-stash after approve/reject genuinely conflicts
+   with what the run produced. A run could reach a clean `DONE` while the
+   user's own working tree had real `<<<<<<<` markers in it, with zero
+   indication anywhere — CLI, `--json`, or VS Code. Fixed end to end:
+   `RunState` gains `stashRestoreWarning?`/`mergedSha?`; `approve.ts`
+   captures and assigns them (root-cause fix); the CLI prints a loud
+   `WARNING:` line and includes both fields in `--json`; the VS Code
+   `TaskUI` gains a `showWarning` method wired into both the orchestrated
+   (`runClutchCodeTask`) and standalone approve/reject command paths. The
+   RPC wire format needed no change — the field already rode along on
+   `RunState`, unread on the receiving end. **A real stale-`dist`
+   false-pass was caught mid-proof**, not trusted: the first stash-revert
+   attempt showed both new regression tests passing even with the
+   root-cause fix reverted, because `apps/cli`/`apps/vscode` resolve
+   `@clutchcode/runtime` through its compiled `dist/`, which the stash
+   (a source-only revert) didn't touch — see the new gotcha below and
+   `docs/PROJECT_LOG.md`'s newest entry for the full sequence.
+
+Several other fanned-into areas — `SnapshotBackup`'s path-traversal
+defenses, the ACP-cancellation/`RunBackend` composition, `packages/
+tools`'s symlink handling, CLI arg parsing, `cmdCheckpoints`'s truncated-
+sha display (checked against `Agent.rollback`'s matcher and confirmed
+*not* a bug — a real prefix match handles it) — checked clean; see
+`docs/PROJECT_LOG.md`'s three newest entries for the full per-area detail.
+**PR:** [**#25**](https://github.com/Derric01/ClutchCode/pull/25), open
+against `main`. Push any further work in this session to it (it already
+carries all three fixes above as of this snapshot) rather than opening a
+second PR for this branch.
 **Phase:** Phase 1 shipped (§21) — one agent, one default workflow, three provider
 adapters, SEARCH/REPLACE edits with fallback, worktree isolation, deterministic
 verification with cheat detection, terminal CLI. **Phase 2 in progress:** the
@@ -52,7 +94,7 @@ selector §4.4) is wired into the live loop; workflow engine §8.1/§8.2, VS Cod
 §18.5, credentials §5.1, sandbox Tier 1 §12.5/§12.6, the §16 eval scoreboard,
 the §16.4 naked-vs-harness A/B, the ACP editor binding, and real run
 cancellation landed early.
-**Test suite (locally):** 921/921 passing, 92 test files, clean `tsc -b`, clean
+**Test suite (locally):** 925/925 passing, 92 test files, clean `tsc -b`, clean
 `eslint .` — and **0 skipped**: bwrap genuinely confines in this dev container,
 so every real Tier 1/seccomp test still runs here.
 **CI — GREEN**, since run [#12](https://github.com/Derric01/ClutchCode/actions/runs/33593109279)
@@ -103,14 +145,22 @@ project's standard (real tests, honest verification flags), not a
 loose "MVP" estimate.
 
 **No `DO FIRST` tag is set right now — say so plainly, don't invent one.**
-The row that carried it (full non-git `AgentLoop` execution path) is done
-(see the snapshot header / `docs/PROJECT_LOG.md`'s newest entry). Every
-row below is genuinely gated — a host this environment doesn't have, a
-human/ADR decision, or explicitly out of scope — checked freshly this
-session, not inherited from the previous snapshot's framing. A future
-session should re-run a review round (per `CLAUDE.md`'s work-loop step 2c)
-to surface the next genuinely-unblocked row rather than assume the table
-below is exhaustive.
+This session ran the audit round the previous snapshot called for (per
+`CLAUDE.md`'s work-loop step 2c) instead of picking a table row — see the
+snapshot header / `docs/PROJECT_LOG.md`'s three newest entries for the
+three real bugs it found and fixed (an absolute-path parity gap in
+`RunBackend.beforeEdit`; a real diff-text content-corruption bug in
+`SnapshotBackup.runNoIndexDiff`; a pre-Phase-1 gap where `approve`/
+`reject` silently discarded a real stash-restore-conflict warning) and the
+several other areas it checked and found clean. None of the three fixes
+unblocked or otherwise changed any row below — every row remains
+genuinely gated — a host this environment doesn't have, a human/ADR
+decision, or explicitly out of scope — checked freshly this session, not
+inherited from the previous snapshot's framing. A future session should
+either continue fanning the audit into areas this round didn't reach (grep
+`docs/PROJECT_LOG.md` for
+what's been covered vs. not) or re-run a fresh review round, rather than
+assume either the table below or this round's coverage is exhaustive.
 
 | Item | Spec ref | Rough effort | Notes |
 |---|---|---|---|
@@ -405,6 +455,33 @@ below is exhaustive.
   `npm test` spawn) — don't trust a race against instantaneous scripted
   work, even across a handful of manual re-runs; it can look flake-free
   by coincidence and still be structurally guaranteed to lose.
+- **A stash-revert proof that touches a file consumed *cross-package*
+  needs a rebuild of that package after the stash, or it can produce a
+  false pass — the most dangerous direction for a discrimination proof to
+  be wrong in.** `apps/cli`/`apps/vscode` resolve `@clutchcode/runtime`
+  (and every other internal package) through its published `dist/`
+  (`package.json`'s `"main"`), not the TS source directly — unlike a test
+  living *inside* the same package, which vitest transforms straight from
+  `.ts`. Bit the `approve`/`reject` stash-restore-warning fix's own
+  discrimination proof directly: `git stash push --
+  packages/runtime/src/approve.ts` correctly reverted the source (`grep`
+  confirmed the fix's own symbols were gone), but the two new regression
+  tests in `apps/cli`/`apps/vscode` **passed anyway** — `packages/
+  runtime/dist/approve.js`, compiled *before* the stash, still had the
+  fix, and neither test's import path ever re-read the source. Caught
+  before being trusted (`grep -n stashRestoreWarning packages/runtime/
+  dist/approve.js` still matched post-stash), not after. Fixed the proof
+  by running `npx tsc -b packages/runtime` after the stash — only then
+  did both tests fail exactly as predicted. This is a **different** trap
+  from the two already-documented stash gotchas above (`git stash push
+  --include-untracked` hiding new files; a plain `git stash push -- <path>`
+  silently no-op'ing on a never-`git add`ed file) — those two both fail
+  loud (the test stays green for an obviously-wrong reason, or the stash
+  visibly does nothing); this one fails *quiet*, looking exactly like a
+  correct, successful discrimination proof. Any stash-revert proof for a
+  fix whose test lives in a **different** workspace package than the fix
+  itself needs an explicit rebuild step before trusting the "it failed as
+  predicted" result.
 
 ## How to resume
 

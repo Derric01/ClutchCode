@@ -68,7 +68,15 @@ function summarizeRunState(state: RunState): Record<string, unknown> {
     repairIterations: state.repairIterations,
     verificationResults: state.verificationResults,
     escalationReason: state.escalationReason,
-    lastError: state.lastError
+    lastError: state.lastError,
+    // §13.1/§13.4 `agent approve`/`agent reject`: real, reproduced gap
+    // closed — see `RunState.stashRestoreWarning`'s own doc comment. Only
+    // set on a run that actually went through approve/reject; included
+    // unconditionally here (like every other optional field above) so a
+    // `--json` consumer sees a stable key shape rather than one that
+    // appears/disappears.
+    mergedSha: state.mergedSha,
+    stashRestoreWarning: state.stashRestoreWarning
   };
 }
 
@@ -85,6 +93,16 @@ function formatRunState(state: RunState, json?: boolean): string {
   }
   if (state.escalationReason) lines.push(`reason: ${state.escalationReason}`);
   if (state.lastError) lines.push(`last error: [${state.lastError.class}] ${state.lastError.detail}`);
+  if (state.mergedSha) lines.push(`merged: ${state.mergedSha.slice(0, 10)}`);
+  // Deliberately loud, not folded in among the routine lines above — a
+  // stash-restore conflict means the user's own working tree now has real
+  // `<<<<<<<` conflict markers in it, sitting on top of whatever the run
+  // itself just did. Real, reproduced gap: this used to be computed by
+  // `@clutchcode/git`'s `restoreStashIfAny` and then discarded before ever
+  // reaching here (see `RunState.stashRestoreWarning`'s doc comment) — a
+  // run could reach a clean-looking `DONE` while this sat unresolved on
+  // disk with no indication anything needed attention.
+  if (state.stashRestoreWarning) lines.push(`WARNING: ${state.stashRestoreWarning}`);
   return lines.join("\n");
 }
 
