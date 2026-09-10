@@ -6,28 +6,42 @@ conventions (build/test/lint, testing philosophy, quality bar) — this
 file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-09-10
-**Branch:** `claude/start-work-handoff-referral-52eyj1`. Merged **five times**
-this project's history (#17, #18, #19, #20, #21) — restarted from `main`'s tip
-after each, most recently at `3c48456` ("Merge pull request #21"), discovered
-**mid-unit** this round (uncommitted work was already in progress) —
-handled with `git stash push -u` (the `-u` matters: the new files were
-untracked) before the restart, `git stash pop` after, full gate re-run to
-confirm the pop carried over cleanly. **Check a PR's actual state before
-assuming a push lands on it** (`pull_request_read`, or `git merge-base
---is-ancestor <head> origin/main` — trust this over the API's `merged` field,
-which has repeatedly read `false` on PRs a `merged_at` timestamp and git
-ancestry both confirm are merged) before every push, not once per session —
-this is now the sixth time it's mattered.
-**Latest commit:** ECC studied for two unrelated asks at once (a README
-marketing-pattern comparison and a "add skills to our harness" request) —
-disentangled via two rounds of `AskUserQuestion` before writing anything,
-since "ECC" named no URL and this project turned out to have no web frontend
-at all (`README.md` confirmed as the actual marketing page). ECC itself
-turned out to be a Claude-Code skills/harness installer (286 `skills/`), not
-a landing-page reference — reframed the two tracks correctly. **README:**
-two GitHub native `[!NOTE]`/`[!IMPORTANT]` alert boxes added to promote two
-already-stated caveats (no npm yet, no VTCR benchmark published) — zero new
-claims. **Skills:** 4 of 6 sampled ECC skills rejected on inspection (each
+**Branch:** `claude/start-work-handoff-referral-52eyj1`. Merged **six times**
+this project's history (#17, #18, #19, #20, #21, #22) — restarted from
+`main`'s tip after each, most recently at `2802825` ("Merge pull request
+#22"), discovered **mid-unit** for the second checkpoint in a row (uncommitted
+work already in progress both times) — handled both times with `git stash
+push -u` (the `-u` matters: the new files were untracked) before the restart,
+`git stash pop` after, full gate re-run to confirm the pop carried over
+cleanly. **Check a PR's actual state before assuming a push lands on it**
+(`pull_request_read`, or `git merge-base --is-ancestor <head> origin/main` —
+trust this over the API's `merged` field, which has repeatedly read `false`
+on PRs a `merged_at` timestamp and git ancestry both confirm are merged)
+before every push, not once per session — this is now the seventh time it's
+mattered.
+**Latest commit:** ECC work continued across three checkpoints on the same
+PR. (1) A **security audit** of ECC's executable surface, requested before
+considering wider reuse — install path, npm lifecycle scripts (none exist —
+the check that matters most for supply-chain risk), the always-on hook
+chain (traced end to end: explicit path-traversal guards, spawn timeouts,
+zero real `eval()`), MCP defaults, and a full-corpus scan of all 286 skills
+for prompt-injection content. Verdict: clean, sampled honestly as a sampled
+audit rather than an exhaustive one — see `research/repos/ecc.md`. (2) A
+**second skills pass**, 10 more candidates sampled with the same rigor as
+the first: 1 of 10 adopted (`code-tour`, genuinely additive — a real editor
+walkthrough format, no collision); 9 rejected with per-skill reasoning
+(mostly the same collision shape as round one — a plausible-sounding skill
+turns out to collide with a product feature or bespoke convention this
+project already built more specifically). (3) `tests/source-hygiene.test.ts`
+— written earlier this session to catch exactly this — **caught a real bug
+in this session's own previous-round work**: the `error-handling` skill's
+sentence explaining "use an escape sequence, never the raw byte" had, iron-
+ically, the literal raw NUL byte typed into it. Found by running the full
+gate rather than assuming a docs-only change couldn't fail it; fixed the
+same way the original bug was fixed. Full gate re-confirmed clean after.
+**README (round 1):** two GitHub native `[!NOTE]`/`[!IMPORTANT]` alert boxes
+added to promote two already-stated caveats (no npm yet, no VTCR benchmark
+published) — zero new claims. **Skills (round 1):** 4 of 6 sampled ECC skills rejected on inspection (each
 collided with a stricter existing convention — our own `/security-review`,
 ADRs already inside `PROJECT_SPEC.md`, our stricter testing philosophy, our
 firmer git rules); 2 (`error-handling`, `codebase-onboarding`) adapted
