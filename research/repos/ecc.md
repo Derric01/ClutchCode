@@ -83,3 +83,80 @@ What was actually reused is the **idea**, adapted to what this repo is:
 MIT — permissive, no attribution burden beyond what's already given here
 and in each skill file's own note. The constraint above (rewrite, don't
 copy) comes from this project's own policy, not from ECC's license.
+
+## Security audit of ECC's executable surface (2026-09-10)
+
+Requested explicitly before any decision to expand what's reused from
+this project. Scope: the parts of ECC that **run automatically or on
+install**, plus a full-corpus scan of the 286 skill files for
+prompt-injection-style content — not a line-by-line review of all
+~11.5k lines across every hook script (disproportionate to what's
+actually been adopted: two skills' *text*, none of ECC's executable
+infrastructure). Findings, not assertions — each is what was actually
+read, not inferred from filenames.
+
+**Install path (`install.sh`, `install.ps1`).** Clean. Both resolve
+symlinks, run `npm install` in the local clone, and `exec`/invoke a
+local `scripts/install-apply.js` — no remote-fetch-and-execute, no
+`curl | sh` self-install.
+
+**`package.json` lifecycle scripts.** No `preinstall`, `install`,
+`postinstall`, or `prepare` script. This is the check that matters most
+for a supply-chain read: nothing auto-executes the moment `npm install
+ecc-universal` runs, before a user has looked at anything.
+
+**The always-on hook chain** (`hooks/hooks.json` wires 24 registrations
+across every lifecycle event — `PreToolUse`, `PostToolUse`, `Stop`,
+`SessionStart`/`End`, mostly `.*` matchers, so this is the highest real
+attack surface: code that runs without explicit invocation). Traced the
+full chain a Bash command actually goes through: the inline bootstrap →
+`plugin-hook-bootstrap.js` → `bash-hook-dispatcher.js` →
+`block-no-verify.js` / `gateguard-fact-force.js` / etc. All read in full
+or substantially. Findings:
+- `plugin-hook-bootstrap.js` has an explicit path-traversal guard
+  (`resolveTarget` throws on any resolved path escaping the plugin
+  root), timeouts on every spawned process, no network calls, no real
+  `eval()`/`new Function()` anywhere in the directory (grepped
+  precisely — an earlier combined pattern had conflated this with the
+  much more common and completely benign `child_process` usage; corrected
+  before concluding anything from it).
+- `block-no-verify.js` is actively protective: it blocks `git commit
+  --no-verify` and `-c core.hooksPath=` specifically to stop an agent
+  from bypassing the user's own pre-commit/pre-push hooks. The opposite
+  of a risk.
+- The one hook with a real network call (`plan-canvas-pending.js`)
+  talks to `127.0.0.1` only — a local server ECC itself runs for its
+  "Plan Canvas" UI feature, not an external destination.
+- `insaits-security-wrapper.js` (an oddly-specific name that warranted a
+  direct look) is gated behind `ECC_ENABLE_INSAITS`, defaults to a
+  pure pass-through, and isn't wired into either shipped `hooks.json` —
+  present but inert unless a user explicitly opts in.
+
+**`mcp-configs/mcp-servers.json`.** A template with placeholder
+credential values (`YOUR_GITHUB_PAT_HERE` etc.) a user fills in
+themselves. Every entry is either an official, recognizable MCP server
+package (`@modelcontextprotocol/server-github`,
+`@modelcontextprotocol/server-memory`, `@supabase/mcp-server-supabase`)
+or an ECC-specific tool documented as opt-in ("Not enabled by default,"
+"ECC itself performs no browser automation"). Nothing connects to
+anything by default.
+
+**All 286 `skills/*/SKILL.md`, scanned for prompt-injection-style
+content** (phrases like "ignore previous instructions," "without the
+user's knowledge," "exfiltrate," fetch-and-pipe-to-shell patterns).
+Three "exfiltrat(e)" hits, all in `docker-patterns`, `security-bounty-
+hunter`, and `security-scan` — each one **describing a threat to defend
+against**, not an instruction. Two `curl | sh` hits, in `github-ops` and
+`tdd-workflow` — both are **explicit warnings not to run this pattern**
+from untrusted PR/issue/plan content. No genuine injection-style
+instruction found anywhere in the corpus.
+
+**Verdict.** Nothing sampled contradicts ECC being what it presents as:
+a real, actively maintained, security-conscious project. This is a
+**sampled** audit of the highest-risk categories (install path, the
+always-on hook chain, MCP defaults, a full-corpus injection scan), not
+an exhaustive review of every script — stated honestly rather than
+implying more coverage than was done. It does not change the ADR-016
+posture above: a clean security audit says the *content* is safe to
+read and learn from, not that copying it verbatim satisfies this
+project's own reuse policy, which is a separate, non-security question.
