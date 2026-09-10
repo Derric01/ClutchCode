@@ -160,6 +160,13 @@ describe("showToolchainFact / forgetToolchainFact / correctToolchainFact", () =>
     expect(showToolchainFact(repo, "build", { configDir })?.value).toBe("npm run build");
   });
 
+  it("forgetting a fact forces re-derivation on the next getOrDetectToolchain call, even with an unchanged manifest (real bug repro)", () => {
+    forgetToolchainFact(repo, "test", { configDir });
+    const result = getOrDetectToolchain(repo, repo, undefined, { configDir });
+    expect(result.fromCache).toBe(false); // a forgotten fact must not look like a valid cache hit
+    expect(result.commands.test).toBe("npm run test"); // re-detected, not silently left missing forever
+  });
+
   it("correct overwrites a fact's value with a human-authored one and records provenance", () => {
     correctToolchainFact(repo, "test", "pytest -q --maxfail=1", { configDir });
     const fact = showToolchainFact(repo, "test", { configDir });

@@ -5,87 +5,54 @@ session; update it before you stop. See `CLAUDE.md` for timeless working
 conventions (build/test/lint, testing philosophy, quality bar) — this
 file is the time-stamped snapshot of where the project actually stands.
 
-**Snapshot as of:** 2026-09-10
-**Branch:** `claude/start-work-handoff-referral-52eyj1`. Merged **eight
-times** this project's history (#17–#24) — restarted from `main`'s tip
-after each, most recently at `992b560` ("Merge pull request #24").
+**Snapshot as of:** 2026-09-10 (session 2)
+**Branch:** `claude/start-work-handoff-referral-52eyj1`. Merged **nine
+times** this project's history (#17–#25) — restarted from `main`'s tip
+after each, most recently at `0075540` ("Merge pull request #25").
 **Check a PR's actual state before assuming a push lands on it**
 (`pull_request_read`, or `git merge-base --is-ancestor <head> origin/main` —
 trust this over the API's `merged` field, which has repeatedly read `false`
 on PRs a `merged_at` timestamp and git ancestry both confirm are merged)
-before every push, not once per session — this has now mattered eight-plus
+before every push, not once per session — this has now mattered nine-plus
 times.
-**Latest commits:** a fresh audit round (per `CLAUDE.md`'s work-loop step
-2c — no `DO FIRST` row was queued going into this session) fanning out
-across the newly-merged `RunBackend`/`SnapshotRunBackend` surface (PR
-#24), ACP-cancellation/`RunBackend` composition, and a spot-check of
-`packages/tools`/CLI arg parsing. **Two real, reproduced bugs found and
-fixed, both in the `snapshot`-backend (non-git, §13.4) path, both
-stash-revert-proven:**
-1. `write_file`/`edit_file` called with an absolute path that legitimately
-   resolves *inside* the workspace succeeded under the `git-worktree`
-   backend but failed outright with `errorCode: "snapshot-failed"` under
-   the `snapshot` backend, for the exact same call — `agent-loop.ts`'s
-   `runToolCall` passed the model's raw, unmodified `path` argument
-   straight into `RunBackend.beforeEdit`, whose contract is
-   workspace-*relative*, while the tool itself (`resolveInWorkspace`)
-   explicitly supports and allows an absolute in-workspace path through.
-   Fixed by normalizing an absolute `targetPath` to workspace-relative
-   before calling `beforeEdit`. A genuinely-outside absolute path is
-   unaffected (still rejected, via the `".."`-segment check now instead
-   of the bare `path.isAbsolute` one — same fail-closed outcome).
-2. `SnapshotBackup.runNoIndexDiff` could silently corrupt real file
-   content in `diffText()`/`diffFiles()` — the exact text §14.6's
-   `detectCheats` treats as ground truth for what changed. It rewrote
-   git's absolute-path headers back to `relPath` via a literal
-   `.split().join()` over the **entire** raw diff output, headers and
-   hunk body both; a content line that happens to equal the backup file's
-   own stripped absolute path got silently swapped for the bare
-   `relPath` too. Confirmed with a direct reproduction against
-   `SnapshotBackup` alone (no model needed — a pure string-substitution
-   bug). Fixed by scoping the substitution to the header lines only
-   (everything before the first `@@` hunk marker); the hunk body is now
-   passed through byte-for-byte, untouched. This was flagged as an
-   unescalated *hypothesis* earlier in this same session's audit
-   ("low-risk-in-practice", not reproduced) — trying it directly, cheaply,
-   confirmed it in one shot; see `docs/PROJECT_LOG.md`'s newest entry for
-   why the earlier framing undersold it.
+**Latest commit (this session):** a fresh audit round (per `CLAUDE.md`'s
+work-loop step 2c — no `DO FIRST` row queued; PR #25 already merged
+before this session started, branch restarted clean from its tip) fanning
+out into `packages/memory`, `packages/verification`, and
+`packages/capability` — areas the previous round's snapshot explicitly
+named as not yet given a dedicated adversarial pass. **One real,
+reproduced bug found and fixed, stash-revert-proven:**
+`forgetToolchainFact` (`packages/memory/src/toolchain-memory.ts`) deleted
+the forgotten fact but left `manifestHash` untouched, so the very next
+`getOrDetectToolchain` call (manifest unchanged) read as a clean cache hit
+and returned the record with the forgotten fact silently missing — for
+`test`/`build`/`lint`/`typecheck` that becomes an `undefined` command,
+which `runPipeline` treats as "skipped, passed." `agent memory forget
+test` followed by a run could silently skip the test stage and report it
+passed, instead of re-detecting it as the function's own docstring
+promises. Fixed by clearing `manifestHash` to `""` (a value
+`computeManifestHash`'s real SHA-256 digest can never produce) so the
+next call is guaranteed to miss and fully re-derive. See
+`docs/PROJECT_LOG.md`'s newest entry for the reproduction, the fix, and
+several other areas (`toolchain.ts`, `pipeline.ts`, `capability/probe.ts`/
+`scoring.ts`/`resolve.ts`/`store.ts`) checked clean, plus one recorded-
+but-not-reproduced hypothesis (`correctToolchainFact`'s hash source vs. a
+stable repo with uncommitted manifest edits — an over-eager invalidation,
+not data loss or a security gap).
 
-A **third** bug, found while checking the CLI's presentation of the
-`RunBackend` surface rather than its mechanics, turned out to **predate
-`RunBackend` entirely** (traced to `cdc1500`, the first Phase 1 commit) —
-kept in scope per `CLAUDE.md`'s "fix a real bug you find along the way":
-3. `approve`/`reject` silently discarded `RunBackend.approve()`/
-   `.discard()`'s `stashRestoreWarning` — the warning `@clutchcode/git`'s
-   `restoreStashIfAny` exists specifically to surface when restoring a
-   `handleDirtyTree` auto-stash after approve/reject genuinely conflicts
-   with what the run produced. A run could reach a clean `DONE` while the
-   user's own working tree had real `<<<<<<<` markers in it, with zero
-   indication anywhere — CLI, `--json`, or VS Code. Fixed end to end:
-   `RunState` gains `stashRestoreWarning?`/`mergedSha?`; `approve.ts`
-   captures and assigns them (root-cause fix); the CLI prints a loud
-   `WARNING:` line and includes both fields in `--json`; the VS Code
-   `TaskUI` gains a `showWarning` method wired into both the orchestrated
-   (`runClutchCodeTask`) and standalone approve/reject command paths. The
-   RPC wire format needed no change — the field already rode along on
-   `RunState`, unread on the receiving end. **A real stale-`dist`
-   false-pass was caught mid-proof**, not trusted: the first stash-revert
-   attempt showed both new regression tests passing even with the
-   root-cause fix reverted, because `apps/cli`/`apps/vscode` resolve
-   `@clutchcode/runtime` through its compiled `dist/`, which the stash
-   (a source-only revert) didn't touch — see the new gotcha below and
-   `docs/PROJECT_LOG.md`'s newest entry for the full sequence.
+**Previous session (merged via PR #25, three commits on this same
+branch's prior life):** a fresh audit round found and fixed three real
+bugs — a `RunBackend.beforeEdit` absolute-path parity gap, a
+`SnapshotBackup.runNoIndexDiff` diff-text corruption bug, and a
+pre-Phase-1 gap where `approve`/`reject` silently discarded a real
+stash-restore-conflict warning (the discrimination proof for the third
+caught a real stale-`dist` cross-package false-pass mid-proof — see the
+gotcha below). Full detail: `docs/PROJECT_LOG.md`'s three entries before
+this session's newest one.
 
-Several other fanned-into areas — `SnapshotBackup`'s path-traversal
-defenses, the ACP-cancellation/`RunBackend` composition, `packages/
-tools`'s symlink handling, CLI arg parsing, `cmdCheckpoints`'s truncated-
-sha display (checked against `Agent.rollback`'s matcher and confirmed
-*not* a bug — a real prefix match handles it) — checked clean; see
-`docs/PROJECT_LOG.md`'s three newest entries for the full per-area detail.
-**PR:** [**#25**](https://github.com/Derric01/ClutchCode/pull/25), open
-against `main`. Push any further work in this session to it (it already
-carries all three fixes above as of this snapshot) rather than opening a
-second PR for this branch.
+**PR:** [**#26**](https://github.com/Derric01/ClutchCode/pull/26), open
+against `main` (PR #25 above is merged; #26 is the fresh one for this
+session — push any further work in this session to it).
 **Phase:** Phase 1 shipped (§21) — one agent, one default workflow, three provider
 adapters, SEARCH/REPLACE edits with fallback, worktree isolation, deterministic
 verification with cheat detection, terminal CLI. **Phase 2 in progress:** the
@@ -94,7 +61,7 @@ selector §4.4) is wired into the live loop; workflow engine §8.1/§8.2, VS Cod
 §18.5, credentials §5.1, sandbox Tier 1 §12.5/§12.6, the §16 eval scoreboard,
 the §16.4 naked-vs-harness A/B, the ACP editor binding, and real run
 cancellation landed early.
-**Test suite (locally):** 925/925 passing, 92 test files, clean `tsc -b`, clean
+**Test suite (locally):** 926/926 passing, 92 test files, clean `tsc -b`, clean
 `eslint .` — and **0 skipped**: bwrap genuinely confines in this dev container,
 so every real Tier 1/seccomp test still runs here.
 **CI — GREEN**, since run [#12](https://github.com/Derric01/ClutchCode/actions/runs/33593109279)
@@ -145,22 +112,25 @@ project's standard (real tests, honest verification flags), not a
 loose "MVP" estimate.
 
 **No `DO FIRST` tag is set right now — say so plainly, don't invent one.**
-This session ran the audit round the previous snapshot called for (per
-`CLAUDE.md`'s work-loop step 2c) instead of picking a table row — see the
-snapshot header / `docs/PROJECT_LOG.md`'s three newest entries for the
-three real bugs it found and fixed (an absolute-path parity gap in
-`RunBackend.beforeEdit`; a real diff-text content-corruption bug in
-`SnapshotBackup.runNoIndexDiff`; a pre-Phase-1 gap where `approve`/
-`reject` silently discarded a real stash-restore-conflict warning) and the
-several other areas it checked and found clean. None of the three fixes
-unblocked or otherwise changed any row below — every row remains
-genuinely gated — a host this environment doesn't have, a human/ADR
-decision, or explicitly out of scope — checked freshly this session, not
-inherited from the previous snapshot's framing. A future session should
-either continue fanning the audit into areas this round didn't reach (grep
-`docs/PROJECT_LOG.md` for
-what's been covered vs. not) or re-run a fresh review round, rather than
-assume either the table below or this round's coverage is exhaustive.
+This session again ran an audit round (per `CLAUDE.md`'s work-loop step
+2c) rather than picking a table row — every row below was already
+genuinely gated as of the previous snapshot, and this round's finding
+didn't change that. See `docs/PROJECT_LOG.md`'s newest entry: one real,
+reproduced-and-fixed bug (`forgetToolchainFact` in `packages/memory`
+silently failing to force re-derivation — see the snapshot header above)
+found by fanning into `packages/memory`, `packages/verification`, and
+`packages/capability`, areas the previous round's snapshot explicitly
+flagged as not yet given a dedicated adversarial pass. Several other
+files in those same packages were checked and found clean (also detailed
+in the log entry), plus one recorded-but-not-reproduced hypothesis
+(`correctToolchainFact`'s manifest-hash source vs. a stable repo with
+uncommitted local edits — a narrow, low-severity over-eager-invalidation
+shape, not escalated without a reproduction). `packages/sandbox`'s deeper
+mechanics were **not** reached this round — still open. A future session
+should either continue fanning into `packages/sandbox` (the one named
+area still untouched) or re-run a fresh review round from scratch, rather
+than assume either the table below or this round's coverage is
+exhaustive.
 
 | Item | Spec ref | Rough effort | Notes |
 |---|---|---|---|

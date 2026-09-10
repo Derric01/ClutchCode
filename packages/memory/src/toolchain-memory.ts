@@ -182,11 +182,33 @@ export function showToolchainFact(repoRoot: string, key: ToolchainFactKey, opts?
   return loadRaw(repoRoot, opts)?.facts[key];
 }
 
-/** Removes one fact — forces re-derivation of the whole record next time `getOrDetectToolchain` is called for this repo, since the record no longer looks complete/trustworthy as a unit. Returns `false` if there was nothing to forget. */
+/**
+ * Removes one fact — forces re-derivation of the whole record next time
+ * `getOrDetectToolchain` is called for this repo, since the record no
+ * longer looks complete/trustworthy as a unit. Returns `false` if there
+ * was nothing to forget.
+ *
+ * The re-derivation half of that contract needs an explicit push: deleting
+ * `cached.facts[key]` alone leaves `cached.manifestHash` matching whatever
+ * it already was, and `getOrDetectToolchain`'s cache-hit check only looks
+ * at the manifest hash and each fact's own `stale` flag — neither of which
+ * a forgotten (as opposed to invalidated-by-content-change or
+ * marked-stale) fact ever touches. Without this, the very next
+ * `getOrDetectToolchain` call (manifest unchanged) reads as a clean cache
+ * hit and returns the record with a silent hole where the forgotten fact
+ * used to be — for `test`/`build`/`lint`/`typecheck` that hole becomes an
+ * `undefined` command, which `runPipeline` treats as "skipped, passed"
+ * (§14.5), not "please re-detect this." Clearing `manifestHash` to `""`
+ * (a value `computeManifestHash` — always a full SHA-256 hex digest, never
+ * empty — can never produce) guarantees the next hash comparison misses,
+ * which is exactly the "re-derive the whole record" the docstring above
+ * promises.
+ */
 export function forgetToolchainFact(repoRoot: string, key: ToolchainFactKey, opts?: ToolchainMemoryOptions): boolean {
   const cached = loadRaw(repoRoot, opts);
   if (!cached || !cached.facts[key]) return false;
   delete cached.facts[key];
+  cached.manifestHash = "";
   saveRaw(repoRoot, cached, opts);
   return true;
 }
