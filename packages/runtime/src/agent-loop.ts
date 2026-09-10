@@ -4,8 +4,6 @@ import crypto from "node:crypto";
 import type { NormalizedMessage, Provider } from "@clutchcode/providers";
 import { collect } from "@clutchcode/providers";
 import type { Tool, ToolContext } from "@clutchcode/tools";
-import type { RunWorktree } from "@clutchcode/git";
-import { approveRun, checkpoint, diffAgainstBase, diffStat } from "@clutchcode/git";
 import type { ToolchainCommands, CheatFlag, FailureClass, StageResult } from "@clutchcode/verification";
 import { classifyFailure, detectCheats, evaluateCompletion, MAX_REPAIR_ITERS, runPipeline } from "@clutchcode/verification";
 import { computeContextBudget, resolveCapability, type ContextBudget, type EffectiveCapability } from "@clutchcode/capability";
@@ -20,6 +18,7 @@ import { compactHistory } from "./context-compaction.js";
 import { pruneSupersededToolResults } from "./tool-result-pruning.js";
 import { classifyToolError } from "./error-taxonomy.js";
 import { isBuiltinWorkflowId, resolveBuiltinWorkflowPlan, type WorkflowPlan } from "./workflow.js";
+import type { RunBackend } from "./run-backend.js";
 
 /**
  * The agent orchestration loop (PROJECT_SPEC.md §6.1, §6.2):
@@ -61,10 +60,16 @@ export interface AgentLoopDeps {
   provider: Provider;
   tools: Map<string, Tool<unknown, unknown>>;
   toolContext: ToolContext;
-  run: RunWorktree;
+  /**
+   * The backend-agnostic execution-lifecycle boundary (§13.1/§13.4) —
+   * `RunBackend` from `./run-backend.js`, either a `git-worktree` or
+   * `snapshot` implementation. See that file's doc comment for the full
+   * design rationale.
+   */
+  run: RunBackend;
   toolchainCommands: ToolchainCommands;
   evidenceDir: string;
-  /** Verification pipeline cwd — defaults to `run.worktreePath` when omitted. §13.4 monorepos: pinned to a subdir when `--scope` is set, so tests run against that subdir's own toolchain. */
+  /** Verification pipeline cwd — defaults to `run.workspaceRoot` when omitted. §13.4 monorepos: pinned to a subdir when `--scope` is set, so tests run against that subdir's own toolchain. */
   verifyCwd?: string;
   /**
    * The adaptation layer's inputs (§4.2, §4.9): drives edit-format guidance
@@ -496,7 +501,7 @@ export class AgentLoop {
         }
       }
 
-      const progressWarning = this.loopDetector.recordProgress(diffStat(this.deps.run));
+      const progressWarning = this.loopDetector.recordProgress(this.deps.run.diffStat());
       if (progressWarning) {
         this.emit({ type: "loop.detected", warning: progressWarning });
         if (progressWarning.escalate) {
@@ -553,6 +558,31 @@ export class AgentLoop {
       };
     }
 
+    // §13.4's non-git safety net: for the `snapshot` backend, this is the
+    // *only* place a pre-edit backup can be taken (`RunBackend.beforeEdit`'s
+    // own doc comment explains why it has to run here, before the tool's
+    // own `fs.writeFileSync`, rather than at checkpoint/verify time like
+    // the git backend). A no-op for `git-worktree`. Deliberately guarded by
+    // tool name, not `tool.permissionClass === "WRITE"` — a future WRITE
+    // tool without a `path` argument in this exact shape shouldn't silently
+    // start calling this with `undefined` and mis-tracking snapshots.
+    if (name === "write_file" || name === "edit_file") {
+      const targetPath = (validated.value as { path?: unknown }).path;
+      if (typeof targetPath === "string") {
+        try {
+          this.deps.run.beforeEdit(targetPath);
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          return {
+            ok: false,
+            errorCode: "snapshot-failed",
+            payload: JSON.stringify({ ok: false, error: { code: "snapshot-failed", message } }),
+            isEdit: false
+          };
+        }
+      }
+    }
+
     const result = await tool.run(validated.value, this.deps.toolContext);
     const isEdit = result.ok && (name === "edit_file" || name === "write_file");
     return {
@@ -568,7 +598,7 @@ export class AgentLoop {
     this.setStatus("VERIFYING");
 
     const pipelineResult = runPipeline(this.deps.toolchainCommands, {
-      cwd: this.deps.verifyCwd ?? this.deps.run.worktreePath,
+      cwd: this.deps.verifyCwd ?? this.deps.run.workspaceRoot,
       evidenceDir: this.deps.evidenceDir
     });
 
@@ -601,7 +631,7 @@ export class AgentLoop {
       if (stage.ran) this.emit({ type: "verify.stage", stage: stage.stage, passed: stage.passed });
     }
 
-    const diffText = diffAgainstBase(this.deps.run);
+    const diffText = this.deps.run.diffAgainstBase();
     const cheatFlags: CheatFlag[] = pipelineResult.allGreen ? detectCheats(diffText) : [];
     for (const f of cheatFlags) this.emit({ type: "cheat.flag", rule: f.rule, file: f.file });
 
@@ -645,7 +675,7 @@ export class AgentLoop {
     }
 
     // Deterministic gate is green — checkpoint this state (§13.2).
-    checkpoint(this.deps.run, `verify passed at step ${this.state.stepIndex}`);
+    this.deps.run.checkpoint(`verify passed at step ${this.state.stepIndex}`);
 
     if (cheatFlags.length > 0) {
       this.pushMessage(buildCheatReviewMessage(cheatFlags));
@@ -665,7 +695,7 @@ export class AgentLoop {
 
     if (completion.status === "DONE-SUCCESS") {
       this.setStatus("COMMITTING");
-      approveRun(this.deps.run, { squash: true, message: `clutchcode: ${this.state.task}` });
+      this.deps.run.approve({ squash: true, message: `clutchcode: ${this.state.task}` });
       this.setStatus("DONE");
     } else {
       this.state.escalationReason = completion.status === "DONE-ESCALATED" ? completion.reason : undefined;

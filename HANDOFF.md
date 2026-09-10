@@ -6,49 +6,41 @@ conventions (build/test/lint, testing philosophy, quality bar) — this
 file is the time-stamped snapshot of where the project actually stands.
 
 **Snapshot as of:** 2026-09-10
-**Branch:** `claude/start-work-handoff-referral-52eyj1`. Merged **six times**
-this project's history (#17, #18, #19, #20, #21, #22) — restarted from
-`main`'s tip after each, most recently at `2802825` ("Merge pull request
-#22"), discovered **mid-unit** for the second checkpoint in a row (uncommitted
-work already in progress both times) — handled both times with `git stash
-push -u` (the `-u` matters: the new files were untracked) before the restart,
-`git stash pop` after, full gate re-run to confirm the pop carried over
-cleanly. **Check a PR's actual state before assuming a push lands on it**
+**Branch:** `claude/start-work-handoff-referral-52eyj1`. Merged **seven
+times** this project's history (#17–#23) — restarted from `main`'s tip
+after each, most recently at `ea85e52` ("Merge pull request #23").
+**Check a PR's actual state before assuming a push lands on it**
 (`pull_request_read`, or `git merge-base --is-ancestor <head> origin/main` —
 trust this over the API's `merged` field, which has repeatedly read `false`
 on PRs a `merged_at` timestamp and git ancestry both confirm are merged)
-before every push, not once per session — this is now the seventh time it's
-mattered.
-**Latest commit:** ECC work continued across three checkpoints on the same
-PR. (1) A **security audit** of ECC's executable surface, requested before
-considering wider reuse — install path, npm lifecycle scripts (none exist —
-the check that matters most for supply-chain risk), the always-on hook
-chain (traced end to end: explicit path-traversal guards, spawn timeouts,
-zero real `eval()`), MCP defaults, and a full-corpus scan of all 286 skills
-for prompt-injection content. Verdict: clean, sampled honestly as a sampled
-audit rather than an exhaustive one — see `research/repos/ecc.md`. (2) A
-**second skills pass**, 10 more candidates sampled with the same rigor as
-the first: 1 of 10 adopted (`code-tour`, genuinely additive — a real editor
-walkthrough format, no collision); 9 rejected with per-skill reasoning
-(mostly the same collision shape as round one — a plausible-sounding skill
-turns out to collide with a product feature or bespoke convention this
-project already built more specifically). (3) `tests/source-hygiene.test.ts`
-— written earlier this session to catch exactly this — **caught a real bug
-in this session's own previous-round work**: the `error-handling` skill's
-sentence explaining "use an escape sequence, never the raw byte" had, iron-
-ically, the literal raw NUL byte typed into it. Found by running the full
-gate rather than assuming a docs-only change couldn't fail it; fixed the
-same way the original bug was fixed. Full gate re-confirmed clean after.
-**README (round 1):** two GitHub native `[!NOTE]`/`[!IMPORTANT]` alert boxes
-added to promote two already-stated caveats (no npm yet, no VTCR benchmark
-published) — zero new claims. **Skills (round 1):** 4 of 6 sampled ECC skills rejected on inspection (each
-collided with a stricter existing convention — our own `/security-review`,
-ADRs already inside `PROJECT_SPEC.md`, our stricter testing philosophy, our
-firmer git rules); 2 (`error-handling`, `codebase-onboarding`) adapted
-**clean-room** into `.claude/skills/` per `ADR-016` (a `SKILL.md` is a
-prompt; MIT licensing makes copying legal, this project's own policy is
-stricter and still applies). See `docs/PROJECT_LOG.md`'s newest entry and
-`research/repos/ecc.md` for the full comparison.
+before every push, not once per session — this has now mattered eight times.
+**Latest commit:** the `DO FIRST` row — **full non-git `AgentLoop` execution
+path (§13.4, ADR-004)** — designed and fully implemented, not just
+designed. A new `RunBackend` interface (`packages/runtime/src/run-
+backend.ts`) abstracts the four git-specific call sites `AgentLoop` used to
+call directly (`checkpoint`/`diffAgainstBase`/`diffStat`/`approveRun`),
+with two real implementations: `GitWorktreeRunBackend` (unchanged git
+behavior, just wrapped) and `SnapshotRunBackend` (built on `SnapshotBackup`
+plus a new `git diff --no-index`-backed diff generator, so cheat detection
+parses snapshot-backend diffs with zero format-specific branching).
+`Agent.run()` now builds whichever backend `isGitRepo` calls for, instead
+of refusing; every run-lifecycle method (`diff`/`diffFiles`/`approve`/
+`reject`/`checkpoints`/`rollback`) goes through the backend; `Agent.pr()`
+refuses clearly for the non-git case (a PR needs a git remote that doesn't
+exist). Two real bugs found and fixed via genuine reproduction, both
+stash-revert-proven: `git diff --no-index`'s exit-1-means-found-a-diff
+semantics was silently discarding the diff text through `git()`'s shared
+`allowFailure`, and `SnapshotBackup`'s "already snapshotted" bookkeeping
+lived only in an in-memory `Set`, invisible the moment `agent-api`
+reconstructs the backend in a fresh process (exactly what `agent diff`/
+`approve`/`reject` routinely do) — fixed by deriving state from disk
+instead. See `docs/PROJECT_LOG.md`'s newest entry for the full design
+rationale, the blast-radius trace (including one consumer — `evals/src/
+replay.ts` — an initial grep sweep missed, caught by the full-workspace
+`tsc -b`), and exactly which behaviors are deliberately, honestly
+*different* between the two backends (not just re-plumbed) versus which
+are a deliberate, spec-grounded scope limit (single-point rollback, no PR
+equivalent).
 **PR:** **none currently open as of this snapshot.** Push next, then open one —
 do not stack more unmerged commits on this branch without a PR carrying them
 (see the branch note above for why that's worth repeating).
@@ -60,7 +52,7 @@ selector §4.4) is wired into the live loop; workflow engine §8.1/§8.2, VS Cod
 §18.5, credentials §5.1, sandbox Tier 1 §12.5/§12.6, the §16 eval scoreboard,
 the §16.4 naked-vs-harness A/B, the ACP editor binding, and real run
 cancellation landed early.
-**Test suite (locally):** 903/903 passing, 92 test files, clean `tsc -b`, clean
+**Test suite (locally):** 921/921 passing, 92 test files, clean `tsc -b`, clean
 `eslint .` — and **0 skipped**: bwrap genuinely confines in this dev container,
 so every real Tier 1/seccomp test still runs here.
 **CI — GREEN**, since run [#12](https://github.com/Derric01/ClutchCode/actions/runs/33593109279)
@@ -110,6 +102,16 @@ Effort is rough — a single focused session's worth of work, at this
 project's standard (real tests, honest verification flags), not a
 loose "MVP" estimate.
 
+**No `DO FIRST` tag is set right now — say so plainly, don't invent one.**
+The row that carried it (full non-git `AgentLoop` execution path) is done
+(see the snapshot header / `docs/PROJECT_LOG.md`'s newest entry). Every
+row below is genuinely gated — a host this environment doesn't have, a
+human/ADR decision, or explicitly out of scope — checked freshly this
+session, not inherited from the previous snapshot's framing. A future
+session should re-run a review round (per `CLAUDE.md`'s work-loop step 2c)
+to surface the next genuinely-unblocked row rather than assume the table
+below is exhaustive.
+
 | Item | Spec ref | Rough effort | Notes |
 |---|---|---|---|
 | Prove §12.6 confinement somewhere CI *can* run it | §12.6 | medium | **New, and it is the direct cost of getting CI green.** The bwrap/seccomp suites now skip on hosted runners (16 tests), so CI no longer proves OS-level confinement works — only local runs on a bwrap-capable host do, and nothing in CI would catch a regression that broke confinement. Options, in rough order of cost: a privileged/`--cap-add` container job, a self-hosted runner, or a nested-VM job. Until one exists, treat "sandbox verified" as a claim about developer machines and this dev container, not about CI. Do not close this by loosening the skip guard — the guard is correct; the gap is the runner. |
@@ -123,7 +125,6 @@ loose "MVP" estimate.
 | arm64 seccomp | §12.6 | small, needs an arm64 host | The x86_64 filter is done and verified; arm64 has a different syscall number table with no way to verify it in this (x86_64) environment — needs either an arm64 host/CI runner or a very high-confidence authoritative source cross-checked the same way libseccomp's resolver was used for x86_64. **Note (new):** this blocker is specific to *seccomp*, whose filter we hand-assemble from architecture-specific syscall numbers. The Landlock row above does **not** inherit it — `@deepseek-ai/node-addon-landlock-run` ships a prebuilt `linux-arm64` binary and carries the ABI burden upstream, so Landlock-on-arm64 arrives free with that work while arm64 *seccomp* stays blocked on a real arm64 host. |
 | VS Code multi-file "changes" view | §18.5, minor | small | The extension opens one real `vscode.diff` editor per changed file (done, see "what's done") rather than combining several into VS Code's newer `vscode.changes` command — deliberately skipped since that command isn't universally available across the `^1.85.0` engine range this extension targets. Revisit if the minimum supported VS Code version is ever raised. |
 | PageRank repo map | §9, Phase 7 | medium | Tier 0 (ripgrep + on-demand tree-sitter) is what's live; the Aider-style PageRank map is Tier 1, triggered by measured retrieval-accuracy failures on large repos, not built preemptively. |
-| Full non-git `AgentLoop` execution path | — | large, separate project, **DO FIRST** (genuinely ungated — every row above it needs a host, an ADR amendment, a human decision, or infra this environment doesn't have; every row below it is itself gated, a watch item, or explicitly out of scope) | Snapshot-backed (not worktree-backed) execution for non-git directories. `Agent.run` currently refuses cleanly with a "run git init" error instead of attempting this. `SnapshotBackup`'s own traversal gap is already closed (see "what's done"), so this row is now purely "wire the execution path up," not blocked on any open correctness/security gap in the fallback it would use. **Re-scope before writing code, though — the row's own "purely wire it up" framing undersells it**: `AgentLoop` calls git-specific functions from `@clutchcode/git` directly throughout its body (`checkpoint`, `diffAgainstBase`, `diffStat`, `approveRun` — not through an injected interface), so making it backend-agnostic needs a real abstraction boundary decision (an interface both `RunWorktree` and a new snapshot-backed equivalent satisfy) before any wiring, not just a swap-in. Checked this round and deliberately not started: attempting it without first designing that boundary risks exactly the half-shipped, contradicts-itself-later outcome `CLAUDE.md`'s quality bar forbids, and doing it justice (the boundary design, every one of checkpoint/diff/rollback/approve/PR re-implemented against snapshots, real tests for each against a real non-git temp dir) is genuinely multi-unit work — start with the design pass, not the first `git` call site you find. |
 | Multi-agent orchestration | §7, Phase 9 | large | Explicitly out of scope until the §7 rule justifies it — the spec argues *against* building this by default. Don't start it without re-reading §7's reasoning first. |
 | Windows sandbox Tier 1 — **revisit trigger only, decision stands** | §12.5/§12.6, A11 | n/a (watch item) | The doc-only/WSL2-recommended decision closed earlier this branch is **not** reopened by this research, and a future session should not treat it as reopened. Recording the evidence honestly so the trigger is legible: DeepSeek Harness ships `sandbox-windows-acl`, a real native Windows rung (a koffi port of a `WRITE_RESTRICTED`-token + restricting-SID mechanism). It **self-reports `enforcement: 'partial'`, not full** — ambient `Everyone` write ACEs and NTFS hard-links leak through, since ACLs bind to file objects rather than paths — and their own design note rejects AppContainer because it "cannot do arbitrary-path reads at all." Both facts **corroborate** §12.5's `[C:Low]` rating of the native path rather than contradicting it, and §29's team-size reasoning is untouched. Revisit only if (a) a Windows contributor/CI host materializes, **and** (b) a native path appears that reports *full*, not partial, enforcement. |
 

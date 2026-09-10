@@ -3343,3 +3343,249 @@ own instance of it is worth recording, not hiding.
 
 **Verified overall.** `tsc -b` clean, 903/903 across 92 files, `eslint .`
 clean.
+
+### Full non-git `AgentLoop` execution path (§13.4, ADR-004) — the `RunBackend` boundary, designed and fully implemented against a real non-git directory
+
+**What was asked and why this row, not a smaller one.** The `DO FIRST`
+row: `Agent.run` used to refuse outright for any non-git directory
+("run git init"). The row's own note explicitly warned against treating
+this as "just wire it up" — `AgentLoop` calls four `@clutchcode/git`
+worktree functions directly throughout its body (`checkpoint`,
+`diffAgainstBase`, `diffStat`, `approveRun`), not through an injected
+interface, so a real abstraction-boundary design had to come first.
+
+**Coherence check (before writing any code, per the work loop's step 3).**
+`PROJECT_SPEC.md §13.4`'s "Not a git repo at all" row and **ADR-004**
+("Edit isolation = git worktree per run," Accepted) were read in full
+first. Both directly support this work rather than contradicting it:
+ADR-004's own migration note reads *"the non-git snapshot path already
+generalizes"* — this is that generalization, not a reinvention. §13.4
+specifies the fallback's exact shape: "a snapshot backup of touched files
+... before first edit; diff is snapshot-vs-current; rollback restores
+snapshots" — i.e. edit-in-place with pre-edit backups, **not** worktree
+isolation reimplemented some other way. This directly shaped the design
+below (see "the two backends behave genuinely differently" section) —
+`SnapshotBackup`'s own pre-existing traversal-safety work (an earlier
+session) was ready to build on, not reworked.
+
+**The design: `RunBackend`, a new interface owned by `@clutchcode/runtime`
+(`packages/runtime/src/run-backend.ts`).** Every git-specific call site in
+`AgentLoop` was grepped and enumerated first (`checkpoint`,
+`diffAgainstBase`, `diffStat`, `approveRun` inside `agent-loop.ts`;
+`approveRun`/`discardRun` in the separate `approve.ts`/`reject.ts` human-
+triggered flow; `diffFilesAgainstBase`, `listCheckpoints`, `rollbackTo`,
+`createRunWorktree`, `pushBranch` in `agent-api`'s `Agent` class). Two
+implementations satisfy the interface: `GitWorktreeRunBackend` (a thin
+adapter wrapping the *existing*, unchanged git functions — zero behavior
+change for the git path) and `SnapshotRunBackend` (wraps `SnapshotBackup`).
+Both live in `runtime` itself, not in `@clutchcode/git` — `runtime`
+already depended on `git` for these exact functions, so defining the
+interface where its consumer lives (mirroring how `Provider`/`Tool` are
+each owned by the package whose consumer dictates their shape) needed no
+new cross-package dependency in either direction and kept `@clutchcode/
+git`'s existing free-function API completely untouched for every other
+caller (`worktree-store.ts`-adjacent code, the CLI's direct `git` package
+usage, etc.).
+
+**Blast radius, traced before finalizing the interface shape (per the work
+loop's step 4).** Every consumer of `Agent`'s run-lifecycle methods
+(`diff`, `diffFiles`, `approve`, `reject`, `checkpoints`, `rollback`, `pr`)
+was grepped across `apps/cli`, `packages/acp`, `packages/agent-rpc`, and
+`evals` — none of them import `RunWorktree`/the git worktree functions
+directly, all go through `Agent`'s own methods, whose *signatures* never
+changed. That contained the blast radius to `Agent`'s internals plus one
+real, unforeseen consumer the initial grep sweep missed: `evals/src/
+replay.ts` constructed a raw `RunWorktree` and passed it straight into
+`AgentLoop` — caught by `tsc -b` failing on the full-workspace build (not
+by any test), fixed by wrapping it in `createGitWorktreeBackend` (one
+line, zero behavior change — the eval harness always replays against a
+real git fixture repo, so it only ever needed the git-worktree backend).
+A second, VS Code-side consumer (`apps/vscode/src/runTask.test.ts`) relied
+on the *old refusal itself* as its way of forcing an `Agent.run` error to
+prove the extension's orchestration routes Agent-level errors through
+`showError` instead of throwing — fixed by switching that test to a
+still-real, still-unconditional `Agent.run` throw unrelated to git status
+(an unrecognized `providerKind`, `buildProvider`'s own exhaustiveness-
+fallback throw) rather than weakening what the test actually proves.
+
+**The two backends behave genuinely differently where §13.4 says they
+should — not just "different plumbing, same shape."** This was the part
+worth getting right rather than assuming a symmetric interface:
+- **`beforeEdit` fires at a different point in the timeline entirely.**
+  Git's `checkpoint()` runs *after* verification passes, retroactively
+  committing whatever the tools already wrote into the isolated worktree
+  copy. `SnapshotBackup` has no isolated copy to check a post-hoc diff
+  against — its safety net has to capture a file's content *before* the
+  first write lands, or the original is gone the moment
+  `fs.writeFileSync` returns. Wired into `AgentLoop.runToolCall` itself
+  (not into `@clutchcode/tools`'s `ToolContext` — no change to that
+  package at all): right after `tool.validate()` succeeds and before
+  `tool.run()` is called for `write_file`/`edit_file`, `RunBackend.
+  beforeEdit(path)` fires — a no-op for `git-worktree` (isolation already
+  comes from the worktree copy), the real backup for `snapshot`.
+- **`discard()` (reject) does real, necessary work for `snapshot` that
+  `git-worktree`'s discard doesn't need to do at all.** For git, reject
+  just throws away an isolated copy the user's real tree was never
+  touched by. For snapshot, there was never any isolation — the edits
+  *are* on the user's real files — so reject has to actively call
+  `SnapshotBackup.rollback()` to restore them. Proven with a real test at
+  both the `AgentLoop`/`RunBackend` layer and the full `Agent` API
+  boundary: write a real file, confirm the mutated content is genuinely
+  on disk, call `reject`/`rejectRun`, confirm the original content is
+  back.
+- **`approve()` is a near no-op for `snapshot`** — nothing to merge, the
+  edits were already live the moment each tool call landed. Proven by the
+  inverse assertion from the git-backend test: the file already shows the
+  agent's edit at `AWAITING_APPROVAL`, *before* approval, which would be
+  the wrong outcome for the git backend (worktree not yet merged) and is
+  the *correct*, deliberately-asserted-as-different outcome here.
+- **`checkpoint()`/`listCheckpoints()`/`rollbackTo()` are honestly
+  single-point for `snapshot`**, not a lesser imitation of git's per-step
+  granularity dressed up to look equivalent. §13.4's own text promises
+  "restores snapshots" (singular capability), not per-checkpoint
+  granularity — `SnapshotBackup`'s pre-edit backups are all taken once, at
+  first-edit time, so there is only ever one meaningful rollback target.
+  `checkpoint()` returns a fixed id (`"snapshot:baseline"`) once anything's
+  been touched, `null` otherwise (matching git's "nothing to checkpoint"
+  null) — the same `Agent.rollback(runId, sha)` sha-matching code path
+  used by the CLI/ACP/RPC works unmodified for both backends, no special-
+  casing needed anywhere above `RunBackend` itself.
+- **`diffAgainstBase`/`diffFilesAgainstBase` produce byte-for-byte real
+  git-diff-format text with no repository at all**, via `git diff
+  --no-index` (a documented git feature built exactly for comparing two
+  arbitrary files without a repo) — verified empirically against a real
+  non-git temp dir before relying on it, not assumed from git's docs
+  alone. Added as new methods on `SnapshotBackup` itself
+  (`packages/git/src/snapshot-backup.ts`), reusing the package that
+  already owns every other `git()` subprocess call. This means the §14.6
+  cheat detector's `parseUnifiedDiff` needs zero format-detection
+  branching — a snapshot-backend diff is parseable by the exact same code
+  that parses a git-worktree diff, proven by a real end-to-end test that
+  scripts a cheat (a test file rewritten to just `console.log('PASS')`)
+  against the snapshot backend and confirms `detectCheats` still catches
+  it through the real diff pipeline, not a mock.
+- **`readAtRunStart(relPath)`, a new `RunBackend` method the original
+  design pass didn't anticipate**, needed once `agent-api`'s AGENTS.md
+  trust-boundary read (§10.3 point 4 — "human edits win," the round-3
+  security-review fix that reads AGENTS.md from the run's base commit,
+  not the live, model-editable worktree) was traced through
+  `buildRunDeps`. Git: `git show baseCommit:AGENTS.md`, already correct
+  across `resume()` since `baseCommit` is fixed at run creation. Snapshot:
+  no commit to read from — `readAtRunStart` backs the path up right now
+  if it isn't already (idempotent) and returns *that* backup's content,
+  which stays correct whether this is the first `buildRunDeps` call or a
+  later `resume()`'s second one, since the backup was already taken on
+  the first. This closes the exact same trust-boundary gap for the
+  snapshot backend that the git backend already had fixed, not a
+  new-but-narrower guarantee.
+
+**Two real bugs found and fixed via the "reproduce it for real" discipline
+— both caught by tests that exercise a genuine cross-boundary shape, not
+by this file's own pre-existing single-instance unit tests.**
+1. **`git diff --no-index`'s exit code silently discarded the diff text
+   itself.** `git()`'s shared `allowFailure: true` returns `""` on *any*
+   non-zero exit — correct for every other caller in this package, wrong
+   for `--no-index`, which (unlike a plain `git diff <commit>`) exits 1 to
+   mean "a real diff was found," the overwhelmingly common case here.
+   Reusing `git()` meant every non-empty diff came back empty. Caught
+   immediately: 5 of 5 new `snapshot-backup.test.ts` assertions failed on
+   first run, not assumed correct from reading the code. Fixed with a
+   small, bespoke `execFileSync` wrapper scoped to just these two calls
+   (reads `error.stdout` when `status === 1`) rather than changing `git()`
+   itself, so every other `allowFailure` caller's contract stays untouched.
+2. **`SnapshotBackup`'s "already snapshotted" bookkeeping lived only in an
+   in-memory `Set`, invisible across process boundaries.** `agent-api`'s
+   `reviveRunBackend()` builds a *fresh* `SnapshotBackup` instance from
+   persisted `{runId, workspaceRoot, backupDir}` data for every separate
+   `agent diff`/`approve`/`reject`/`resume` CLI invocation — exactly what
+   `worktree-store.ts`'s own doc comment already said routinely happens.
+   The original single-`SnapshotBackup`-instance unit tests in `snapshot-
+   backup.test.ts` never exercised this because they never reconstruct the
+   instance; the real bug only surfaced once `agent.test.ts`'s full
+   `Agent`-API-boundary tests (which genuinely persist and reload, exactly
+   as separate CLI invocations would) were written: `diff()` returned
+   empty, `checkpoints()` returned `[]`, and — the sharpest symptom —
+   `reject()` silently restored *nothing* despite the file having
+   genuinely been overwritten on disk. Fixed at the root: "already backed
+   up" is now checked against **disk** (does the backup file/marker
+   already exist under `backupDir`), and `touchedPaths()` is derived by
+   walking `backupDir` itself, not read from memory. This also closes a
+   subtler correctness gap the same check gates: without it, a `resume()`
+   in a new process re-editing a path already backed up in an earlier
+   partial run would have backed it up *again*, capturing the already-
+   mutated mid-run content as the "original" and corrupting the one
+   safety net §13.4 promises.
+
+**Both bugs proven to discriminate, per `CLAUDE.md`'s stash-revert
+discipline.** `packages/git/src/snapshot-backup.ts` was a tracked file
+with real uncommitted changes (confirmed via `git status --short` showing
+`M`, not `??`, before stashing — the untracked-file trap noted repeatedly
+in `HANDOFF.md`'s gotchas doesn't apply here). `git stash push -- <file>`
+reverted it to the session-start version; `tsc -b` immediately failed
+(`run-backend.ts` referencing `diffText`/`diffFiles`, which no longer
+exist) — the strongest possible signal these methods are load-bearing,
+not decorative. Forcing past that to run the tests anyway (vitest
+transpiles without full `tsc -b`): **17 real test failures**, every one a
+genuine `TypeError: this.backup.diffText is not a function` traced
+through the real `AgentLoop`→`Agent.run` call path, not a mocked
+assertion. `git stash pop` restored the fix; full re-run confirmed clean:
+310/310 across the three touched packages, then 921/921 across the full
+workspace.
+
+**What was built, concretely.** `packages/runtime/src/run-backend.ts`
+(new — the `RunBackend` interface, both implementations, `toState()`/
+`reviveRunBackend()` persistence); `AgentLoop`/`approve.ts` retargeted
+from `RunWorktree` to `RunBackend` (four call sites plus the new
+`beforeEdit` hook); `SnapshotBackup` extended with `diffText`/`diffFiles`
+and the disk-derived-state fix (`packages/git/src/snapshot-backup.ts`);
+`agent-api`'s `Agent.run()` now branches on `isGitRepo` instead of
+refusing, and every run-lifecycle method (`diff`, `diffFiles`, `approve`,
+`reject`, `checkpoints`, `rollback`) goes through `RunBackend`;
+`worktree-store.ts` renamed/retargeted to persist `RunBackendState`
+(`saveRunBackend`/`loadRunBackendState`); `Agent.pr()` throws a clear,
+actionable error for the snapshot backend (a PR is fundamentally a
+git+remote concept with no non-git equivalent — refused explicitly, never
+faked or silently no-op'd). A second, minor real bug fixed along the way:
+`isGitRepo`'s `execFileSync` call had no explicit `stdio` array, so it
+leaked a raw `fatal: not a git repository` line to the console on every
+call against a non-git dir — cosmetic and rare before this change (an
+error case that immediately threw), now the literal first thing a §13.4
+user would see on the newly-first-class common path. Fixed the same way
+`git()`'s own already-documented fix for the identical class of bug was:
+an explicit `stdio: ["ignore", "pipe", "pipe"]`.
+
+**What was verified and how.** Real, unmocked, end-to-end tests at two
+layers against a genuine non-git temp directory (no mocking of `fs`, no
+fake `SnapshotBackup`): (1) `packages/runtime/src/agent-loop.test.ts` — 7
+new tests driving a real `AgentLoop` through `FakeProvider`-scripted
+`edit_file`/`write_file` calls against `setupAgentLoopSnapshotFixture`'s
+real non-git temp dir: fix+auto-commit, the repair loop, AWAITING_APPROVAL
+with the edit already live in place, reject-actively-restores, cheat
+detection via the real `git diff --no-index`-backed diff text, and a
+checkpoint/rollback round-trip. (2) `packages/agent-api/src/agent.test.ts`
+— 5 new tests at the full `Agent` API boundary (real `Agent` instances,
+real `startScriptedServer` HTTP round trips through the `openai-
+compatible` provider adapter, real persistence reload via
+`reviveRunBackend` — not just `AgentLoop` in isolation) covering the same
+ground plus `agent.pr()`'s refusal message. (3) `packages/git/src/
+snapshot-backup.test.ts` — 6 new tests for `diffText`/`diffFiles`
+directly (modified/added/deleted/binary/identical/pathScope cases) plus 2
+new `worktree-store.test.ts` round-trip tests for the renamed persistence
+functions covering both backend kinds. Net: **921/921 tests across 92
+files** (up from the 903/903 baseline), `tsc -b` clean, `eslint .` clean
+(0 warnings — two initial `no-unused-vars` warnings from a destructure-to-
+discard pattern were eliminated by relying on TS's own structural typing
+instead, not suppressed).
+
+**Deliberately not done, and why that's an honest stopping point, not a
+gap.** `Agent.pr()` for the snapshot backend was scoped to "refuse
+clearly" rather than any partial PR-equivalent — §13.4 never promised one,
+and a real PR is fundamentally a git+remote concept a directory with no
+repository at all cannot have; faking a substitute would be exactly the
+"half-supporting it via a confusing error" the original refusal was
+already trying to avoid, just moved one layer deeper. No CLI-visible UX
+polish was added beyond what correctness required (e.g., no new "this run
+used the snapshot fallback" banner) — grepped for worktree-specific
+display text in `apps/cli`/`apps/vscode` first and found none, so there
+was nothing presentation-layer to update, and inventing new UX wasn't
+asked for by this row.

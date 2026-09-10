@@ -4,9 +4,9 @@ import { describe, expect, it } from "vitest";
 import { FakeProvider, textTurn, toolCallTurn, type ScriptedTurn } from "@clutchcode/providers";
 import { computeContextBudget, type EffectiveCapability } from "@clutchcode/capability";
 import { AgentLoop } from "./agent-loop.js";
-import { commitApprovedRun } from "./approve.js";
+import { commitApprovedRun, rejectRun } from "./approve.js";
 import { createRunState } from "./run-state.js";
-import { setupAgentLoopFixture } from "./test-helpers.js";
+import { setupAgentLoopFixture, setupAgentLoopSnapshotFixture } from "./test-helpers.js";
 import type { RuntimeEvent } from "./agent-loop.js";
 
 const FIX_EDIT = JSON.stringify({ path: "math.js", edits: [{ search: "return a - b;", replace: "return a + b;" }] });
@@ -861,4 +861,180 @@ describe("Custom declarative workflows (§8.1) — AgentLoop driven by deps.work
       fx.cleanup();
     }
   }, 30_000);
+});
+
+/**
+ * The §13.4 "not a git repo at all" fallback: same buggy-Node-project
+ * fixture and FakeProvider scripting as the git-worktree suite above, but
+ * against a real plain (non-git) temp directory and the `snapshot`
+ * `RunBackend`. Deliberately mirrors the git suite's test names/shapes
+ * where the behavior is meant to be identical (DONE-SUCCESS, repair,
+ * cheat-flagging) and calls out explicitly, in the assertions themselves,
+ * the two places §13.4/ADR-004 mean this backend to behave *differently*
+ * from the git one: edits land on the real files immediately (no
+ * isolation to merge from), and `reject` therefore has to actively restore
+ * them rather than just discarding an untouched copy.
+ */
+describe("AgentLoop (end-to-end with a real non-git temp dir + the §13.4 snapshot backend)", () => {
+  it("fixes the bug, verifies green, and auto-commits in --yes mode — same outcome as the git backend", async () => {
+    const fx = setupAgentLoopSnapshotFixture("run00000101");
+    try {
+      const provider = new FakeProvider([toolCallTurn("c1", "edit_file", FIX_EDIT), textTurn("Fixed the add() bug.")]);
+      const state = createRunState({ runId: fx.run.runId, task: "fix add() to add instead of subtract", provider: "fake", model: "fake" });
+
+      const events: RuntimeEvent[] = [];
+      const loop = new AgentLoop(
+        state,
+        { provider, tools: fx.tools, toolContext: fx.toolContext, run: fx.run, toolchainCommands: fx.toolchainCommands, evidenceDir: fx.evidenceDir },
+        { yesMode: true, onEvent: (e) => events.push(e) }
+      );
+
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("DONE");
+      expect(finalState.verificationResults).toHaveLength(1);
+      expect(finalState.verificationResults[0]!.allGreen).toBe(true);
+      expect(fs.readFileSync(path.join(fx.repoPath, "math.js"), "utf8")).toContain("return a + b;");
+      expect(events.some((e) => e.type === "verify.stage" && e.stage === "test" && e.passed)).toBe(true);
+      expect(events.some((e) => e.type === "run.end" && e.status === "DONE")).toBe(true);
+      // A real, git-format diff was produced with no repository at all —
+      // the `git diff --no-index`-backed `SnapshotBackup.diffText()` path.
+      expect(fx.run.diffAgainstBase()).toContain("diff --git a/math.js b/math.js");
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("repairs after a failed verification and eventually succeeds — same repair loop as the git backend", async () => {
+    const fx = setupAgentLoopSnapshotFixture("run00000102");
+    try {
+      const harmlessEdit = JSON.stringify({ path: "math.js", edits: [{ search: "// TODO: fix the implementation", replace: "// noted, investigating" }] });
+      const provider = new FakeProvider([
+        toolCallTurn("c1", "edit_file", harmlessEdit),
+        textTurn("Made an initial change."),
+        toolCallTurn("c2", "edit_file", FIX_EDIT),
+        textTurn("Now actually fixed.")
+      ]);
+      const state = createRunState({ runId: fx.run.runId, task: "fix add()", provider: "fake", model: "fake" });
+
+      const loop = new AgentLoop(
+        state,
+        { provider, tools: fx.tools, toolContext: fx.toolContext, run: fx.run, toolchainCommands: fx.toolchainCommands, evidenceDir: fx.evidenceDir },
+        { yesMode: true }
+      );
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("DONE");
+      expect(finalState.repairIterations).toBe(1);
+      expect(finalState.verificationResults).toHaveLength(2);
+      expect(finalState.verificationResults[0]!.allGreen).toBe(false);
+      expect(finalState.verificationResults[1]!.allGreen).toBe(true);
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("stops at AWAITING_APPROVAL without --yes — but unlike the git backend, the edit is ALREADY on the real file (no isolation exists to merge from)", async () => {
+    const fx = setupAgentLoopSnapshotFixture("run00000103");
+    try {
+      const provider = new FakeProvider([toolCallTurn("c1", "edit_file", FIX_EDIT), textTurn("Fixed.")]);
+      const state = createRunState({ runId: fx.run.runId, task: "fix add()", provider: "fake", model: "fake" });
+
+      const loop = new AgentLoop(state, {
+        provider,
+        tools: fx.tools,
+        toolContext: fx.toolContext,
+        run: fx.run,
+        toolchainCommands: fx.toolchainCommands,
+        evidenceDir: fx.evidenceDir
+      });
+      const afterRun = await loop.run();
+      expect(afterRun.status).toBe("AWAITING_APPROVAL");
+      // Deliberately the OPPOSITE assertion from the git-backend version of
+      // this test (§13.4/ADR-004): there is no isolated worktree to merge
+      // from, so the fix is already live on the real file the moment the
+      // tool call landed, well before approval.
+      expect(fs.readFileSync(path.join(fx.repoPath, "math.js"), "utf8")).toContain("return a + b;");
+
+      const finalState = commitApprovedRun(state, fx.run, { squash: true, message: "approved fix" });
+      expect(finalState.status).toBe("DONE");
+      // approve() is a near no-op here — nothing to merge — so the file is unchanged by it.
+      expect(fs.readFileSync(path.join(fx.repoPath, "math.js"), "utf8")).toContain("return a + b;");
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("reject ACTIVELY restores the pre-edit content — real, necessary work this backend does that the git backend's discard() doesn't need to", async () => {
+    const fx = setupAgentLoopSnapshotFixture("run00000104");
+    try {
+      const provider = new FakeProvider([toolCallTurn("c1", "edit_file", FIX_EDIT), textTurn("Fixed.")]);
+      const state = createRunState({ runId: fx.run.runId, task: "fix add()", provider: "fake", model: "fake" });
+
+      const loop = new AgentLoop(state, {
+        provider,
+        tools: fx.tools,
+        toolContext: fx.toolContext,
+        run: fx.run,
+        toolchainCommands: fx.toolchainCommands,
+        evidenceDir: fx.evidenceDir
+      });
+      const afterRun = await loop.run();
+      expect(afterRun.status).toBe("AWAITING_APPROVAL");
+      expect(fs.readFileSync(path.join(fx.repoPath, "math.js"), "utf8")).toContain("return a + b;"); // live edit, pre-reject
+
+      const rejected = rejectRun(state, fx.run);
+      expect(rejected.status).toBe("CANCELLED");
+      // The real, load-bearing assertion: the file is back to its original,
+      // pre-run content. For the git backend this file was never touched in
+      // the first place; here it genuinely was, and had to be restored.
+      expect(fs.readFileSync(path.join(fx.repoPath, "math.js"), "utf8")).toContain("return a - b;");
+      expect(fs.readFileSync(path.join(fx.repoPath, "math.js"), "utf8")).not.toContain("return a + b;");
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("escalates instead of completing when the diff trips cheat detection — proves the git-format diff text is real enough for the real detector to parse", async () => {
+    const fx = setupAgentLoopSnapshotFixture("run00000105");
+    try {
+      const cheatEdit = JSON.stringify({ path: "math.test.js", body: "console.log('PASS');\n" });
+      const provider = new FakeProvider([toolCallTurn("c1", "write_file", cheatEdit), textTurn("Tests should pass now.")]);
+      const state = createRunState({ runId: fx.run.runId, task: "make the tests pass", provider: "fake", model: "fake" });
+
+      const loop = new AgentLoop(
+        state,
+        { provider, tools: fx.tools, toolContext: fx.toolContext, run: fx.run, toolchainCommands: fx.toolchainCommands, evidenceDir: fx.evidenceDir },
+        { yesMode: true }
+      );
+      const finalState = await loop.run();
+
+      expect(finalState.status).toBe("ESCALATED");
+      expect(finalState.escalationReason).toMatch(/cheat detection flagged/);
+    } finally {
+      fx.cleanup();
+    }
+  }, 30_000);
+
+  it("checkpoint()/listCheckpoints()/rollbackTo() round-trip through the one snapshot-baseline checkpoint (§13.4's stated single-point scope, not git's per-step granularity)", async () => {
+    const fx = setupAgentLoopSnapshotFixture("run00000106");
+    try {
+      expect(fx.run.checkpoint("nothing yet")).toBeNull(); // no file touched yet — matches git's "nothing to checkpoint" null
+      expect(fx.run.listCheckpoints()).toEqual([]);
+
+      fx.run.beforeEdit("math.js");
+      fs.writeFileSync(path.join(fx.repoPath, "math.js"), "mutated by a real edit\n", "utf8");
+
+      const sha = fx.run.checkpoint("verify passed");
+      expect(sha).not.toBeNull();
+      const checkpoints = fx.run.listCheckpoints();
+      expect(checkpoints).toHaveLength(1);
+      expect(checkpoints[0]!.sha).toBe(sha);
+
+      fx.run.rollbackTo(checkpoints[0]!.sha);
+      expect(fs.readFileSync(path.join(fx.repoPath, "math.js"), "utf8")).toContain("function add(a, b)"); // back to the original fixture content
+    } finally {
+      fx.cleanup();
+    }
+  });
 });

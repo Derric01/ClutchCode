@@ -1,32 +1,34 @@
 import fs from "node:fs";
 import path from "node:path";
-import { assertSafeRunId, type RunWorktree } from "@clutchcode/git";
+import { assertSafeRunId } from "@clutchcode/git";
+import type { RunBackendState } from "@clutchcode/runtime";
 
 /**
- * Persists the `RunWorktree` handle (branch, base commit, worktree path)
- * alongside `RunState` so `agent diff`/`approve`/`reject`/`resume` can be
- * invoked as separate CLI calls, potentially in a different process, and
- * still find the run's worktree.
+ * Persists a `RunBackend`'s plain data (`RunBackendState` — either the
+ * git-worktree handle or the snapshot backend's workspace/backup paths,
+ * §13.1/§13.4) alongside `RunState` so `agent diff`/`approve`/`reject`/
+ * `resume` can be invoked as separate CLI calls, potentially in a
+ * different process, and still find the run's execution backend.
  */
 
-function worktreeMetaPath(stateDir: string, runId: string): string {
+function backendStatePath(stateDir: string, runId: string): string {
   // §13.1: same shared-choke-point fix as `RunStateStore` — see its
-  // `runDir` comment. `loadRunWorktree` in particular is the entry point
+  // `runDir` comment. `loadRunBackend` in particular is the entry point
   // `approve`/`reject`/`rollback`/`pr` use to resolve a caller-supplied
-  // `runId` into a real `worktreePath`/`repoPath` that real, sometimes
-  // destructive `git` operations then run against.
+  // `runId` into a real backend that real, sometimes destructive
+  // operations then run against.
   assertSafeRunId(runId);
   return path.join(stateDir, "runs", runId, "worktree.json");
 }
 
-export function saveRunWorktree(stateDir: string, run: RunWorktree): void {
-  const p = worktreeMetaPath(stateDir, run.runId);
+export function saveRunBackend(stateDir: string, state: RunBackendState): void {
+  const p = backendStatePath(stateDir, state.runId);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(run, null, 2), "utf8");
+  fs.writeFileSync(p, JSON.stringify(state, null, 2), "utf8");
 }
 
-export function loadRunWorktree(stateDir: string, runId: string): RunWorktree | null {
-  const p = worktreeMetaPath(stateDir, runId);
+export function loadRunBackendState(stateDir: string, runId: string): RunBackendState | null {
+  const p = backendStatePath(stateDir, runId);
   if (!fs.existsSync(p)) return null;
-  return JSON.parse(fs.readFileSync(p, "utf8")) as RunWorktree;
+  return JSON.parse(fs.readFileSync(p, "utf8")) as RunBackendState;
 }

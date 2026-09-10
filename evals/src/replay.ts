@@ -2,9 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { Denylist, PolicyEngine, Redactor } from "@clutchcode/sandbox";
 import { nativeToolSet, type Tool } from "@clutchcode/tools";
-import { createRunWorktree, type RunWorktree } from "@clutchcode/git";
+import { createRunWorktree } from "@clutchcode/git";
 import { detectToolchain } from "@clutchcode/verification";
-import { AgentLoop, createRunState, type RunState, type RuntimeEvent } from "@clutchcode/runtime";
+import { AgentLoop, createGitWorktreeBackend, createRunState, type RunState, type RuntimeEvent } from "@clutchcode/runtime";
 import { FakeProvider } from "@clutchcode/providers";
 
 import type { RecordedTranscript } from "./transcript.js";
@@ -28,12 +28,17 @@ export async function replayTranscript(transcript: RecordedTranscript): Promise<
   const stateDir = makeTempDir("clutchcode-eval-state-");
   const evidenceDir = makeTempDir("clutchcode-eval-evidence-");
 
-  const run: RunWorktree = createRunWorktree({ repoPath, stateDir, runId: `eval-${transcript.name}`.slice(0, 40), slug: transcript.name });
-  const toolchainCommands = detectToolchain(run.worktreePath);
+  // §13.1/§13.4: the eval harness always replays against a real git
+  // fixture repo (`makeFixtureRepo`) — `createGitWorktreeBackend` wraps the
+  // same `RunWorktree` this always used, satisfying `AgentLoop`'s new
+  // backend-agnostic `RunBackend` dependency (`run-backend.ts`) without
+  // changing what this replay actually exercises.
+  const run = createGitWorktreeBackend(createRunWorktree({ repoPath, stateDir, runId: `eval-${transcript.name}`.slice(0, 40), slug: transcript.name }));
+  const toolchainCommands = detectToolchain(run.workspaceRoot);
 
   const tools: Map<string, Tool<unknown, unknown>> = nativeToolSet();
   const toolContext = {
-    workspaceRoot: run.worktreePath,
+    workspaceRoot: run.workspaceRoot,
     evidenceDir,
     policy: new PolicyEngine(),
     denylist: new Denylist(),

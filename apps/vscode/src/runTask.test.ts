@@ -124,12 +124,21 @@ describe("runClutchCodeTask (§18.5 UX, over a real AgentRpcClient/Agent)", () =
   }, 30_000);
 
   it("surfaces an Agent-level error through showError instead of throwing out of the orchestration", async () => {
-    fs.rmSync(repoPath, { recursive: true, force: true }); // no longer a repo at all — Agent.run's own git-repo guard fires
+    // §13.4: deleting the whole repo dir used to be this test's way of
+    // forcing `Agent.run` to throw — that specific throw (a bare "not a
+    // git repository" refusal) is gone now that a missing/non-git
+    // directory goes through the real §13.4 `snapshot` `RunBackend`
+    // instead of refusing outright. An unrecognized provider kind is a
+    // real, still-unconditional `Agent.run` throw unrelated to git status
+    // (`buildProvider`'s own exhaustiveness-fallback `throw`) — exactly as
+    // good a vehicle for proving this orchestration path surfaces an
+    // Agent-level error via `showError` instead of throwing, and it fits
+    // `RunTaskOptions`'s existing `providerKind: string` shape without
+    // widening it just for this one test.
     const ui = fakeUI();
-    await runClutchCodeTask(client, { task: "investigate", providerKind: "fake", model: "n/a" }, ui);
+    await runClutchCodeTask(client, { task: "investigate", providerKind: "not-a-real-provider", model: "n/a" }, ui);
 
-    expect(ui.errors.some((m) => m.includes("not a git repository"))).toBe(true);
-    fs.mkdirSync(repoPath, { recursive: true }); // afterEach expects it to still exist
+    expect(ui.errors.some((m) => m.includes("unknown provider kind"))).toBe(true);
   }, 30_000);
 });
 

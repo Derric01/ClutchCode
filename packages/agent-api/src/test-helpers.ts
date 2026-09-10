@@ -71,6 +71,14 @@ export function makeSampleRepo(): string {
   return dir;
 }
 
+/** `makeSampleRepo`'s non-git counterpart (§13.4's `snapshot` `RunBackend` fixture): the same trivial-but-real Node project, deliberately with no `git init` at all. */
+export function makeSamplePlainDir(): string {
+  const dir = makeTempDir("clutchcode-agentapi-plaindir-");
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "sample", scripts: { test: "node -e \"console.log('ok')\"" } }, null, 2), "utf8");
+  fs.writeFileSync(path.join(dir, "README.md"), "# sample\n", "utf8");
+  return dir;
+}
+
 /** A repo whose root test *fails* but whose `packages/foo` subdir has its own, passing toolchain — for §13.4 `--scope` tests. */
 export function makeMonorepo(): string {
   const dir = makeTempDir("clutchcode-agentapi-monorepo-");

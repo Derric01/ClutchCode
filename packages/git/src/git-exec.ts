@@ -44,9 +44,21 @@ export function git(args: string[], opts: GitExecOptions): string {
   }
 }
 
+/**
+ * §13.4: with the non-git `snapshot` `RunBackend` now a first-class,
+ * routinely-taken path (not just an error case), this is called on *every*
+ * `agent run` against a plain directory — not a rare occurrence anymore.
+ * Same fix as `git()`'s own `stdio` comment above, applied here for the
+ * same reason: an explicit `stdio` array so `execFileSync`'s default
+ * stderr-passthrough doesn't print a raw `fatal: not a git repository
+ * (or any of the parent directories): .git` to the real CLI's console on
+ * every single non-git run — previously a rare, error-adjacent occurrence;
+ * now the literal first thing a §13.4 user sees on the now-fully-supported
+ * common path.
+ */
 export function isGitRepo(dir: string): boolean {
   try {
-    const out = execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: dir, encoding: "utf8" });
+    const out = execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     return out.trim() === "true";
   } catch {
     return false;
