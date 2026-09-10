@@ -3589,3 +3589,144 @@ used the snapshot fallback" banner) — grepped for worktree-specific
 display text in `apps/cli`/`apps/vscode` first and found none, so there
 was nothing presentation-layer to update, and inventing new UX wasn't
 asked for by this row.
+
+### Fresh audit round: the new `RunBackend`/`SnapshotRunBackend` surface, adversarially — one real parity bug found and fixed, several areas checked clean
+
+Per `CLAUDE.md`'s work-loop step 2c (no `DO FIRST` row was queued; every
+row in `HANDOFF.md`'s "What's left" table was freshly re-checked as
+genuinely gated last session) — a review round fanning out across areas
+`HANDOFF.md` flagged as not yet given an adversarial second look:
+`RunBackend`/`SnapshotBackup` (PR #24, brand new), the ACP/cancellation
+composition with the new backend abstraction, and a scan of `packages/
+tools`/`packages/sandbox`/CLI arg parsing for anything untouched by a
+recent round.
+
+**Real, reproduced finding: `write_file`/`edit_file` with an absolute
+path that legitimately resolves *inside* the workspace succeeded under
+the `git-worktree` backend but failed outright under the `snapshot`
+backend for the exact same call.** `packages/tools/src/workspace-
+path.ts`'s `resolveInWorkspace` explicitly supports an absolute `path`
+tool argument (`abs = path.isAbsolute(requested) ? path.normalize(...) :
+path.resolve(workspaceRoot, requested)`) and allows it through whenever
+it resolves inside the workspace — this is intentional, documented tool
+behavior, not an oversight. But `agent-loop.ts`'s `runToolCall` passes
+that same raw, unmodified `args.path` straight into `RunBackend.beforeEdit`,
+whose contract (see its own doc comment's `relPath` parameter name) is a
+workspace-*relative* path. For `git-worktree`, `beforeEdit` is a no-op,
+so this never mattered. For `snapshot`, it reaches `SnapshotBackup.
+snapshotBeforeFirstEdit` → `assertSafeRelPath`, which rejects **every**
+absolute path unconditionally (`path.isAbsolute(relPath) → false`), with
+no regard for whether it's actually contained in the workspace — so the
+tool call never even reached `tool.run()`, failing closed with
+`errorCode: "snapshot-failed"` before the tool's own (correctly
+permissive) check ever ran. The same tool call behaving differently
+purely because of which backend a given repo happens to get is exactly
+the kind of gap `run-backend.ts`'s own doc comment says the interface
+exists to prevent ("zero format-detection branching needed anywhere
+upstream").
+
+**Reproduced for real before touching anything**, per `CLAUDE.md`'s "prove
+it, don't assume it": two throwaway vitest fixtures (`setupAgentLoop-
+SnapshotFixture` vs. `setupAgentLoopFixture`, both from `test-helpers.ts`),
+each driving a real `AgentLoop` through a `FakeProvider`-scripted
+`write_file` call with an absolute path built from the fixture's own real
+temp directory. Snapshot backend: `tool.result` event came back `{ok:
+false, tool: "write_file", errorCode: "snapshot-failed"}` and the file was
+never created (`fs.existsSync` false). Git-worktree backend, identical
+call: `{ok: true}`, file created. Confirmed the discrepancy is real before
+writing a single line of fix.
+
+**Fix**: in `agent-loop.ts`'s `runToolCall`, normalize an absolute
+`targetPath` to a workspace-relative one (`path.relative(this.deps.run.
+workspaceRoot, targetPath)`) before calling `beforeEdit`, mirroring
+exactly the resolution `resolveInWorkspace` already performs — a relative
+path is passed through unchanged. A genuinely-outside absolute path is
+unaffected in outcome (still rejected — now via the `".."`-segment check
+`path.relative` produces instead of the bare `path.isAbsolute` check, the
+same fail-closed result either way); only the previously-mishandled
+"absolute but actually inside the workspace" case changes, from a wrong
+rejection to the correct acceptance.
+
+**Verified and proven to discriminate, per `CLAUDE.md`'s stash-revert
+discipline.** A permanent regression test was added to `agent-loop.test.ts`
+(the snapshot-backend describe block) — a real end-to-end `AgentLoop` run
+through the `write_file` tool call plus a `FIX_EDIT` so the run reaches a
+clean `DONE` (not just an isolated `runToolCall` call), asserting the
+`tool.result` event is `ok: true` and the file exists with the expected
+content. `packages/runtime/src/agent-loop.ts` was a tracked file with
+real uncommitted changes (`git status --short` showed `M`, not `??` —
+the untracked-file stash trap noted repeatedly in `HANDOFF.md`'s gotchas
+doesn't apply here); `git stash push -- packages/runtime/src/agent-
+loop.ts` reverted it, confirmed via `grep -n relForBackup` coming back
+empty. Re-ran the new test alone: it failed exactly as predicted (`ok:
+false` where `ok: true` was expected, `errorCode: "snapshot-failed"` in
+the actual object). `git stash pop` restored the fix; re-ran the whole
+`agent-loop.test.ts` file: 32/32 green. Full workspace gate: `tsc -b`
+clean, `eslint .` clean (0 warnings), `vitest run` **922/922** across 92
+files (up from the 921/921 baseline — one new test, zero regressions).
+
+**Other areas fanned into this round, checked and found clean (not a
+failure to find something — a legitimate, reportable outcome per this
+round's own brief):**
+- **`SnapshotBackup`'s path-traversal defenses** (`snapshotBeforeFirstEdit`,
+  `rollback`, `diffEntries`) — `assertSafeRelPath` + the defense-in-depth
+  `assertContainedIn` re-check (both already written, tested, and
+  documented as closing a real pre-wiring gap in an earlier round, before
+  `RunBackend` made this code path reachable at all) hold up under the
+  same "what if `beforeEdit` is called on a path outside `workspaceRoot`"
+  question the audit brief posed directly — traced concretely: a `..`-
+  bearing or absolute-and-genuinely-outside path throws before any
+  filesystem operation happens, git-worktree's `beforeEdit` is a no-op so
+  the question doesn't even arise there, and the fix above closes the one
+  case (absolute-but-actually-inside) that wasn't yet handled correctly.
+  No path-traversal *security* gap found here — the one real bug in this
+  area was the availability/parity issue above, not an escape.
+- **`runNoIndexDiff`'s literal `.split().join()` rewrite of `git diff
+  --no-index`'s absolute-path output back to `relPath`** — read closely
+  for a "diff content coincidentally contains the backup's absolute path
+  string" corruption risk. Judged low-risk-in-practice (the backup path
+  is rooted at a per-run, effectively-unguessable state directory) but
+  not exercised adversarially this round — left as-is; not escalated to a
+  fix without a reproduction, per this project's own "prove it, don't
+  assume it" rule (a hypothesis, not a confirmed bug).
+- **ACP `session/cancel` composing with the new `RunBackend` abstraction**
+  — re-read `agent-loop.ts`'s `verifyAndFinish`/`actLoop` cancellation
+  checkpoints (the explicit `setImmediate` yield from the earlier
+  cancellation round) against the current code: both still check
+  `checkCancelled()` at the same act-loop/verify boundaries, and neither
+  checkpoint reads or depends on `this.deps.run`'s concrete backend kind
+  — `RunBackend` is consulted only for `beforeEdit`/`checkpoint`/`diff*`/
+  `approve`/`discard`/`readAtRunStart`, none of which sit inside the
+  cancellation-checked regions in a way the backend swap changed. The
+  existing `agent-loop.test.ts` cancellation test (real spawned `npm
+  test`, real abort mid-verification) already runs against the current
+  `RunBackend`-based `AgentLoopDeps` shape post-PR #24 and still passes —
+  the two compose correctly because cancellation was never backend-aware
+  to begin with, not because of anything new. No fix needed; reported
+  clean.
+- **`packages/tools`'s workspace-path/symlink defenses** — reread `write-
+  file.ts`/`edit-file.ts`/`workspace-path.ts` against the "what happens on
+  a symlink pointing outside the workspace" question the round-3 security
+  review already closed; still holds (deepest-existing-ancestor real-path
+  walk, dangling-symlink `lstatSync` handling, denylist checked against
+  `real` not `abs`). No new gap found; not re-litigated further since
+  this exact ground was already covered by name in `HANDOFF.md`'s
+  gotchas.
+- **CLI argument parsing** (`apps/cli`) — spot-checked against the two
+  known-fixed bug classes already documented in `HANDOFF.md`'s gotchas
+  (commander's `--no-<x>` auto-boolean shape, a subcommand re-declaring a
+  shared parent option) for a third recurrence; none found. Not a full
+  re-audit of every subcommand from scratch — `cli-structure.test.ts`'s
+  existing exhaustive walk of `buildProgram()` already guards the second
+  class going forward, which is the actual reason a fresh manual pass
+  wasn't warranted here.
+
+**Deliberately not pursued further this round**: the `runNoIndexDiff`
+string-corruption hypothesis above (no reproduction, so no fix — would
+need a contrived fixture where a file's real content coincidentally
+contains the exact backup-directory absolute path string, which is not a
+realistic adversary-controlled input in the current design since
+`backupDir` is derived from `crypto.randomUUID()`-based `runId`, not
+attacker-chosen). A macOS/Windows-specific angle on any of the above was
+out of scope, as always, for the reason already stated at the top of
+`HANDOFF.md`'s "What's left" table.
